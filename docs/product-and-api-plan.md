@@ -24,6 +24,19 @@
 
 以上只代表接口类别和基础调用方式存在，不代表本项目需要的每个写入字段已经验证。
 
+### 2.1 Issue #2 schema-only 核对（尚未调用 API）
+
+2026-08-03 只读检查官方 `https://open.maimemo.com/api_bundle.yaml`：规范为 OpenAPI 3.1.0、版本 `v1`，文件 SHA-256 为 `7f1a3ebebe9537bed14015151bcebeda3591bcbcb8c4e0f7f1e62f93f52c5e70`。以下仅是公开 schema 事实，不代表服务端、App 展示或跨账号发现已经验证：
+
+- 释义 create/update 请求要求 `tags: string[]`；释义 create 还要求 `status`。公开 schema 没有标签枚举或数量限制。
+- 例句 create/update 请求要求 `phrase`、`interpretation`、`tags: string[]` 和 `origin: string`；create 另要求 `voc_id`。
+- `Phrase.highlight` 只出现在响应模型中，不是 create/update 的可写字段。规范将它建模为范围对象数组，同时描述“实际返回的数据是二维数组”，需要真实回读确认形状和语义。
+- 没有发现用于选择中文翻译精确字符位置的公开请求字段。
+- 释义和例句列表端点都按 `voc_id` 查询自己创建的内容；没有公开的跨账号标签发现端点。
+- 没有发现幂等键。真实阶段不得自动重试写入，必须逐次预览、确认并回读。
+
+因此 schema 审查不能解除 Issue #2 的任何运行时阻断。当前纯离线脚本只生成一条释义和一条例句（后续变体复用同一例句记录）的待审 payload，不读取凭证、不包含 HTTP 或真实写入路径。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
