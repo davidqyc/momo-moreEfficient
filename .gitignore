@@ -13,6 +13,7 @@ credentials/
 # Private study data and sanitized experiment workspace
 data/private/
 artifacts/private/
+artifacts/review/
 fixtures/private/
 logs/
 *.log
