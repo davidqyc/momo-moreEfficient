@@ -22,12 +22,12 @@ An unofficial Maimemo companion for faster desktop lookup and safer batch publis
 
 ## 已确定的产品顺序
 
-1. [#2 验证 API 写入语义和跨账号标签可发现性](../../issues/2)
-2. [#3 构建批量释义录入 MVP](../../issues/3)
-3. [#4 仅在阻断项通过后构建例句录入](../../issues/4)
-4. [#5 构建桌面快速查词原型](../../issues/5)
-5. [#6 完成公开仓库与首个可用版本准备](../../issues/6)
-6. [#7 以真实维护和使用证据准备 Codex for Open Source 申请](../../issues/7)
+1. [#2 验证 API 写入语义和跨账号标签可发现性](/davidqyc/momo-moreEfficient/issues/2)
+2. [#3 构建批量释义录入 MVP](/davidqyc/momo-moreEfficient/issues/3)
+3. [#4 仅在阻断项通过后构建例句录入](/davidqyc/momo-moreEfficient/issues/4)
+4. [#5 构建桌面快速查词原型](/davidqyc/momo-moreEfficient/issues/5)
+5. [#6 完成公开仓库与首个可用版本准备](/davidqyc/momo-moreEfficient/issues/6)
+6. [#7 以真实维护和使用证据准备 Codex for Open Source 申请](/davidqyc/momo-moreEfficient/issues/7)
 
 ## 不可妥协的安全基线
 
@@ -50,7 +50,7 @@ GitHub Issue 是工程任务的入口和事实坐标。Codex 开始工作前必�
 
 ## 开源路径
 
-仓库先保持短期私有，用于清理凭证风险并建立第一条可验证闭环。达到 [#6](../../issues/6) 的公开门槛后尽快转为 Public；不等待所有功能完成，也不以空仓库公开时长作为目标。
+仓库先保持短期私有，用于清理凭证风险并建立第一条可验证闭环。达到 [#6](/davidqyc/momo-moreEfficient/issues/6) 的公开门槛后尽快转为 Public；不等待所有功能完成，也不以空仓库公开时长作为目标。
 
 ## 免责声明
 
