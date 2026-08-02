@@ -19,6 +19,7 @@ REQUIRED_TAGS = ("MBA", "BEC", "GMAT")
 REQUIRED_CASES = ("exact", "inflected", "multiple")
 INVALID_ID_PREFIX = "INVALID_"
 CREATED_PHRASE_ID = "$CREATED_PHRASE_ID"
+OPEN_API_PREFIX = "/open/api/v1"
 
 
 class FixtureError(ValueError):
@@ -144,7 +145,7 @@ def build_plan(fixture: dict[str, Any]) -> dict[str, Any]:
             "sequence": 1,
             "action": "create_interpretation",
             "method": "POST",
-            "path": "/api/v1/interpretations",
+            "path": f"{OPEN_API_PREFIX}/interpretations",
             "payload": {
                 "interpretation": {
                     "voc_id": vocabulary["id"],
@@ -159,7 +160,7 @@ def build_plan(fixture: dict[str, Any]) -> dict[str, Any]:
             "sequence": 2,
             "action": "create_phrase_exact_case",
             "method": "POST",
-            "path": "/api/v1/phrases",
+            "path": f"{OPEN_API_PREFIX}/phrases",
             "payload": {
                 "phrase": {
                     "voc_id": vocabulary["id"],
@@ -176,9 +177,8 @@ def build_plan(fixture: dict[str, Any]) -> dict[str, Any]:
                 "sequence": sequence,
                 "action": f"update_phrase_{case['name']}_case",
                 "method": "POST",
-                "path": f"/api/v1/phrases/{CREATED_PHRASE_ID}",
+                "path": f"{OPEN_API_PREFIX}/phrases/{CREATED_PHRASE_ID}",
                 "payload": {
-                    "id": CREATED_PHRASE_ID,
                     "phrase": _phrase_fields(case, phrase["origin"]),
                 },
                 "future_live_guard": (

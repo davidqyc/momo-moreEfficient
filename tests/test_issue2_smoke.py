@@ -67,6 +67,20 @@ class Issue2SmokeTests(unittest.TestCase):
             ],
         )
 
+    def test_paths_include_the_documented_open_prefix(self) -> None:
+        paths = [operation["path"] for operation in self.plan["operations"]]
+        self.assertEqual(
+            paths,
+            [
+                "/open/api/v1/interpretations",
+                "/open/api/v1/phrases",
+                "/open/api/v1/phrases/$CREATED_PHRASE_ID",
+                "/open/api/v1/phrases/$CREATED_PHRASE_ID",
+            ],
+        )
+        for path in paths:
+            self.assertTrue(path.startswith("/open/api/v1/"))
+
     def test_payloads_match_the_reviewed_write_schema(self) -> None:
         for operation in self.plan["operations"]:
             payload_text = json.dumps(operation["payload"], ensure_ascii=False)
@@ -81,11 +95,35 @@ class Issue2SmokeTests(unittest.TestCase):
             self.assertEqual(body["tags"], ["MBA", "BEC", "GMAT"])
 
         interpretation = self.plan["operations"][0]["payload"]["interpretation"]
+        self.assertEqual(
+            set(self.plan["operations"][0]["payload"]),
+            {"interpretation"},
+        )
+        self.assertEqual(
+            set(interpretation),
+            {"voc_id", "interpretation", "tags", "status"},
+        )
         self.assertEqual(interpretation["status"], "PUBLISHED")
 
+        create_phrase_payload = self.plan["operations"][1]["payload"]
+        self.assertEqual(set(create_phrase_payload), {"phrase"})
+        self.assertEqual(
+            set(create_phrase_payload["phrase"]),
+            {"voc_id", "phrase", "interpretation", "tags", "origin"},
+        )
+
+        for operation in self.plan["operations"][2:]:
+            self.assertEqual(set(operation["payload"]), {"phrase"})
+            self.assertEqual(
+                set(operation["payload"]["phrase"]),
+                {"phrase", "interpretation", "tags", "origin"},
+            )
+
         for operation in self.plan["operations"][1:]:
-            phrase = operation["payload"]["phrase"]
-            self.assertEqual(phrase["origin"], "OFFLINE_FIXTURE_ONLY")
+            self.assertEqual(
+                operation["payload"]["phrase"]["origin"],
+                "OFFLINE_FIXTURE_ONLY",
+            )
 
     def test_fixture_rejects_real_looking_vocabulary_id(self) -> None:
         self.fixture["vocabulary"]["id"] = "5a7BFf4F63612e5AD9fdebB7a50D3881"
