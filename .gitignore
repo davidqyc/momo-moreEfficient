@@ -1,0 +1,56 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.local
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.mobileprovision
+
+# Private study data and sanitized experiment workspace
+data/private/
+artifacts/private/
+fixtures/private/
+logs/
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# Node / web
+node_modules/
+dist/
+.next/
+.nuxt/
+coverage/
+
+# Swift / Xcode
+.build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+
+# General build and temp output
+build/
+out/
+tmp/
+temp/
+.cache/
