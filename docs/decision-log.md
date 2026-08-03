@@ -103,3 +103,22 @@ Codex 请求所有者做决策时，必须先用中文白话说明“要决定�
 5. 每次更新前保留现有内容的脱敏快照，写后回读；可修正的单条内容错误不等同于账号级灾难。
 
 该产品行为和 API 返回形态仍需先在副账号完成真实验证，再用于主账号。
+
+## D-012：每轮 coding Prompt 必须显式选择模型、思考深度和执行模式
+
+**日期：** 2026-08-03  
+**状态：** 有效
+
+本项目采用 `docs/CODEX_REASONING_DEPTH_POLICY.md` 作为 canonical 协议。该协议以 `davidqyc/babyfood@master` 的同名政策为源，按本项目“极小应用、范围应主动收窄”的特征重新设定默认档位。
+
+每一份发给 Codex、Claude Code、Kimi Code 或其他 coding 程序的正式 Prompt，都必须显式写明：实际模型、思考深度、执行模式和一句选择原因；每轮重新判断，不机械继承上一轮。
+
+项目默认：
+
+- 机械 Git、merge、readback 和 ZIP 核验使用 `轻度`；
+- 小型 docs 与确定性窄修复使用 `中`；
+- 普通实质 coding 与定向 Reviewer 使用 `高`；
+- Token、账号隔离、真实写入、response loss、unknown outcome、恢复/回滚或 Reviewer 实质 BLOCK 使用 `极高`；
+- `最高` 与 `Ultra` 默认关闭，必须另行说明普通档位不足或并行 ROI。
+
+此前 Issue #2 与 Issue #9 第一版均使用 `高`，与当时完全离线、首次实现且边界清楚的任务相符。PR #10 当前阻断修复因 Reviewer 已 BLOCK，且涉及写入结果未知、恢复状态和凭证防串号，升级为 `极高`、单 Agent。

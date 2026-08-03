@@ -14,15 +14,18 @@
 
 聊天记录不是长期事实源。发现重要新要求时，应先写入或更新 GitHub Issue，再开始大范围实现。
 
+`docs/CODEX_REASONING_DEPTH_POLICY.md` 是模型、思考深度和执行模式的 canonical 流程规则；它不替代上述产品事实来源。
+
 ## 2. 开始任务前必须读取
 
 每次 Codex 会话至少执行：
 
 1. 确认当前仓库、分支和 `origin/main`。
-2. 阅读 `README.md`、本文件、`docs/decision-log.md`。
+2. 阅读 `README.md`、本文件、`docs/decision-log.md` 和 `docs/CODEX_REASONING_DEPTH_POLICY.md`。
 3. 阅读被分配的 Issue 全文、依赖 Issue 和最新评论。
 4. 只读取与当前任务相关的其他文档和代码；不要默认扩展范围。
-5. 在动手前用简短计划说明：目标、拟改文件、验证方式、风险和不做事项。
+5. 确认正式 Prompt 已显式标注模型、思考深度、执行模式和选择原因。
+6. 在动手前用简短计划说明：目标、拟改文件、验证方式、风险和不做事项。
 
 如果没有明确 Issue，除非所有者明确要求，否则不要开始工程实现。
 
@@ -144,3 +147,23 @@ ZIP 规则：
 - 失败路径可见且不会造成静默破坏
 - Issue/PR 中记录实际结果、未解决事项和下一步
 - 修改实体文件时，完成第 9.3 节规定的可点击 ZIP 审阅交付
+
+## 11. 模型、思考深度和执行模式
+
+所有正式 coding Prompt 必须遵守 `docs/CODEX_REASONING_DEPTH_POLICY.md`。
+
+Codex 5.6 Sol 的标准标注为：
+
+```text
+Model: GPT-5.6 Sol
+思考深度: 轻度 | 中 | 高 | 极高 | 最高
+执行模式: 单 Agent | Ultra
+选择原因: <一句话>
+```
+
+- 每一轮必须重新评估，不因上一轮使用某档就自动沿用。
+- 本项目普通实质 coding 默认 `高`；机械 Git/merge 可降到 `轻度`，小型 docs/确定性小修可用 `中`。
+- Token、账号隔离、真实写入、response loss、unknown outcome、恢复/回滚或 Reviewer 实质 BLOCK 通常升级到 `极高`。
+- `最高` 和 `Ultra` 默认关闭；启用必须在 Prompt 中说明普通档位不足或并行 ROI。
+- Agent 不得自行把单 Agent 任务改成 Ultra，也不得用高深度扩大已冻结范围。
+- 如果执行中发现任务复杂度明显超出 Prompt 标注，停止并报告升级理由，不自行扩大授权。
