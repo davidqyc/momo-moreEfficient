@@ -125,6 +125,23 @@ class Issue2SmokeTests(unittest.TestCase):
                 "OFFLINE_FIXTURE_ONLY",
             )
 
+    def test_shared_interpretation_builder_locks_update_schema(self) -> None:
+        operation = issue2_smoke.build_interpretation_operation(
+            "INVALID_VOCABULARY_ID",
+            "OFFLINE FIXTURE INTERPRETATION",
+            existing_id="INVALID_INTERPRETATION_ID",
+        )
+        self.assertEqual(
+            operation["path"],
+            "/open/api/v1/interpretations/INVALID_INTERPRETATION_ID",
+        )
+        self.assertEqual(set(operation["payload"]), {"interpretation"})
+        self.assertEqual(
+            set(operation["payload"]["interpretation"]),
+            {"interpretation", "tags", "status"},
+        )
+        self.assertNotIn("id", operation["payload"])
+
     def test_fixture_rejects_real_looking_vocabulary_id(self) -> None:
         self.fixture["vocabulary"]["id"] = "5a7BFf4F63612e5AD9fdebB7a50D3881"
         with self.assertRaisesRegex(issue2_smoke.FixtureError, "must start with INVALID_"):

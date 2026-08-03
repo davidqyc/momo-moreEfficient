@@ -28,7 +28,7 @@
 
 2026-08-03 只读检查官方 `https://open.maimemo.com/api_bundle.yaml`：规范为 OpenAPI 3.1.0、版本 `v1`，文件 SHA-256 为 `7f1a3ebebe9537bed14015151bcebeda3591bcbcb8c4e0f7f1e62f93f52c5e70`。以下仅是公开 schema 事实，不代表服务端、App 展示或跨账号发现已经验证：
 
-- 释义 create/update 请求要求 `tags: string[]`；释义 create 还要求 `status`。公开 schema 没有标签枚举或数量限制。
+- 释义 create/update 请求要求 `tags: string[]`；释义 create 还要求 `status`。更新记录 ID 只放在 `POST /open/api/v1/interpretations/{id}` 路径中，请求体顶层只有 `interpretation`。公开 schema 没有标签枚举或数量限制。
 - 例句 create/update 请求要求 `phrase`、`interpretation`、`tags: string[]` 和 `origin: string`；create 另要求 `voc_id`。
 - `Phrase.highlight` 只出现在响应模型中，不是 create/update 的可写字段。规范将它建模为范围对象数组，同时描述“实际返回的数据是二维数组”，需要真实回读确认形状和语义。
 - 没有发现用于选择中文翻译精确字符位置的公开请求字段。
@@ -36,6 +36,24 @@
 - 没有发现幂等键。真实阶段不得自动重试写入，必须逐次预览、确认并回读。
 
 因此 schema 审查不能解除 Issue #2 的任何运行时阻断。当前纯离线脚本只生成一条释义和一条例句（后续变体复用同一例句记录）的待审 payload，不读取凭证、不包含 HTTP 或真实写入路径。
+
+### 2.2 Issue #9 分阶段冒烟 harness（本轮仍未联网）
+
+再次逐项核对上述官方 schema 后，**没有找到**可靠的 `self`、`profile`、`account identity` 或等价接口，无法通过公开 API 把 Token 自动绑定到可核验的账号身份。不得猜测或调用未公开接口。后续如获准进入真实阶段，账号防串用必须 fail-closed：凭证只能由独立的副账号来源注入，账号标签必须正向包含 `secondary`、`test`、`副号`、`副账号` 或 `测试` 之一，并拒绝 `main`、`primary`、`owner`、`prod`、`production`、`主号`、`主账号`、`主账户`、`生产` 等主账号/生产含义；操作者还必须输入同时包含该副账号标签和当前凭证非敏感 SHA-256 短指纹的精确确认短语。标签缺失或语义不符、来源不符、指纹变化或确认不精确时，在发出请求前停止。账号标签和 Token 指纹只能防止人工过程中把凭证换错，**不能**证明该 Token 属于哪个墨墨账号，也不能代替官方账号身份接口；真实执行前仍需所有者在墨墨 App 中人工确认副账号。
+
+Issue #9 的最小 harness 将能力分为三层：
+
+1. `offline-plan` 是默认且当前唯一可从命令行完成的模式，只复用 Issue #2 的 fixture 校验和 payload 生成，不实例化 transport。
+2. `read-only` 只允许公开 schema 中已核对的 `GET /vocabulary?spelling=...`、`GET /interpretations?voc_id=...` 和 `GET /phrases?voc_id=...`，且必须先通过副账号人工门禁；`/vocabulary/query` 是 POST 语义，本 Issue 不开放。当前命令行没有凭证入口，因此默认阻断。
+3. `live-step` 每个执行器最多尝试一个 POST。交互预览在本地当次显示 method、固定在 `/open/api/v1` 下的 path、真实待写内容，以及更新时的完整旧内容；普通摘要只保留哈希/脱敏内容。prepare 后的 path、payload 和旧记录快照被隔离并递归冻结；执行器在 journal 和发送前再次验证 action/path/payload/vocabulary 完整合同，并按最终 method、path、payload 重算精确确认码。每个 create/update 都先按目标 `voc_id` 做一次只读 GET：create interpretation 只允许零条现有自建释义；update interpretation 要求整个列表恰好只有目标 ID 一条，且旧字段与 rollback snapshot 一致；create phrase 保存身份完整的筛选基线，并在存在完全相同内容时阻断重复创建；update phrase 必须唯一命中目标记录 ID、旧字段与 rollback snapshot 一致且记录状态为 `PUBLISHED`。只有 preflight 通过后才允许创建 journal 和尝试 POST。随后立即 GET 回读：释义必须仍然只有本轮唯一目标记录，并比较 `interpretation`、`tags`、`status`；例句比较 `phrase`、`interpretation`、`tags`、`origin`，另要求响应中的只读 `status` 严格为 `PUBLISHED`。phrase `status` 不进入 create/update 请求体，但进入安全结果、私有验证快照和 continuation state。三标签按无重复、无缺失、无额外的精确集合比较，顺序不作为合同；请求/查询字段 `voc_id` 不要求出现在返回记录中。create 响应有安全 ID 时，该 ID 必须不在写前基线并按 ID 唯一回读；响应无 ID 时，只允许通过写前/写后 ID 集合中唯一新增且内容吻合的记录恢复身份。写入超时、多条释义、记录 ID 不明确、例句未发布、回读失败或字段不一致时停止，不自动重试。
+
+真实 transport 固定生产 host `open.maimemo.com`，连接和读取均要求有限超时；GET 查询统一用 `urlencode` 构造，记录 ID 只接受安全单一路径段。它通过依赖注入与执行逻辑隔离，自动化测试只使用内存 fake transport，并由进程级 socket/URL 断网钩子兜底。本轮没有配置或读取 Token，也没有发送请求。
+
+例句回读把 payload 验证与 `highlight` 观察分开记录。对象范围数组和二维整数范围数组都会规范化，并保留原始形状说明；每个范围须满足 `0 <= start < end <= 英文例句长度`。缺失、空数组、不合法范围或未知结构分别记录为 negative、invalid 或 unknown，但只要例句正文、翻译、标签和来源回读正确，写入本身仍标记为 verified；这不等于自动高亮语义成功，exact、inflected、multiple 三步仍等待所有者在 App 中逐项对照。为保留人工判断证据，私有 journal 只额外保存经过字节数、递归深度、容器项目数、敏感键和当前凭证内容检查的 bounded raw `highlight` 字段；超限或敏感内容只记录结构、大小和 rejected 状态，不保存原值。普通摘要、日志、PR 和 ZIP 永不包含未知 `highlight` 的完整原值。
+
+所有 live write 都必须使用 Git 已忽略的 `artifacts/private/` journal，并在 POST 前先以严格本地权限保存 `prepared-not-sent`，随后只允许转为 `write-attempted-outcome-unknown`、`write-succeeded-readback-unverified` 或 `verified`。POST 非 2xx、GET 失败、记录歧义或字段不一致都会留下 unresolved 状态；同一步存在任何 journal 时默认禁止重放，仅提示人工检查，不提供自动恢复或重试。普通摘要、PR 和 ZIP 不含原始 ID 或私人正文；为支持人工恢复，私有 journal 保存最终 method、完整相对 path、实际待写 payload、完整 rollback snapshot、create 的筛选基线、凭证非敏感指纹、恢复提示，以及服务器唯一确定后的真实记录 ID 和筛选后的可写字段快照。例句 exact 创建后的真实 ID 只从该受保护状态传给 inflected，再传给 multiple；普通输出只显示 ID fingerprint。私有 journal 绝不保存 Token、Authorization、Cookie、账号标签、主账号信息或原始未筛选响应，目录/文件权限分别收紧到 `0700`/`0600`。自动化测试只写入明显虚假的临时私有状态并在测试后移除。
+
+进入真实阶段仍需所有者人工完成：准备专用副账号和合法、真实、愿意保留的单词内容；在 App 中确认当前登录的确为副账号；通过独立的本地私有凭证注入方式启动；逐步核对每次预览、输入精确确认，并在 App 内验证跨账号发现、英文高亮、中文位置和来源展示。主账号 Token 永远不是 Issue #2/#9 的输入。
 
 ## 3. 真实用户工作流
 
