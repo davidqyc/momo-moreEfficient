@@ -135,12 +135,12 @@ class Issue2SmokeTests(unittest.TestCase):
             operation["path"],
             "/open/api/v1/interpretations/INVALID_INTERPRETATION_ID",
         )
-        self.assertEqual(set(operation["payload"]), {"interpretation", "id"})
+        self.assertEqual(set(operation["payload"]), {"interpretation"})
         self.assertEqual(
             set(operation["payload"]["interpretation"]),
             {"interpretation", "tags", "status"},
         )
-        self.assertEqual(operation["payload"]["id"], "INVALID_INTERPRETATION_ID")
+        self.assertNotIn("id", operation["payload"])
 
     def test_fixture_rejects_real_looking_vocabulary_id(self) -> None:
         self.fixture["vocabulary"]["id"] = "5a7BFf4F63612e5AD9fdebB7a50D3881"

@@ -28,7 +28,7 @@
 
 2026-08-03 只读检查官方 `https://open.maimemo.com/api_bundle.yaml`：规范为 OpenAPI 3.1.0、版本 `v1`，文件 SHA-256 为 `7f1a3ebebe9537bed14015151bcebeda3591bcbcb8c4e0f7f1e62f93f52c5e70`。以下仅是公开 schema 事实，不代表服务端、App 展示或跨账号发现已经验证：
 
-- 释义 create/update 请求要求 `tags: string[]`；释义 create 还要求 `status`。公开 schema 没有标签枚举或数量限制。
+- 释义 create/update 请求要求 `tags: string[]`；释义 create 还要求 `status`。更新记录 ID 只放在 `POST /open/api/v1/interpretations/{id}` 路径中，请求体顶层只有 `interpretation`。公开 schema 没有标签枚举或数量限制。
 - 例句 create/update 请求要求 `phrase`、`interpretation`、`tags: string[]` 和 `origin: string`；create 另要求 `voc_id`。
 - `Phrase.highlight` 只出现在响应模型中，不是 create/update 的可写字段。规范将它建模为范围对象数组，同时描述“实际返回的数据是二维数组”，需要真实回读确认形状和语义。
 - 没有发现用于选择中文翻译精确字符位置的公开请求字段。
@@ -39,15 +39,17 @@
 
 ### 2.2 Issue #9 分阶段冒烟 harness（本轮仍未联网）
 
-再次逐项核对上述官方 schema 后，**没有找到**可靠的 `self`、`profile`、`account identity` 或等价接口，无法通过公开 API 把 Token 自动绑定到可核验的账号身份。不得猜测或调用未公开接口。后续如获准进入真实阶段，账号防串用必须 fail-closed：凭证只能由独立的副账号来源注入，操作者必须输入与该副账号标签完全匹配的确认短语；标签缺失、疑似主账号、来源不符或确认不精确时，在发出请求前停止。此人工门禁不能证明服务端身份，因此真实执行前仍需所有者在墨墨 App 中人工确认副账号。
+再次逐项核对上述官方 schema 后，**没有找到**可靠的 `self`、`profile`、`account identity` 或等价接口，无法通过公开 API 把 Token 自动绑定到可核验的账号身份。不得猜测或调用未公开接口。后续如获准进入真实阶段，账号防串用必须 fail-closed：凭证只能由独立的副账号来源注入，操作者必须输入同时包含副账号标签和当前凭证非敏感 SHA-256 短指纹的精确确认短语；标签缺失、疑似主账号、来源不符、指纹变化或确认不精确时，在发出请求前停止。Token 指纹只能防止确认后凭证被中途换错，**不能**证明该 Token 属于哪个墨墨账号，也不能代替官方账号身份接口；真实执行前仍需所有者在墨墨 App 中人工确认副账号。
 
 Issue #9 的最小 harness 将能力分为三层：
 
 1. `offline-plan` 是默认且当前唯一可从命令行完成的模式，只复用 Issue #2 的 fixture 校验和 payload 生成，不实例化 transport。
 2. `read-only` 只允许公开 schema 中已核对的 GET 路径，且必须先通过副账号人工门禁；当前命令行没有凭证入口，因此默认阻断。
-3. `live-step` 每个执行器最多尝试一个 POST。每步必须先展示 method、固定在 `/open/api/v1` 下的 path、脱敏 payload 和基于该请求生成的精确确认短语；确认后最多写一次，随后立即 GET 回读并比较预期字段。写入超时、记录 ID 不明确、回读失败或字段不一致时停止，不自动重试。
+3. `live-step` 每个执行器最多尝试一个 POST。交互预览在本地当次显示 method、固定在 `/open/api/v1` 下的 path、真实待写内容，以及更新时的完整旧内容；普通摘要只保留哈希/脱敏内容。精确确认后最多写一次，随后立即 GET 回读。释义只比较 `interpretation`、`tags`、`status`，例句只比较 `phrase`、`interpretation`、`tags`、`origin`；请求/查询字段 `voc_id` 不作为返回记录必需字段。例句还必须取得结构可识别的 `highlight` 整数范围并作为观察结果保存，但其语义正确性仍等待所有者与 App 对照。写入超时、记录 ID 不明确、highlight 缺失/结构不明、回读失败或字段不一致时停止，不自动重试。
 
-真实 transport 固定生产 host `open.maimemo.com`，连接和读取均要求有限超时；它通过依赖注入与执行逻辑隔离，自动化测试只使用内存 fake transport，并由进程级 socket/URL 断网钩子兜底。本轮没有配置或读取 Token，也没有发送请求。测试中的私有执行状态仅使用明显虚假的 fixture，保存到 Git 已忽略的 `artifacts/private/`，只含允许字段、哈希和长度，不含 Token、Authorization、原始响应或原始学习内容。
+真实 transport 固定生产 host `open.maimemo.com`，连接和读取均要求有限超时；GET 查询统一用 `urlencode` 构造，记录 ID 只接受安全单一路径段。它通过依赖注入与执行逻辑隔离，自动化测试只使用内存 fake transport，并由进程级 socket/URL 断网钩子兜底。本轮没有配置或读取 Token，也没有发送请求。
+
+所有 live write 都必须使用 Git 已忽略的 `artifacts/private/` journal，并在 POST 前先以严格本地权限保存 `prepared-not-sent`，随后只允许转为 `write-attempted-outcome-unknown`、`write-succeeded-readback-unverified` 或 `verified`。POST 非 2xx、GET 失败、记录歧义、字段不一致或 highlight 不可识别都会留下 unresolved 状态；同一步存在任何 journal 时默认禁止重放，仅提示人工检查，不提供自动恢复或重试。普通摘要、PR 和 ZIP 不含原始私人内容；为支持人工回滚，私有 journal 可以保存该条用户自建记录恢复所需的完整旧释义/例句字段，但绝不保存 Token、Authorization、Cookie、原始响应或主账号信息，目录/文件权限分别收紧到 `0700`/`0600`。自动化测试只写入明显虚假的临时私有状态并在测试后移除。
 
 进入真实阶段仍需所有者人工完成：准备专用副账号和合法、真实、愿意保留的单词内容；在 App 中确认当前登录的确为副账号；通过独立的本地私有凭证注入方式启动；逐步核对每次预览、输入精确确认，并在 App 内验证跨账号发现、英文高亮、中文位置和来源展示。主账号 Token 永远不是 Issue #2/#9 的输入。
 

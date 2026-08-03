@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 from typing import Any, NoReturn
 
 
@@ -135,8 +136,8 @@ def _phrase_fields(case: dict[str, Any], origin: str) -> dict[str, Any]:
 
 def _require_path_id(value: Any, path: str) -> str:
     identifier = _require_text(value, path)
-    if "/" in identifier or "?" in identifier or "#" in identifier:
-        _fail(f"{path} must be one path segment")
+    if re.fullmatch(r"[A-Za-z0-9_-]+", identifier) is None:
+        _fail(f"{path} must be one safe path segment")
     return identifier
 
 
@@ -174,7 +175,7 @@ def build_interpretation_operation(
         "action": "update_interpretation",
         "method": "POST",
         "path": f"{OPEN_API_PREFIX}/interpretations/{record_id}",
-        "payload": {"interpretation": fields, "id": record_id},
+        "payload": {"interpretation": fields},
         "future_live_guard": (
             "show existing and replacement, confirm, then read back by voc_id"
         ),
