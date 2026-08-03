@@ -1,0 +1,30 @@
+{
+  "fixture_only": true,
+  "vocabulary": {
+    "id": "INVALID_VOCABULARY_ID_ISSUE_2",
+    "spelling": "sampleword"
+  },
+  "interpretation": {
+    "text": "n. 明显虚假的离线示例释义"
+  },
+  "phrase": {
+    "origin": "OFFLINE_FIXTURE_ONLY",
+    "cases": [
+      {
+        "name": "exact",
+        "text": "The sampleword appears once in this fictional sentence.",
+        "translation": "这个虚构句子包含一次离线示例词。"
+      },
+      {
+        "name": "inflected",
+        "text": "Several samplewords appear in this fictional sentence.",
+        "translation": "这个虚构句子包含词形变化后的离线示例词。"
+      },
+      {
+        "name": "multiple",
+        "text": "One sampleword follows another sampleword in this fictional sentence.",
+        "translation": "这个虚构句子包含两次离线示例词。"
+      }
+    ]
+  }
+}
