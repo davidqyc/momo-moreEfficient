@@ -1953,5 +1953,690 @@ class Issue9SafetyTests(unittest.TestCase):
         self.assertEqual(list(collision_root.iterdir()), [])
 
 
+class Issue11ReadOnlyProbeTests(unittest.TestCase):
+    WORD = "sampleword"
+    RETURNED_WORD = "SampleWord"
+    VOCABULARY_ID = "INVALID_ISSUE11_VOCABULARY_ID"
+    PRIVATE_INTERPRETATION = "PRIVATE OFFLINE INTERPRETATION BODY"
+    PRIVATE_PHRASE = "PRIVATE OFFLINE PHRASE BODY"
+
+    def responses(
+        self,
+        *,
+        vocabulary: dict[str, object] | None = None,
+        interpretations: object | None = None,
+        phrases: object | None = None,
+    ) -> list[harness.HttpResponse]:
+        voc = vocabulary or {
+            "id": self.VOCABULARY_ID,
+            "spelling": self.RETURNED_WORD,
+            "private_unknown_field": "PRIVATE VOCABULARY BODY",
+        }
+        interpretation_records = (
+            interpretations
+            if interpretations is not None
+            else [
+                {
+                    "id": "INVALID_ISSUE11_INTERPRETATION_ID",
+                    "status": "PUBLISHED",
+                    "interpretation": self.PRIVATE_INTERPRETATION,
+                }
+            ]
+        )
+        phrase_records = (
+            phrases
+            if phrases is not None
+            else [
+                {
+                    "id": "INVALID_ISSUE11_PHRASE_ID",
+                    "status": "PUBLISHED",
+                    "phrase": self.PRIVATE_PHRASE,
+                    "interpretation": "PRIVATE OFFLINE TRANSLATION BODY",
+                    "highlight": [[0, 10]],
+                }
+            ]
+        )
+        return [
+            harness.HttpResponse(200, {"voc": voc}),
+            harness.HttpResponse(200, {"interpretations": interpretation_records}),
+            harness.HttpResponse(200, {"phrases": phrase_records}),
+        ]
+
+    def probe_credential(self) -> harness.TestAccountCredential:
+        return harness.TestAccountCredential(FAKE_TOKEN, ACCOUNT_LABEL)
+
+    def probe_gate(
+        self,
+        test_credential: harness.TestAccountCredential,
+        *,
+        word: str | None = None,
+        confirmation: str | None = None,
+    ) -> harness.ReadOnlyProbeGate:
+        requested_word = word or self.WORD
+        expected = harness._read_only_confirmation_for(
+            ACCOUNT_LABEL,
+            test_credential.fingerprint,
+            requested_word,
+        )
+        return harness.ReadOnlyProbeGate(
+            account_label=ACCOUNT_LABEL,
+            credential_fingerprint=test_credential.fingerprint,
+            requested_word=requested_word,
+            confirmation=confirmation or expected,
+        )
+
+    def cli_args(self) -> list[str]:
+        return [
+            "read-only-probe",
+            "--word",
+            self.WORD,
+            "--account-label",
+            ACCOUNT_LABEL,
+            "--allow-network",
+        ]
+
+    def test_offline_modes_never_call_getpass_or_transport(self) -> None:
+        def forbidden_prompt(_message: str) -> str:
+            raise AssertionError("offline mode called a hidden prompt")
+
+        def forbidden_transport() -> FakeTransport:
+            raise AssertionError("offline mode created a transport")
+
+        for argv in ([], ["--mode", "offline-plan"]):
+            with self.subTest(argv=argv), mock.patch("sys.stdout", io.StringIO()):
+                self.assertEqual(
+                    harness.main(
+                        argv,
+                        token_prompt=forbidden_prompt,
+                        confirmation_prompt=forbidden_prompt,
+                        transport_factory=forbidden_transport,
+                        stdin_isatty=lambda: False,
+                    ),
+                    0,
+                )
+
+    def test_cli_rejects_token_argv_config_and_piped_stdin_before_prompt(self) -> None:
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):
+            harness.parse_args([*self.cli_args(), "--token", FAKE_TOKEN])
+
+        prompt_calls: list[str] = []
+        factory_calls: list[str] = []
+
+        def prompt(_message: str) -> str:
+            prompt_calls.append("called")
+            return FAKE_TOKEN
+
+        def factory() -> FakeTransport:
+            factory_calls.append("called")
+            return FakeTransport(self.responses())
+
+        piped_stdin = io.StringIO(FAKE_TOKEN)
+        with mock.patch("sys.stdin", piped_stdin), mock.patch(
+            "sys.stdout", io.StringIO()
+        ):
+            result = harness.main(
+                self.cli_args(),
+                token_prompt=prompt,
+                confirmation_prompt=prompt,
+                transport_factory=factory,
+                stdin_isatty=lambda: False,
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(prompt_calls, [])
+        self.assertEqual(factory_calls, [])
+        self.assertEqual(piped_stdin.tell(), 0)
+
+        with mock.patch.object(
+            Path,
+            "open",
+            side_effect=AssertionError("read-only mode opened a config file"),
+        ), mock.patch("sys.stdout", io.StringIO()):
+            result = harness.main(
+                [
+                    "--input",
+                    "/private/tmp/forbidden-token.env",
+                    *self.cli_args(),
+                ],
+                token_prompt=prompt,
+                confirmation_prompt=prompt,
+                transport_factory=factory,
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(prompt_calls, [])
+        self.assertEqual(factory_calls, [])
+
+    def test_environment_token_is_ignored_and_hidden_prompt_is_injectable(self) -> None:
+        environment_token = "ENVIRONMENT_TOKEN_MUST_NOT_BE_USED"
+        captured_tokens: list[str] = []
+        delegate = FakeTransport(self.responses())
+
+        class CapturingTransport:
+            def send(
+                inner_self,
+                request: harness.HttpRequest,
+                test_credential: harness.TestAccountCredential,
+            ) -> harness.HttpResponse:
+                captured_tokens.append(test_credential.token)
+                return delegate.send(request, test_credential)
+
+        expected_confirmation = harness._read_only_confirmation_for(
+            ACCOUNT_LABEL,
+            self.probe_credential().fingerprint,
+            self.WORD,
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MAIMEMO_TOKEN": environment_token,
+                "MOMO_TOKEN": environment_token,
+            },
+        ), mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            result = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: expected_confirmation,
+                transport_factory=CapturingTransport,
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(captured_tokens, [FAKE_TOKEN] * 3)
+        rendered = stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn(FAKE_TOKEN, rendered)
+        self.assertNotIn(environment_token, rendered)
+
+    def test_exact_confirmation_is_required_before_transport_creation(self) -> None:
+        factory_calls: list[str] = []
+
+        def factory() -> FakeTransport:
+            factory_calls.append("called")
+            return FakeTransport(self.responses())
+
+        with mock.patch("sys.stdout", io.StringIO()):
+            result = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: "WRONG CONFIRMATION",
+                transport_factory=factory,
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(factory_calls, [])
+
+        args_without_network = [item for item in self.cli_args() if item != "--allow-network"]
+        token_calls: list[str] = []
+        with mock.patch("sys.stdout", io.StringIO()):
+            result = harness.main(
+                args_without_network,
+                token_prompt=lambda _message: token_calls.append("called") or FAKE_TOKEN,
+                confirmation_prompt=lambda _message: "unused",
+                transport_factory=factory,
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(token_calls, [])
+        self.assertEqual(factory_calls, [])
+
+    def test_confirmation_binds_label_fingerprint_word_host_endpoints_and_terms(self) -> None:
+        test_credential = self.probe_credential()
+        baseline = harness._read_only_confirmation_for(
+            ACCOUNT_LABEL, test_credential.fingerprint, self.WORD
+        )
+        variants = [
+            harness._read_only_confirmation_for(
+                "different-secondary-test", test_credential.fingerprint, self.WORD
+            ),
+            harness._read_only_confirmation_for(
+                ACCOUNT_LABEL, "0" * 16, self.WORD
+            ),
+            harness._read_only_confirmation_for(
+                ACCOUNT_LABEL, test_credential.fingerprint, "differentword"
+            ),
+        ]
+        with mock.patch.object(
+            harness,
+            "PRODUCTION_BASE_URL",
+            "https://invalid.example",
+        ), self.assertRaises(harness.SafetyError):
+            harness._read_only_confirmation_for(
+                ACCOUNT_LABEL, test_credential.fingerprint, self.WORD
+            )
+        with mock.patch.object(
+            harness,
+            "READ_ONLY_ENDPOINT_TEMPLATES",
+            ("GET /invalid",),
+        ), self.assertRaises(harness.SafetyError):
+            harness._read_only_confirmation_for(
+                ACCOUNT_LABEL, test_credential.fingerprint, self.WORD
+            )
+        self.assertTrue(all(item != baseline for item in variants))
+        self.assertIn(harness.READ_ONLY_PRICING_TERMS_CLAUSE, baseline)
+        safe = self.probe_gate(test_credential).safe_summary()
+        self.assertIn("pricing/terms", safe["manual_gate"])
+        self.assertNotIn(ACCOUNT_LABEL, json.dumps(safe, ensure_ascii=False))
+        self.assertNotIn(self.WORD, json.dumps(safe, ensure_ascii=False))
+
+    def test_token_shape_and_accidental_argv_collision_fail_without_leak(self) -> None:
+        for malformed in (
+            " leading-token",
+            "trailing-token ",
+            "line\nbreak",
+            "X" * (harness.MAX_TOKEN_CHARS + 1),
+        ):
+            with self.subTest(token_length=len(malformed)), self.assertRaises(
+                harness.SafetyError
+            ) as context:
+                harness.TestAccountCredential(malformed, ACCOUNT_LABEL)
+            self.assertNotIn(malformed, str(context.exception))
+
+        stdout = io.StringIO()
+        factory_calls: list[str] = []
+        with mock.patch("sys.stdout", stdout):
+            result = harness.main(
+                [
+                    "read-only-probe",
+                    "--word",
+                    FAKE_TOKEN,
+                    "--account-label",
+                    ACCOUNT_LABEL,
+                    "--allow-network",
+                ],
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: "unused",
+                transport_factory=lambda: factory_calls.append("called")
+                or FakeTransport(),
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(factory_calls, [])
+        self.assertNotIn(FAKE_TOKEN, stdout.getvalue())
+
+        test_credential = self.probe_credential()
+        leaking_gate = harness.ReadOnlyProbeGate(
+            account_label=ACCOUNT_LABEL,
+            credential_fingerprint=test_credential.fingerprint,
+            requested_word=FAKE_TOKEN,
+            confirmation=harness._read_only_confirmation_for(
+                ACCOUNT_LABEL,
+                test_credential.fingerprint,
+                FAKE_TOKEN,
+            ),
+        )
+        self.assertNotIn(FAKE_TOKEN, repr(leaking_gate))
+        self.assertNotIn(FAKE_TOKEN, str(leaking_gate))
+        self.assertNotIn(
+            FAKE_TOKEN,
+            json.dumps(leaking_gate.safe_summary(), ensure_ascii=False),
+        )
+
+        spelling_token_credential = harness.TestAccountCredential(
+            self.RETURNED_WORD,
+            ACCOUNT_LABEL,
+        )
+        spelling_token_gate = self.probe_gate(spelling_token_credential)
+        with self.assertRaises(harness.SafetyError) as result_context:
+            harness.ReadOnlyProbeExecutor(
+                FakeTransport(self.responses())
+            ).execute(spelling_token_credential, spelling_token_gate)
+        self.assertNotIn(self.RETURNED_WORD, str(result_context.exception))
+
+    def test_fake_cli_flow_sends_only_three_gets_and_sanitizes_output(self) -> None:
+        transport = FakeTransport(self.responses())
+        test_credential = self.probe_credential()
+        gate = self.probe_gate(test_credential)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch(
+            "sys.stderr", stderr
+        ), mock.patch.object(
+            Path,
+            "open",
+            side_effect=AssertionError("read-only probe persisted a file"),
+        ), mock.patch(
+            "builtins.open",
+            side_effect=AssertionError("read-only probe persisted a file"),
+        ):
+            result = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: gate.expected_confirmation,
+                transport_factory=lambda: transport,
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [(request.method, request.path) for request in transport.requests],
+            [
+                (
+                    "GET",
+                    "/open/api/v1/vocabulary?spelling=sampleword",
+                ),
+                (
+                    "GET",
+                    "/open/api/v1/interpretations?voc_id=INVALID_ISSUE11_VOCABULARY_ID",
+                ),
+                (
+                    "GET",
+                    "/open/api/v1/phrases?voc_id=INVALID_ISSUE11_VOCABULARY_ID",
+                ),
+            ],
+        )
+        rendered = stdout.getvalue() + stderr.getvalue()
+        for forbidden in (
+            FAKE_TOKEN,
+            ACCOUNT_LABEL,
+            self.VOCABULARY_ID,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+            "PRIVATE OFFLINE TRANSLATION BODY",
+        ):
+            self.assertNotIn(forbidden, rendered)
+        self.assertIn(self.WORD, rendered)
+        self.assertIn(self.RETURNED_WORD, rendered)
+        self.assertIn(test_credential.fingerprint, rendered)
+        self.assertIn('"interpretation_count": 1', rendered)
+        self.assertIn('"phrase_count": 1', rendered)
+
+    def test_read_only_guard_rejects_every_write_method(self) -> None:
+        delegate = FakeTransport()
+        guard = harness.ReadOnlyTransportGuard(delegate)
+        test_credential = self.probe_credential()
+        post = harness.HttpRequest(
+            "POST",
+            "/open/api/v1/interpretations",
+            {"interpretation": {}},
+        )
+        with self.assertRaisesRegex(harness.SafetyError, "GET requests only"):
+            guard.send(post, test_credential)
+        self.assertEqual(delegate.requests, [])
+        for method in ("PUT", "PATCH", "DELETE"):
+            with self.subTest(method=method), self.assertRaises(harness.SafetyError):
+                harness.HttpRequest(
+                    method,
+                    "/open/api/v1/vocabulary?spelling=sampleword",
+                )
+
+    def test_redirect_is_rejected_without_following_or_reading_body(self) -> None:
+        test_credential = self.probe_credential()
+        transport = FakeTransport(
+            [harness.HttpResponse(302, {"location": "https://invalid.example"})]
+        )
+        with self.assertRaises(harness.SafetyError) as context:
+            harness.ReadOnlyProbeExecutor(transport).execute(
+                test_credential,
+                self.probe_gate(test_credential),
+            )
+        self.assertEqual(len(transport.requests), 1)
+        self.assertNotIn(FAKE_TOKEN, str(context.exception))
+
+        class FakeSocket:
+            def settimeout(self, _timeout: float) -> None:
+                return None
+
+        class RedirectResponse:
+            status = 302
+
+            def read(self, _limit: int) -> bytes:
+                raise AssertionError("redirect body must not be read")
+
+        class FakeConnection:
+            instances: list["FakeConnection"] = []
+
+            def __init__(self, host: str, *, timeout: float) -> None:
+                self.host = host
+                self.timeout = timeout
+                self.sock: FakeSocket | None = None
+                self.requests: list[tuple[object, ...]] = []
+                self.closed = False
+                self.__class__.instances.append(self)
+
+            def connect(self) -> None:
+                self.sock = FakeSocket()
+
+            def request(self, *args: object, **kwargs: object) -> None:
+                self.requests.append((*args, kwargs))
+
+            def getresponse(self) -> RedirectResponse:
+                return RedirectResponse()
+
+            def close(self) -> None:
+                self.closed = True
+
+        request = harness.HttpRequest(
+            "GET",
+            "/open/api/v1/vocabulary?spelling=sampleword",
+        )
+        with mock.patch.object(
+            harness.http.client,
+            "HTTPSConnection",
+            FakeConnection,
+        ), self.assertRaises(harness.TransportError) as transport_context:
+            harness.ProductionHttpTransport().send(request, test_credential)
+        connection = FakeConnection.instances[-1]
+        self.assertEqual(connection.host, "open.maimemo.com")
+        self.assertEqual(len(connection.requests), 1)
+        self.assertTrue(connection.closed)
+        self.assertNotIn(FAKE_TOKEN, str(transport_context.exception))
+
+    def test_http_and_transport_failures_do_not_leak_or_retry(self) -> None:
+        test_credential = self.probe_credential()
+        cases: list[harness.HttpResponse | Exception] = [
+            harness.HttpResponse(
+                401,
+                {
+                    "error": FAKE_TOKEN,
+                    "private": self.PRIVATE_INTERPRETATION,
+                },
+            ),
+            harness.HttpResponse(
+                500,
+                {"private": self.PRIVATE_PHRASE},
+            ),
+            harness.TransportError(FAKE_TOKEN),
+        ]
+        for response in cases:
+            with self.subTest(response_type=type(response).__name__):
+                transport = FakeTransport([response])
+                with self.assertRaises(harness.SafetyError) as context:
+                    harness.ReadOnlyProbeExecutor(transport).execute(
+                        test_credential,
+                        self.probe_gate(test_credential),
+                    )
+                self.assertEqual(len(transport.requests), 1)
+                rendered = str(context.exception)
+                self.assertNotIn(FAKE_TOKEN, rendered)
+                self.assertNotIn(self.PRIVATE_INTERPRETATION, rendered)
+                self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+
+        failing_transport = FakeTransport(
+            [
+                harness.HttpResponse(
+                    401,
+                    {"error": FAKE_TOKEN, "private": self.PRIVATE_PHRASE},
+                )
+            ]
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            result = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: self.probe_gate(
+                    test_credential
+                ).expected_confirmation,
+                transport_factory=lambda: failing_transport,
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(result, 4)
+        self.assertEqual(len(failing_transport.requests), 1)
+        rendered = stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn(FAKE_TOKEN, rendered)
+        self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+
+    def test_schema_ambiguity_unsafe_ids_and_spelling_mismatch_stop_immediately(self) -> None:
+        test_credential = self.probe_credential()
+        cases = [
+            ("missing-voc", [harness.HttpResponse(200, {})], 1),
+            (
+                "sensitive-top-level-key",
+                [harness.HttpResponse(200, {"token": FAKE_TOKEN})],
+                1,
+            ),
+            (
+                "unsafe-voc-id",
+                self.responses(
+                    vocabulary={"id": "../unsafe", "spelling": self.WORD}
+                ),
+                1,
+            ),
+            (
+                "spelling-mismatch",
+                self.responses(
+                    vocabulary={"id": self.VOCABULARY_ID, "spelling": "otherword"}
+                ),
+                1,
+            ),
+            (
+                "interpretations-not-array",
+                self.responses(interpretations={"not": "an array"}),
+                2,
+            ),
+            (
+                "duplicate-interpretation-id",
+                self.responses(
+                    interpretations=[
+                        {"id": "INVALID_DUPLICATE", "status": "PUBLISHED"},
+                        {"id": "INVALID_DUPLICATE", "status": "PUBLISHED"},
+                    ]
+                ),
+                2,
+            ),
+            (
+                "missing-interpretation-status",
+                self.responses(
+                    interpretations=[{"id": "INVALID_INTERPRETATION_ID"}]
+                ),
+                2,
+            ),
+            (
+                "unsafe-phrase-id",
+                self.responses(
+                    phrases=[
+                        {
+                            "id": "unsafe/id",
+                            "status": "PUBLISHED",
+                            "highlight": [],
+                        }
+                    ]
+                ),
+                3,
+            ),
+            (
+                "missing-highlight",
+                self.responses(
+                    phrases=[
+                        {
+                            "id": "INVALID_PHRASE_ID",
+                            "status": "PUBLISHED",
+                        }
+                    ]
+                ),
+                3,
+            ),
+            (
+                "duplicate-phrase-id",
+                self.responses(
+                    phrases=[
+                        {
+                            "id": "INVALID_DUPLICATE_PHRASE",
+                            "status": "PUBLISHED",
+                            "highlight": [],
+                        },
+                        {
+                            "id": "INVALID_DUPLICATE_PHRASE",
+                            "status": "PUBLISHED",
+                            "highlight": [],
+                        },
+                    ]
+                ),
+                3,
+            ),
+        ]
+        for name, responses, expected_requests in cases:
+            with self.subTest(name=name):
+                transport = FakeTransport(responses)
+                with self.assertRaises(harness.SafetyError) as context:
+                    harness.ReadOnlyProbeExecutor(transport).execute(
+                        test_credential,
+                        self.probe_gate(test_credential),
+                    )
+                self.assertEqual(len(transport.requests), expected_requests)
+                self.assertNotIn(FAKE_TOKEN, str(context.exception))
+
+    def test_safe_result_contains_counts_statuses_shapes_and_fingerprint_only(self) -> None:
+        test_credential = self.probe_credential()
+        result = harness.ReadOnlyProbeExecutor(
+            FakeTransport(self.responses())
+        ).execute(test_credential, self.probe_gate(test_credential))
+        safe = result.safe_summary()
+        self.assertEqual(
+            set(safe),
+            {
+                "mode",
+                "requested_spelling",
+                "returned_spelling",
+                "voc_id_fingerprint",
+                "interpretation_count",
+                "phrase_count",
+                "interpretation_statuses",
+                "phrase_statuses",
+                "phrase_highlight_shapes",
+                "response_statuses",
+                "response_keys",
+            },
+        )
+        self.assertEqual(safe["interpretation_statuses"], {"PUBLISHED": 1})
+        self.assertEqual(safe["phrase_statuses"], {"PUBLISHED": 1})
+        self.assertEqual(
+            safe["phrase_highlight_shapes"], {"integer-pair-array": 1}
+        )
+        rendered = json.dumps(safe, ensure_ascii=False) + repr(result) + str(result)
+        for forbidden in (
+            FAKE_TOKEN,
+            ACCOUNT_LABEL,
+            self.VOCABULARY_ID,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+        ):
+            self.assertNotIn(forbidden, rendered)
+        self.assertEqual(len(safe["voc_id_fingerprint"]), 16)
+
+        object_shape_result = harness.ReadOnlyProbeExecutor(
+            FakeTransport(
+                self.responses(
+                    phrases=[
+                        {
+                            "id": "INVALID_OBJECT_RANGE_PHRASE",
+                            "status": "PUBLISHED",
+                            "highlight": [{"start": 0, "end": 10}],
+                        },
+                        {
+                            "id": "INVALID_EMPTY_RANGE_PHRASE",
+                            "status": "DRAFT",
+                            "highlight": [],
+                        },
+                    ]
+                )
+            )
+        ).execute(test_credential, self.probe_gate(test_credential))
+        self.assertEqual(
+            object_shape_result.safe_summary()["phrase_highlight_shapes"],
+            {"object-range-array": 1, "empty-array": 1},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

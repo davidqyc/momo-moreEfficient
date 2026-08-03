@@ -55,6 +55,22 @@ Issue #9 的最小 harness 将能力分为三层：
 
 进入真实阶段仍需所有者人工完成：准备专用副账号和合法、真实、愿意保留的单词内容；在 App 中确认当前登录的确为副账号；通过独立的本地私有凭证注入方式启动；逐步核对每次预览、输入精确确认，并在 App 内验证跨账号发现、英文高亮、中文位置和来源展示。主账号 Token 永远不是 Issue #2/#9 的输入。
 
+### 2.3 Issue #11 副账号只读探针（实现与测试仍为零真实请求）
+
+Issue #11 在保留 `offline-plan` 默认行为的同时增加显式 `read-only-probe` 子命令。Token 只允许在交互式终端通过 Python 标准库 `getpass` 隐藏输入；不接受 argv、环境变量、stdin 管道、配置文件或 `.env`，不写入钥匙串、journal、日志或磁盘，只在当前进程内存中短暂存在。普通离线命令不会调用 `getpass`。主账号 Token 继续完全不受支持。
+
+探针把副账号标签、Token 的 16 位 SHA-256 非敏感指纹、查询单词、固定 origin `https://open.maimemo.com`、三条允许的 GET 模板及“已人工复核当前费用与条款”声明绑定为一个精确确认摘要。确认完成前不创建 transport；生产 origin 和端点集合发生任何变化都会 fail closed。确认后只按顺序、无并发、无重试地执行：
+
+1. `GET /open/api/v1/vocabulary?spelling=<word>`
+2. `GET /open/api/v1/interpretations?voc_id=<resolved-id>`
+3. `GET /open/api/v1/phrases?voc_id=<resolved-id>`
+
+read-only transport 门禁拒绝 POST、PUT、PATCH 和 DELETE；标准库 HTTPS transport 保留证书校验和有限连接/读取超时，遇到 3xx 在读取响应正文或尝试其他地址前停止，因此不会向跳转地址转发 Authorization。401/其他非 2xx、超时、非对象响应、错误数组、重复或不安全 ID、按 NFKC+casefold 规则不匹配的拼写，以及无法识别的 status/highlight 结构都会立即停止当前序列。
+
+普通输出只包含请求/返回拼写、`voc_id` 指纹、自建释义/例句数量、状态计数、highlight 形状计数、HTTP 状态与顶层响应键；不输出原始 ID、释义、例句、翻译或未知字段内容，也不默认保存响应。本 Issue 的实现、测试和审阅使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求**。
+
+未来第一次实际只读运行仍需单独获得所有者明确授权。届时操作者应先在墨墨 App 人工确认登录的是专用副账号，再重新检查官方平台是否仍无强制按量 API 费用、当前条款是否允许个人测试账号用途；任一项不明确或出现强制收费即停止。随后在本地交互式终端运行显式子命令、隐藏输入副账号 Token、核对脱敏确认绑定并逐字确认。该指纹门禁只能防止过程中换错凭证，不能代替仍然**没有找到**的官方账号身份接口。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
