@@ -34,6 +34,11 @@ IDENTITY_ENDPOINT_FINDING = "没有找到"
 TEST_ACCOUNT_CREDENTIAL_SOURCE = "secondary-test-account"
 CONFIRMATION_PREFIX = "CONFIRM WRITE STEP"
 REQUIRED_TAGS = tuple(issue2_smoke.REQUIRED_TAGS)
+MAX_ACCOUNT_LABEL_CHARS = 96
+MAX_GATE_CONFIRMATION_CHARS = 256
+PRIVATE_HIGHLIGHT_MAX_BYTES = 4_096
+PRIVATE_HIGHLIGHT_MAX_DEPTH = 8
+PRIVATE_HIGHLIGHT_MAX_ITEMS = 128
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "issue2-smoke-input.example.json"
 PRIVATE_STATE_ROOT = ROOT / "artifacts" / "private"
@@ -221,6 +226,22 @@ def _contains_credential_material(value: Any, credential_value: str) -> bool:
     return isinstance(value, str) and credential_value in value
 
 
+def _has_control_characters(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _validate_account_label_shape(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_ACCOUNT_LABEL_CHARS
+        or _has_control_characters(value)
+    ):
+        raise SafetyError("account label does not meet the fixed safety policy")
+    return value
+
+
 @dataclass(frozen=True)
 class HttpRequest:
     method: str
@@ -252,8 +273,11 @@ class TestAccountCredential:
     source_name: str = TEST_ACCOUNT_CREDENTIAL_SOURCE
 
     def __post_init__(self) -> None:
-        if not self.token:
+        if not isinstance(self.token, str) or not self.token:
             raise SafetyError("an injected test-account credential is required")
+        label = _validate_account_label_shape(self.account_label)
+        if self.token in label:
+            raise SafetyError("account label contains forbidden credential material")
         if self.source_name != TEST_ACCOUNT_CREDENTIAL_SOURCE:
             raise SafetyError("credential source is not the secondary test-account source")
 
@@ -268,12 +292,42 @@ class TestAccountCredential:
         return hashlib.sha256(self.token.encode("utf-8")).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class ManualAccountGate:
     allow_network: bool
     account_label: str
     credential_fingerprint: str
     confirmation: str
+
+    def __post_init__(self) -> None:
+        _validate_account_label_shape(self.account_label)
+        if (
+            not isinstance(self.credential_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{16}", self.credential_fingerprint) is None
+        ):
+            raise SafetyError("credential fingerprint does not meet the fixed policy")
+        if (
+            not isinstance(self.confirmation, str)
+            or not self.confirmation
+            or self.confirmation != self.confirmation.strip()
+            or len(self.confirmation) > MAX_GATE_CONFIRMATION_CHARS
+            or _has_control_characters(self.confirmation)
+        ):
+            raise SafetyError("account confirmation does not meet the fixed policy")
+
+    def __repr__(self) -> str:
+        return (
+            "ManualAccountGate(allow_network="
+            f"{self.allow_network!r}, account_label=<redacted>, "
+            f"credential_fingerprint={self.credential_fingerprint!r}, "
+            "confirmation=<redacted>)"
+        )
+
+    def __str__(self) -> str:
+        return (
+            "<manual account gate; label/confirmation redacted; "
+            f"fingerprint={self.credential_fingerprint}>"
+        )
 
     @property
     def expected_confirmation(self) -> str:
@@ -285,11 +339,13 @@ class ManualAccountGate:
     def validate(self, credential: TestAccountCredential) -> None:
         if not self.allow_network:
             raise SafetyError("network mode was not explicitly enabled")
-        label = self.account_label.strip()
-        if not label or credential.account_label != label:
+        label = _validate_account_label_shape(self.account_label)
+        if credential.account_label != label:
             raise SafetyError("credential label does not match the confirmed account")
         if any(term in label.casefold() for term in ("main", "primary", "owner", "prod")):
             raise SafetyError("main or production account labels are forbidden")
+        if credential.token in label or credential.token in self.confirmation:
+            raise SafetyError("account gate contains forbidden credential material")
         if self.credential_fingerprint != credential.fingerprint:
             raise SafetyError("credential fingerprint does not match the confirmed token")
         if self.confirmation != self.expected_confirmation:
@@ -915,6 +971,132 @@ def _record_snapshot(step: PreparedStep, record: Mapping[str, Any]) -> dict[str,
     return snapshot
 
 
+@dataclass(frozen=True, repr=False)
+class CreateBaseline:
+    response_key: str
+    record_ids: tuple[str, ...]
+    records: tuple[Mapping[str, Any], ...] = field(repr=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"CreateBaseline(response_key={self.response_key!r}, "
+            f"record_count={len(self.record_ids)})"
+        )
+
+    def private_state(self) -> dict[str, Any]:
+        document = {
+            "response_key": self.response_key,
+            "record_ids": list(self.record_ids),
+            "records": [_thaw_json(record) for record in self.records],
+        }
+        _assert_no_sensitive_keys(document, "create baseline")
+        return document
+
+
+def _identity_complete_records(
+    step: PreparedStep,
+    response: HttpResponse,
+    *,
+    phase: str,
+) -> list[Mapping[str, Any]]:
+    raw_records = response.body.get(step.response_key)
+    if not isinstance(raw_records, list) or not all(
+        isinstance(record, Mapping) for record in raw_records
+    ):
+        raise VerificationError(f"{phase} response has an invalid record list")
+    records = list(raw_records)
+    record_ids = [_record_id(record) for record in records]
+    if len(record_ids) != len(set(record_ids)):
+        raise VerificationError(f"{phase} response contains duplicate record ids")
+    return records
+
+
+def _baseline_record_snapshot(
+    step: PreparedStep,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    snapshot = _record_snapshot(step, record)
+    for key, value in snapshot.items():
+        if key == "id":
+            continue
+        if key == "tags":
+            if not isinstance(value, (list, tuple)) or not all(
+                isinstance(tag, str) for tag in value
+            ):
+                raise VerificationError("create baseline tags are structurally invalid")
+            snapshot[key] = list(value)
+        elif not isinstance(value, str):
+            raise VerificationError("create baseline writable field is structurally invalid")
+    return snapshot
+
+
+def _fields_match(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> bool:
+    try:
+        _verify_fields(expected, actual)
+    except VerificationError:
+        return False
+    return True
+
+
+def _verify_create_preflight(
+    step: PreparedStep,
+    response: HttpResponse,
+) -> CreateBaseline:
+    if not 200 <= response.status < 300:
+        raise VerificationError("create preflight returned a non-success status")
+    records = _identity_complete_records(step, response, phase="create preflight")
+    if step.action == "create_interpretation":
+        if records:
+            raise VerificationError(
+                "create interpretation preflight found an existing record; "
+                "prepare the update flow instead"
+            )
+        return CreateBaseline(step.response_key, (), ())
+    if step.action != "create_phrase_exact_case":
+        raise VerificationError("create preflight action is outside the reviewed contract")
+
+    snapshots = [_baseline_record_snapshot(step, record) for record in records]
+    expected = _expected_fields(step)
+    if any(_fields_match(expected, snapshot) for snapshot in snapshots):
+        raise VerificationError(
+            "create phrase preflight found an exact duplicate; no write was sent"
+        )
+    snapshots.sort(key=lambda snapshot: str(snapshot["id"]))
+    record_ids = tuple(str(snapshot["id"]) for snapshot in snapshots)
+    return CreateBaseline(
+        step.response_key,
+        record_ids,
+        tuple(_freeze_json(snapshot) for snapshot in snapshots),
+    )
+
+
+def _select_create_readback_record(
+    step: PreparedStep,
+    response: HttpResponse,
+    written_id: str | None,
+    baseline: CreateBaseline,
+) -> Mapping[str, Any]:
+    records = _identity_complete_records(step, response, phase="create readback")
+    post_by_id = {_record_id(record): record for record in records}
+    baseline_ids = set(baseline.record_ids)
+    post_ids = set(post_by_id)
+    if not baseline_ids.issubset(post_ids):
+        raise VerificationError("create readback lost baseline record identity")
+
+    if written_id is not None:
+        if written_id in baseline_ids:
+            raise VerificationError("create response id already existed in the baseline")
+        record = post_by_id.get(written_id)
+        if record is None:
+            raise VerificationError("create response id is absent from readback")
+        return record
+
+    new_ids = post_ids - baseline_ids
+    if len(new_ids) != 1:
+        raise VerificationError("create readback did not identify exactly one new record")
+    return post_by_id[next(iter(new_ids))]
+
+
 def _verify_update_preflight(
     step: PreparedStep,
     response: HttpResponse,
@@ -1020,6 +1202,130 @@ def _observe_highlight(
     )
 
 
+def _json_utf8_size(value: Any) -> int | None:
+    try:
+        serialized = json.dumps(
+            _thaw_json(value),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return len(serialized.encode("utf-8"))
+
+
+def _bounded_private_highlight(
+    value: Any,
+    *,
+    raw_shape: str,
+    credential_value: str,
+) -> dict[str, Any]:
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    maximum_depth = 0
+    container_items = 0
+    rejection_reason: str | None = None
+    while stack:
+        item, depth = stack.pop()
+        maximum_depth = max(maximum_depth, depth)
+        if depth > PRIVATE_HIGHLIGHT_MAX_DEPTH:
+            rejection_reason = "depth-limit-exceeded"
+            break
+        if isinstance(item, Mapping):
+            container_items += len(item)
+            if container_items > PRIVATE_HIGHLIGHT_MAX_ITEMS:
+                rejection_reason = "item-limit-exceeded"
+                break
+            for raw_key, nested in item.items():
+                if not isinstance(raw_key, str):
+                    rejection_reason = "non-json-key-rejected"
+                    break
+                normalized = raw_key.casefold()
+                if any(
+                    term in normalized
+                    for term in ("authorization", "cookie", "token")
+                ):
+                    rejection_reason = "sensitive-key-rejected"
+                    break
+                stack.append((nested, depth + 1))
+            if rejection_reason is not None:
+                break
+        elif isinstance(item, (list, tuple)):
+            container_items += len(item)
+            if container_items > PRIVATE_HIGHLIGHT_MAX_ITEMS:
+                rejection_reason = "item-limit-exceeded"
+                break
+            stack.extend((nested, depth + 1) for nested in item)
+        elif isinstance(item, str):
+            if credential_value in item:
+                rejection_reason = "credential-material-rejected"
+                break
+        elif item is None or isinstance(item, (bool, int)):
+            continue
+        elif isinstance(item, float):
+            if not math.isfinite(item):
+                rejection_reason = "non-json-number-rejected"
+                break
+        else:
+            rejection_reason = "non-json-value-rejected"
+            break
+
+    utf8_bytes = _json_utf8_size(value)
+    if rejection_reason is None and (
+        utf8_bytes is None or utf8_bytes > PRIVATE_HIGHLIGHT_MAX_BYTES
+    ):
+        rejection_reason = (
+            "serialization-rejected"
+            if utf8_bytes is None
+            else "byte-limit-exceeded"
+        )
+    if rejection_reason is not None:
+        return {
+            "status": "evidence-truncated/rejected",
+            "raw_shape": raw_shape,
+            "utf8_bytes": utf8_bytes,
+            "observed_depth": maximum_depth,
+            "observed_container_items": container_items,
+            "reason": rejection_reason,
+        }
+
+    captured = _thaw_json(value)
+    _assert_no_sensitive_keys(captured, "bounded raw highlight")
+    return {
+        "status": "captured",
+        "raw_shape": raw_shape,
+        "utf8_bytes": utf8_bytes,
+        "observed_depth": maximum_depth,
+        "observed_container_items": container_items,
+        "value": captured,
+    }
+
+
+def _private_highlight_evidence(
+    step: PreparedStep,
+    record: Mapping[str, Any],
+    observation: HighlightObservation | None,
+    credential_value: str,
+) -> Mapping[str, Any] | None:
+    if step.response_key != "phrases" or observation is None:
+        return None
+    if "highlight" not in record:
+        return _freeze_json(
+            {
+                "status": "missing",
+                "raw_shape": observation.raw_shape,
+                "utf8_bytes": 0,
+            }
+        )
+    return _freeze_json(
+        _bounded_private_highlight(
+            record["highlight"],
+            raw_shape=observation.raw_shape,
+            credential_value=credential_value,
+        )
+    )
+
+
 @dataclass(frozen=True, repr=False)
 class StepResult:
     sequence: int
@@ -1031,6 +1337,7 @@ class StepResult:
     record_id_fingerprint: Mapping[str, Any] | None
     continuation_record_id: str | None = field(repr=False)
     verified_record_snapshot: Mapping[str, Any] = field(repr=False)
+    bounded_raw_highlight: Mapping[str, Any] | None = field(repr=False)
     verified_fields: tuple[str, ...]
     highlight_observation: HighlightObservation | None
 
@@ -1066,6 +1373,7 @@ class StepResult:
             **self.safe_summary(),
             "continuation_record_id": self.continuation_record_id,
             "verified_record_snapshot": _thaw_json(self.verified_record_snapshot),
+            "bounded_raw_highlight": _thaw_json(self.bounded_raw_highlight),
         }
         _assert_no_sensitive_keys(document, "private result")
         return document
@@ -1195,12 +1503,23 @@ class PrivateStateStore:
         _assert_no_sensitive_keys(parsed, "private state")
         return parsed
 
-    def begin(self, step: PreparedStep, credential_fingerprint: str) -> Path:
+    def begin(
+        self,
+        step: PreparedStep,
+        credential_fingerprint: str,
+        *,
+        create_baseline: CreateBaseline | None,
+    ) -> Path:
         return self._create_document(
             step.sequence,
             step.persisted_state(
                 "prepared-not-sent",
                 credential_fingerprint,
+                create_baseline=(
+                    create_baseline.private_state()
+                    if create_baseline is not None
+                    else None
+                ),
                 recovery_hint=(
                     "Do not replay this step after interruption. Inspect this private "
                     "journal and obtain separate manual recovery approval."
@@ -1424,6 +1743,7 @@ class SingleStepExecutor:
         state_store.assert_absent(step.sequence)
 
         _entity_key, _resource, is_update = _response_contract(step.action)
+        create_baseline: CreateBaseline | None = None
         if is_update:
             try:
                 preflight_response = self.transport.send(
@@ -1441,11 +1761,38 @@ class SingleStepExecutor:
                     "update preflight found a stale or identity mismatch; no write "
                     "was sent"
                 ) from None
+        else:
+            try:
+                preflight_response = self.transport.send(
+                    HttpRequest("GET", step.readback_path), credential
+                )
+            except TransportError:
+                raise VerificationError(
+                    "create preflight failed; no write was sent. Inspect the test "
+                    "account and prepare the step again after manual review."
+                ) from None
+            try:
+                create_baseline = _verify_create_preflight(
+                    step, preflight_response
+                )
+            except (SafetyError, VerificationError) as exc:
+                raise VerificationError(str(exc)) from None
+            if _contains_credential_material(
+                create_baseline.private_state(), credential.token
+            ):
+                raise VerificationError(
+                    "create baseline contains forbidden credential material; "
+                    "no write was sent"
+                )
 
         # Repeat the full validation at the last boundary before journal creation
-        # and POST. Prepared data is immutable, so the same values are journaled
-        # and carried by the already-frozen HttpRequest.
+        # and POST, then rebuild the frozen request from those final values.
         _validate_prepared_step(step)
+        write_request = HttpRequest(
+            step.method,
+            step.path,
+            _thaw_json(step.payload),
+        )
         final_confirmation = _confirmation_for(
             step.sequence,
             write_request.method,
@@ -1459,7 +1806,11 @@ class SingleStepExecutor:
             raise ConfirmationError(
                 "write confirmation changed before the final send boundary"
             )
-        state_store.begin(step, credential_fingerprint)
+        state_store.begin(
+            step,
+            credential_fingerprint,
+            create_baseline=create_baseline,
+        )
 
         self._attempted = True
         try:
@@ -1504,7 +1855,20 @@ class SingleStepExecutor:
         except VerificationError as exc:
             written_id = None
             written_id_error = exc
-        record_id_fingerprint = _fingerprint(written_id) if written_id else None
+        reported_write_id = written_id
+        if (
+            written_id_error is None
+            and create_baseline is not None
+            and written_id is not None
+            and written_id in set(create_baseline.record_ids)
+        ):
+            written_id_error = VerificationError(
+                "create response id already existed in the preflight baseline"
+            )
+            written_id = None
+        record_id_fingerprint = (
+            _fingerprint(reported_write_id) if reported_write_id else None
+        )
         try:
             state_store.mark_write_succeeded(
                 step,
@@ -1564,12 +1928,26 @@ class SingleStepExecutor:
             raise VerificationError("immediate readback returned a non-success status")
 
         try:
-            record = _select_readback_record(step, read_response, written_id)
+            if create_baseline is not None:
+                record = _select_create_readback_record(
+                    step,
+                    read_response,
+                    written_id,
+                    create_baseline,
+                )
+            else:
+                record = _select_readback_record(step, read_response, written_id)
             expected = _expected_fields(step)
             _verify_fields(expected, record)
             verified_record_snapshot = _record_snapshot(step, record)
             continuation_record_id = verified_record_snapshot["id"]
             highlight_observation = _observe_highlight(step, record)
+            bounded_raw_highlight = _private_highlight_evidence(
+                step,
+                record,
+                highlight_observation,
+                credential.token,
+            )
         except VerificationError:
             try:
                 state_store.preserve_unverified(
@@ -1594,6 +1972,7 @@ class SingleStepExecutor:
             record_id_fingerprint=_fingerprint(continuation_record_id),
             continuation_record_id=continuation_record_id,
             verified_record_snapshot=_freeze_json(verified_record_snapshot),
+            bounded_raw_highlight=bounded_raw_highlight,
             verified_fields=tuple(sorted(expected)),
             highlight_observation=highlight_observation,
         )
