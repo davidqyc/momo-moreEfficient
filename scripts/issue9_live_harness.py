@@ -36,6 +36,24 @@ CONFIRMATION_PREFIX = "CONFIRM WRITE STEP"
 REQUIRED_TAGS = tuple(issue2_smoke.REQUIRED_TAGS)
 MAX_ACCOUNT_LABEL_CHARS = 96
 MAX_GATE_CONFIRMATION_CHARS = 256
+FORBIDDEN_ACCOUNT_LABEL_MARKERS = (
+    "main",
+    "primary",
+    "owner",
+    "prod",
+    "production",
+    "主号",
+    "主账号",
+    "主账户",
+    "生产",
+)
+REQUIRED_TEST_ACCOUNT_LABEL_MARKERS = (
+    "secondary",
+    "test",
+    "副号",
+    "副账号",
+    "测试",
+)
 PRIVATE_HIGHLIGHT_MAX_BYTES = 4_096
 PRIVATE_HIGHLIGHT_MAX_DEPTH = 8
 PRIVATE_HIGHLIGHT_MAX_ITEMS = 128
@@ -239,6 +257,13 @@ def _validate_account_label_shape(value: Any) -> str:
         or _has_control_characters(value)
     ):
         raise SafetyError("account label does not meet the fixed safety policy")
+    normalized = value.casefold()
+    if any(marker in normalized for marker in FORBIDDEN_ACCOUNT_LABEL_MARKERS):
+        raise SafetyError("main or production account labels are forbidden")
+    if not any(
+        marker in normalized for marker in REQUIRED_TEST_ACCOUNT_LABEL_MARKERS
+    ):
+        raise SafetyError("account label is not an explicit secondary/test account label")
     return value
 
 
@@ -342,8 +367,6 @@ class ManualAccountGate:
         label = _validate_account_label_shape(self.account_label)
         if credential.account_label != label:
             raise SafetyError("credential label does not match the confirmed account")
-        if any(term in label.casefold() for term in ("main", "primary", "owner", "prod")):
-            raise SafetyError("main or production account labels are forbidden")
         if credential.token in label or credential.token in self.confirmation:
             raise SafetyError("account gate contains forbidden credential material")
         if self.credential_fingerprint != credential.fingerprint:
@@ -585,7 +608,14 @@ def _normalize_rollback_record(
     if action == "update_interpretation":
         required = ("id", "interpretation", "tags", "status")
     elif action.startswith("update_phrase_"):
-        required = ("id", "phrase", "interpretation", "tags", "origin")
+        required = (
+            "id",
+            "phrase",
+            "interpretation",
+            "tags",
+            "origin",
+            "status",
+        )
     else:
         raise SafetyError("update action is outside the reviewed operations")
 
@@ -604,6 +634,8 @@ def _normalize_rollback_record(
     for key, value in snapshot.items():
         if key not in {"tags"} and not isinstance(value, str):
             raise SafetyError(f"rollback record {key} must be a string")
+    if action.startswith("update_phrase_") and snapshot["status"] != "PUBLISHED":
+        raise SafetyError("phrase rollback status must be PUBLISHED")
     _assert_no_sensitive_keys(snapshot, "rollback record")
     return snapshot
 
@@ -890,6 +922,7 @@ def _select_readback_record(
     if not all(isinstance(record, Mapping) for record in raw_records):
         raise VerificationError("readback list contains an invalid record")
     records = list(raw_records)
+    _require_single_interpretation_record(step, records, phase="interpretation readback")
     if written_id is not None:
         matches = [record for record in records if record.get("id") == written_id]
     else:
@@ -906,6 +939,25 @@ _READBACK_FIELDS = {
     "update_phrase_inflected_case": ("phrase", "interpretation", "tags", "origin"),
     "update_phrase_multiple_case": ("phrase", "interpretation", "tags", "origin"),
 }
+
+
+def _snapshot_fields(step: PreparedStep) -> tuple[str, ...]:
+    fields = _READBACK_FIELDS.get(step.action)
+    if fields is None:
+        raise VerificationError("write action has no snapshot contract")
+    if step.response_key == "phrases":
+        return (*fields, "status")
+    return fields
+
+
+def _verify_phrase_publication_status(
+    step: PreparedStep,
+    record: Mapping[str, Any],
+) -> None:
+    if step.response_key == "phrases" and record.get("status") != "PUBLISHED":
+        raise VerificationError(
+            "phrase publication status is missing or not PUBLISHED"
+        )
 
 
 def _expected_fields(step: PreparedStep) -> Mapping[str, Any]:
@@ -959,13 +1011,11 @@ def _record_id(record: Mapping[str, Any]) -> str:
 
 
 def _record_snapshot(step: PreparedStep, record: Mapping[str, Any]) -> dict[str, Any]:
-    fields = _READBACK_FIELDS.get(step.action)
-    if fields is None:
-        raise VerificationError("write action has no snapshot contract")
+    fields = _snapshot_fields(step)
     snapshot = {"id": _record_id(record)}
     for name in fields:
         if name not in record:
-            raise VerificationError(f"readback record is missing writable field: {name}")
+            raise VerificationError(f"readback record is missing snapshot field: {name}")
         snapshot[name] = _thaw_json(record[name])
     _assert_no_sensitive_keys(snapshot, "verified record snapshot")
     return snapshot
@@ -1011,6 +1061,24 @@ def _identity_complete_records(
     return records
 
 
+def _require_single_interpretation_record(
+    step: PreparedStep,
+    records: list[Mapping[str, Any]],
+    *,
+    phase: str,
+) -> None:
+    if step.response_key != "interpretations":
+        return
+    if len(records) > 1:
+        raise VerificationError(
+            f"{phase} found multiple user interpretations; manual resolution is required"
+        )
+    if len(records) != 1:
+        raise VerificationError(
+            f"{phase} requires exactly one user interpretation"
+        )
+
+
 def _baseline_record_snapshot(
     step: PreparedStep,
     record: Mapping[str, Any],
@@ -1046,7 +1114,12 @@ def _verify_create_preflight(
         raise VerificationError("create preflight returned a non-success status")
     records = _identity_complete_records(step, response, phase="create preflight")
     if step.action == "create_interpretation":
-        if records:
+        if len(records) > 1:
+            raise VerificationError(
+                "create interpretation preflight found multiple user interpretations; "
+                "manual resolution is required and no write was sent"
+            )
+        if len(records) == 1:
             raise VerificationError(
                 "create interpretation preflight found an existing record; "
                 "prepare the update flow instead"
@@ -1077,6 +1150,11 @@ def _select_create_readback_record(
     baseline: CreateBaseline,
 ) -> Mapping[str, Any]:
     records = _identity_complete_records(step, response, phase="create readback")
+    _require_single_interpretation_record(
+        step,
+        records,
+        phase="create interpretation readback",
+    )
     post_by_id = {_record_id(record): record for record in records}
     baseline_ids = set(baseline.record_ids)
     post_ids = set(post_by_id)
@@ -1108,8 +1186,9 @@ def _verify_update_preflight(
     snapshot = _thaw_json(step.rollback_snapshot)
     if not isinstance(snapshot, Mapping) or snapshot.get("id") != target_id:
         raise VerificationError("update preflight rollback identity is invalid")
-    expected = {name: snapshot[name] for name in _READBACK_FIELDS[step.action]}
+    expected = {name: snapshot[name] for name in _snapshot_fields(step)}
     _verify_fields(expected, record)
+    _verify_phrase_publication_status(step, record)
     return record
 
 
@@ -1332,6 +1411,7 @@ class StepResult:
     action: str
     status: str
     payload_readback_status: str
+    publication_status: str | None
     write_status: int
     read_status: int
     record_id_fingerprint: Mapping[str, Any] | None
@@ -1350,6 +1430,7 @@ class StepResult:
             "action": self.action,
             "status": self.status,
             "payload_readback_status": self.payload_readback_status,
+            "publication_status": self.publication_status,
             "write_status": self.write_status,
             "read_status": self.read_status,
             "record_id_fingerprint": self.record_id_fingerprint,
@@ -1756,7 +1837,12 @@ class SingleStepExecutor:
                 ) from None
             try:
                 _verify_update_preflight(step, preflight_response)
-            except (SafetyError, VerificationError):
+            except (SafetyError, VerificationError) as exc:
+                if (
+                    step.response_key == "interpretations"
+                    and "multiple user interpretations" in str(exc)
+                ):
+                    raise VerificationError(str(exc)) from None
                 raise VerificationError(
                     "update preflight found a stale or identity mismatch; no write "
                     "was sent"
@@ -1939,6 +2025,7 @@ class SingleStepExecutor:
                 record = _select_readback_record(step, read_response, written_id)
             expected = _expected_fields(step)
             _verify_fields(expected, record)
+            _verify_phrase_publication_status(step, record)
             verified_record_snapshot = _record_snapshot(step, record)
             continuation_record_id = verified_record_snapshot["id"]
             highlight_observation = _observe_highlight(step, record)
@@ -1967,13 +2054,16 @@ class SingleStepExecutor:
             action=step.action,
             status="verified",
             payload_readback_status="verified",
+            publication_status=(
+                str(record["status"]) if step.response_key == "phrases" else None
+            ),
             write_status=write_response.status,
             read_status=read_response.status,
             record_id_fingerprint=_fingerprint(continuation_record_id),
             continuation_record_id=continuation_record_id,
             verified_record_snapshot=_freeze_json(verified_record_snapshot),
             bounded_raw_highlight=bounded_raw_highlight,
-            verified_fields=tuple(sorted(expected)),
+            verified_fields=tuple(sorted(_snapshot_fields(step))),
             highlight_observation=highlight_observation,
         )
         try:

@@ -79,6 +79,7 @@ def phrase_rollback(record_id: str = "INVALID_PHRASE_ID") -> dict[str, object]:
         "interpretation": "OFFLINE PREVIOUS TRANSLATION",
         "tags": list(TAGS),
         "origin": "OFFLINE_PREVIOUS_ORIGIN",
+        "status": "PUBLISHED",
     }
 
 
@@ -107,6 +108,7 @@ def phrase_record(
         "interpretation": payload["interpretation"],
         "tags": list(payload["tags"]),
         "origin": payload["origin"],
+        "status": "PUBLISHED",
         "highlight": highlight,
     }
 
@@ -166,6 +168,33 @@ class Issue9SafetyTests(unittest.TestCase):
         )
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         return root, harness.PrivateStateStore(root)
+
+    def make_interpretation_update_step(
+        self,
+        record_id: str = "INVALID_INTERPRETATION_UPDATE_ID",
+    ) -> tuple[harness.PreparedStep, dict[str, object]]:
+        decision = harness.choose_interpretation_operation(
+            self.plan["vocabulary"]["id"],
+            "OFFLINE REPLACEMENT INTERPRETATION",
+            [
+                harness.ExistingInterpretation(
+                    record_id,
+                    "OFFLINE PREVIOUS INTERPRETATION",
+                    True,
+                    tuple(TAGS),
+                    "PUBLISHED",
+                )
+            ],
+        )
+        snapshot = dict(decision.existing_record or {})
+        return (
+            harness.prepare_operation(
+                decision.operation,
+                self.plan["vocabulary"]["id"],
+                existing_record=snapshot,
+            ),
+            snapshot,
+        )
 
     def test_global_test_guard_blocks_socket_creation(self) -> None:
         self.assertEqual(os.environ.get("MOMO_TEST_NETWORK_DISABLED"), "1")
@@ -263,12 +292,6 @@ class Issue9SafetyTests(unittest.TestCase):
             ),
             harness.ManualAccountGate(
                 True,
-                "main",
-                test_credential.fingerprint,
-                f"CONFIRM SECONDARY TEST ACCOUNT: main TOKEN-FP: {test_credential.fingerprint}",
-            ),
-            harness.ManualAccountGate(
-                True,
                 ACCOUNT_LABEL,
                 wrong_fingerprint,
                 f"CONFIRM SECONDARY TEST ACCOUNT: {ACCOUNT_LABEL} TOKEN-FP: {wrong_fingerprint}",
@@ -292,6 +315,13 @@ class Issue9SafetyTests(unittest.TestCase):
             harness.TestAccountCredential(
                 FAKE_TOKEN, ACCOUNT_LABEL, source_name="main-account"
             )
+        with self.assertRaises(harness.SafetyError):
+            harness.ManualAccountGate(
+                True,
+                "main-test-account",
+                test_credential.fingerprint,
+                "OFFLINE FIXED CONFIRMATION",
+            )
         self.assertNotIn(FAKE_TOKEN, valid_gate(test_credential).expected_confirmation)
 
     def test_account_label_gate_repr_str_and_errors_never_leak_token(self) -> None:
@@ -303,6 +333,13 @@ class Issue9SafetyTests(unittest.TestCase):
             "L" * (harness.MAX_ACCOUNT_LABEL_CHARS + 1),
             FAKE_TOKEN,
             f"secondary-{FAKE_TOKEN}-account",
+            "主账号",
+            "主号-test",
+            "主账户-test",
+            "生产-test",
+            "PrOdUcTiOn-test-account",
+            "OWNER-account-test",
+            "ordinary-account",
         ]
         for label in invalid_labels:
             with self.subTest(label_kind=len(label)):
@@ -311,6 +348,43 @@ class Issue9SafetyTests(unittest.TestCase):
                 self.assertNotIn(FAKE_TOKEN, str(context.exception))
                 if label:
                     self.assertNotIn(label, str(context.exception))
+
+        for label in (
+            "主账号",
+            "主号-test",
+            "主账户-test",
+            "生产-test",
+            "PrOdUcTiOn-test-account",
+            "OWNER-account-test",
+            "ordinary-account",
+        ):
+            with self.subTest(gate_label_length=len(label)):
+                with self.assertRaises(harness.SafetyError) as gate_context:
+                    harness.ManualAccountGate(
+                        True,
+                        label,
+                        "0" * 16,
+                        "OFFLINE FIXED CONFIRMATION",
+                    )
+                self.assertNotIn(FAKE_TOKEN, str(gate_context.exception))
+                self.assertNotIn(label, str(gate_context.exception))
+
+        chinese_label = "issue9-测试副账号"
+        chinese_credential = harness.TestAccountCredential(FAKE_TOKEN, chinese_label)
+        chinese_gate = harness.ManualAccountGate(
+            True,
+            chinese_label,
+            chinese_credential.fingerprint,
+            (
+                f"CONFIRM SECONDARY TEST ACCOUNT: {chinese_label} "
+                f"TOKEN-FP: {chinese_credential.fingerprint}"
+            ),
+        )
+        chinese_gate.validate(chinese_credential)
+        valid_gate(credential()).validate(credential())
+        for rendered in (repr(chinese_credential), repr(chinese_gate), str(chinese_gate)):
+            self.assertNotIn(FAKE_TOKEN, rendered)
+            self.assertNotIn(chinese_label, rendered)
 
         test_credential = credential()
         confirmation_with_token = (
@@ -525,6 +599,110 @@ class Issue9SafetyTests(unittest.TestCase):
         self.assertEqual([request.method for request in transport.requests], ["GET"])
         self.assertEqual(list(root.iterdir()), [])
 
+    def test_create_interpretation_readback_requires_exactly_one_total_record(self) -> None:
+        step = harness.prepare_plan_step(self.plan, 1)
+        first = interpretation_record(step, "INVALID_NEW_INTERPRETATION_1")
+        second = interpretation_record(step, "INVALID_NEW_INTERPRETATION_2")
+        _, state_store = self.make_store("issue9-interpretation-create-cardinality-")
+        transport = FakeTransport(
+            [
+                harness.HttpResponse(200, {"interpretations": []}),
+                harness.HttpResponse(
+                    200,
+                    {"interpretation": {"id": "INVALID_NEW_INTERPRETATION_1"}},
+                ),
+                harness.HttpResponse(200, {"interpretations": [first, second]}),
+            ]
+        )
+        test_credential = credential()
+        with self.assertRaisesRegex(
+            harness.VerificationError, "multiple user interpretations"
+        ):
+            harness.SingleStepExecutor(transport).execute(
+                step,
+                step.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=state_store,
+            )
+        self.assertEqual(
+            [request.method for request in transport.requests], ["GET", "POST", "GET"]
+        )
+        self.assertEqual(
+            state_store.read(1)["status"], "write-succeeded-readback-unverified"
+        )
+
+    def test_update_interpretation_preflight_blocks_multiple_total_records(self) -> None:
+        step, snapshot = self.make_interpretation_update_step()
+        other = dict(snapshot)
+        other["id"] = "INVALID_OTHER_INTERPRETATION_ID"
+        root, state_store = self.make_store("issue9-interpretation-update-preflight-")
+        transport = FakeTransport(
+            [harness.HttpResponse(200, {"interpretations": [snapshot, other]})]
+        )
+        test_credential = credential()
+        with self.assertRaisesRegex(
+            harness.VerificationError, "multiple user interpretations"
+        ):
+            harness.SingleStepExecutor(transport).execute(
+                step,
+                step.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=state_store,
+            )
+        self.assertEqual([request.method for request in transport.requests], ["GET"])
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_update_interpretation_readback_remains_unique(self) -> None:
+        step, snapshot = self.make_interpretation_update_step()
+        updated = interpretation_record(step, "INVALID_INTERPRETATION_UPDATE_ID")
+        second = dict(updated)
+        second["id"] = "INVALID_CONCURRENT_INTERPRETATION_ID"
+        _, state_store = self.make_store("issue9-interpretation-update-readback-")
+        transport = FakeTransport(
+            [
+                harness.HttpResponse(200, {"interpretations": [snapshot]}),
+                harness.HttpResponse(
+                    200,
+                    {"interpretation": {"id": "INVALID_INTERPRETATION_UPDATE_ID"}},
+                ),
+                harness.HttpResponse(200, {"interpretations": [updated, second]}),
+            ]
+        )
+        test_credential = credential()
+        with self.assertRaisesRegex(
+            harness.VerificationError, "multiple user interpretations"
+        ):
+            harness.SingleStepExecutor(transport).execute(
+                step,
+                step.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=state_store,
+            )
+        self.assertEqual(
+            state_store.read(step.sequence)["status"],
+            "write-succeeded-readback-unverified",
+        )
+
+    def test_update_interpretation_single_target_still_verifies(self) -> None:
+        step, snapshot = self.make_interpretation_update_step()
+        updated = interpretation_record(step, "INVALID_INTERPRETATION_UPDATE_ID")
+        _, state_store = self.make_store("issue9-interpretation-update-single-")
+        test_credential = credential()
+        result = harness.SingleStepExecutor(
+            FakeTransport(responses_for_step(step, updated, preflight_record=snapshot))
+        ).execute(
+            step,
+            step.confirmation,
+            test_credential,
+            valid_gate(test_credential),
+            state_store=state_store,
+        )
+        self.assertEqual(result.payload_readback_status, "verified")
+        self.assertEqual(state_store.read(step.sequence)["status"], "verified")
+
     def test_create_phrase_preflight_blocks_exact_duplicate(self) -> None:
         step = harness.prepare_plan_step(self.plan, 2)
         duplicate = phrase_record(
@@ -633,7 +811,7 @@ class Issue9SafetyTests(unittest.TestCase):
         state = state_store.read(2)
         self.assertEqual(
             set(state["create_baseline"]["records"][0]),
-            {"id", "phrase", "interpretation", "tags", "origin"},
+            {"id", "phrase", "interpretation", "tags", "origin", "status"},
         )
         self.assertEqual(
             state["create_baseline"]["record_ids"], ["INVALID_OLDER_PHRASE_ID"]
@@ -930,6 +1108,44 @@ class Issue9SafetyTests(unittest.TestCase):
         self.assertEqual([request.method for request in transport.requests], ["GET", "POST", "GET"])
         self.assertEqual(state_store.read(3)["status"], "verified")
 
+    def test_phrase_update_preflight_requires_published_target(self) -> None:
+        snapshot = phrase_rollback()
+        step = harness.prepare_plan_step(
+            self.plan,
+            3,
+            phrase_record_id="INVALID_PHRASE_ID",
+            existing_record=snapshot,
+        )
+        cases = {
+            "deleted": {**snapshot, "status": "DELETED"},
+            "missing": {
+                key: value for key, value in snapshot.items() if key != "status"
+            },
+        }
+        test_credential = credential()
+        for name, preflight_record in cases.items():
+            with self.subTest(name=name):
+                root, state_store = self.make_store(
+                    f"issue9-phrase-preflight-status-{name}-"
+                )
+                transport = FakeTransport(
+                    [harness.HttpResponse(200, {"phrases": [preflight_record]})]
+                )
+                with self.assertRaisesRegex(
+                    harness.VerificationError, "stale or identity mismatch"
+                ):
+                    harness.SingleStepExecutor(transport).execute(
+                        step,
+                        step.confirmation,
+                        test_credential,
+                        valid_gate(test_credential),
+                        state_store=state_store,
+                    )
+                self.assertEqual(
+                    [request.method for request in transport.requests], ["GET"]
+                )
+                self.assertEqual(list(root.iterdir()), [])
+
     def test_update_response_cannot_switch_the_preflighted_record_id(self) -> None:
         snapshot = phrase_rollback()
         step = harness.prepare_plan_step(
@@ -1154,6 +1370,9 @@ class Issue9SafetyTests(unittest.TestCase):
                     "awaiting-owner-app-comparison",
                 )
                 self.assertEqual(result.payload_readback_status, "verified")
+                self.assertEqual(result.publication_status, "PUBLISHED")
+                self.assertIn("status", result.verified_fields)
+                self.assertNotIn("status", step.payload["phrase"])
                 persisted = state_store.read(sequence)
                 self.assertEqual(persisted["status"], "verified")
                 self.assertEqual(
@@ -1162,6 +1381,52 @@ class Issue9SafetyTests(unittest.TestCase):
                 self.assertEqual(
                     persisted["result"]["highlight_observation"]["raw_shape"],
                     raw_shape,
+                )
+                self.assertEqual(
+                    persisted["verified_record_snapshot"]["status"], "PUBLISHED"
+                )
+                self.assertEqual(
+                    persisted["result"]["publication_status"], "PUBLISHED"
+                )
+
+    def test_phrase_readback_requires_published_status(self) -> None:
+        step = harness.prepare_plan_step(self.plan, 2)
+        cases: dict[str, str | None] = {
+            "deleted": "DELETED",
+            "unknown": "OFFLINE_UNKNOWN_STATUS",
+            "missing": None,
+        }
+        test_credential = credential()
+        for name, status_value in cases.items():
+            with self.subTest(name=name):
+                record = phrase_record(
+                    step,
+                    [{"start": 4, "end": 14}],
+                    f"INVALID_PHRASE_STATUS_{name.upper()}",
+                )
+                if status_value is None:
+                    record.pop("status")
+                else:
+                    record["status"] = status_value
+                _, state_store = self.make_store(f"issue9-phrase-status-{name}-")
+                transport = FakeTransport(responses_for_step(step, record))
+                with self.assertRaisesRegex(
+                    harness.VerificationError, "publication status"
+                ):
+                    harness.SingleStepExecutor(transport).execute(
+                        step,
+                        step.confirmation,
+                        test_credential,
+                        valid_gate(test_credential),
+                        state_store=state_store,
+                    )
+                self.assertEqual(
+                    state_store.read(2)["status"],
+                    "write-succeeded-readback-unverified",
+                )
+                self.assertEqual(
+                    [request.method for request in transport.requests],
+                    ["GET", "POST", "GET"],
                 )
 
     def test_highlight_negative_invalid_and_unknown_do_not_unverify_payload(self) -> None:

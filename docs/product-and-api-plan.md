@@ -39,13 +39,13 @@
 
 ### 2.2 Issue #9 分阶段冒烟 harness（本轮仍未联网）
 
-再次逐项核对上述官方 schema 后，**没有找到**可靠的 `self`、`profile`、`account identity` 或等价接口，无法通过公开 API 把 Token 自动绑定到可核验的账号身份。不得猜测或调用未公开接口。后续如获准进入真实阶段，账号防串用必须 fail-closed：凭证只能由独立的副账号来源注入，操作者必须输入同时包含副账号标签和当前凭证非敏感 SHA-256 短指纹的精确确认短语；标签缺失、疑似主账号、来源不符、指纹变化或确认不精确时，在发出请求前停止。Token 指纹只能防止确认后凭证被中途换错，**不能**证明该 Token 属于哪个墨墨账号，也不能代替官方账号身份接口；真实执行前仍需所有者在墨墨 App 中人工确认副账号。
+再次逐项核对上述官方 schema 后，**没有找到**可靠的 `self`、`profile`、`account identity` 或等价接口，无法通过公开 API 把 Token 自动绑定到可核验的账号身份。不得猜测或调用未公开接口。后续如获准进入真实阶段，账号防串用必须 fail-closed：凭证只能由独立的副账号来源注入，账号标签必须正向包含 `secondary`、`test`、`副号`、`副账号` 或 `测试` 之一，并拒绝 `main`、`primary`、`owner`、`prod`、`production`、`主号`、`主账号`、`主账户`、`生产` 等主账号/生产含义；操作者还必须输入同时包含该副账号标签和当前凭证非敏感 SHA-256 短指纹的精确确认短语。标签缺失或语义不符、来源不符、指纹变化或确认不精确时，在发出请求前停止。账号标签和 Token 指纹只能防止人工过程中把凭证换错，**不能**证明该 Token 属于哪个墨墨账号，也不能代替官方账号身份接口；真实执行前仍需所有者在墨墨 App 中人工确认副账号。
 
 Issue #9 的最小 harness 将能力分为三层：
 
 1. `offline-plan` 是默认且当前唯一可从命令行完成的模式，只复用 Issue #2 的 fixture 校验和 payload 生成，不实例化 transport。
 2. `read-only` 只允许公开 schema 中已核对的 `GET /vocabulary?spelling=...`、`GET /interpretations?voc_id=...` 和 `GET /phrases?voc_id=...`，且必须先通过副账号人工门禁；`/vocabulary/query` 是 POST 语义，本 Issue 不开放。当前命令行没有凭证入口，因此默认阻断。
-3. `live-step` 每个执行器最多尝试一个 POST。交互预览在本地当次显示 method、固定在 `/open/api/v1` 下的 path、真实待写内容，以及更新时的完整旧内容；普通摘要只保留哈希/脱敏内容。prepare 后的 path、payload 和旧记录快照被隔离并递归冻结；执行器在 journal 和发送前再次验证 action/path/payload/vocabulary 完整合同，并按最终 method、path、payload 重算精确确认码。每个 create/update 都先按目标 `voc_id` 做一次只读 GET：create interpretation 只允许零条现有自建释义；create phrase 保存身份完整的筛选基线，并在存在完全相同内容时阻断重复创建；update 必须唯一命中目标记录 ID，且所有旧可写字段与 rollback snapshot 一致。只有 preflight 通过后才允许创建 journal 和尝试 POST。随后立即 GET 回读：释义只比较 `interpretation`、`tags`、`status`，例句只比较 `phrase`、`interpretation`、`tags`、`origin`；三标签按无重复、无缺失、无额外的精确集合比较，顺序不作为合同；请求/查询字段 `voc_id` 不要求出现在返回记录中。create 响应有安全 ID 时，该 ID 必须不在写前基线并按 ID 唯一回读；响应无 ID 时，只允许通过写前/写后 ID 集合中唯一新增且内容吻合的记录恢复身份。写入超时、记录 ID 不明确、回读失败或字段不一致时停止，不自动重试。
+3. `live-step` 每个执行器最多尝试一个 POST。交互预览在本地当次显示 method、固定在 `/open/api/v1` 下的 path、真实待写内容，以及更新时的完整旧内容；普通摘要只保留哈希/脱敏内容。prepare 后的 path、payload 和旧记录快照被隔离并递归冻结；执行器在 journal 和发送前再次验证 action/path/payload/vocabulary 完整合同，并按最终 method、path、payload 重算精确确认码。每个 create/update 都先按目标 `voc_id` 做一次只读 GET：create interpretation 只允许零条现有自建释义；update interpretation 要求整个列表恰好只有目标 ID 一条，且旧字段与 rollback snapshot 一致；create phrase 保存身份完整的筛选基线，并在存在完全相同内容时阻断重复创建；update phrase 必须唯一命中目标记录 ID、旧字段与 rollback snapshot 一致且记录状态为 `PUBLISHED`。只有 preflight 通过后才允许创建 journal 和尝试 POST。随后立即 GET 回读：释义必须仍然只有本轮唯一目标记录，并比较 `interpretation`、`tags`、`status`；例句比较 `phrase`、`interpretation`、`tags`、`origin`，另要求响应中的只读 `status` 严格为 `PUBLISHED`。phrase `status` 不进入 create/update 请求体，但进入安全结果、私有验证快照和 continuation state。三标签按无重复、无缺失、无额外的精确集合比较，顺序不作为合同；请求/查询字段 `voc_id` 不要求出现在返回记录中。create 响应有安全 ID 时，该 ID 必须不在写前基线并按 ID 唯一回读；响应无 ID 时，只允许通过写前/写后 ID 集合中唯一新增且内容吻合的记录恢复身份。写入超时、多条释义、记录 ID 不明确、例句未发布、回读失败或字段不一致时停止，不自动重试。
 
 真实 transport 固定生产 host `open.maimemo.com`，连接和读取均要求有限超时；GET 查询统一用 `urlencode` 构造，记录 ID 只接受安全单一路径段。它通过依赖注入与执行逻辑隔离，自动化测试只使用内存 fake transport，并由进程级 socket/URL 断网钩子兜底。本轮没有配置或读取 Token，也没有发送请求。
 
