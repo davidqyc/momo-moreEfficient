@@ -3,11 +3,11 @@ from __future__ import annotations
 import io
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -90,14 +90,14 @@ def interpretation_record(
     return {
         "id": record_id,
         "interpretation": payload["interpretation"],
-        "tags": payload["tags"],
+        "tags": list(payload["tags"]),
         "status": payload["status"],
     }
 
 
 def phrase_record(
     step: harness.PreparedStep,
-    highlight: list[dict[str, int]],
+    highlight: object,
     record_id: str = "INVALID_PHRASE_ID",
 ) -> dict[str, object]:
     payload = step.payload["phrase"]
@@ -105,10 +105,34 @@ def phrase_record(
         "id": record_id,
         "phrase": payload["phrase"],
         "interpretation": payload["interpretation"],
-        "tags": payload["tags"],
+        "tags": list(payload["tags"]),
         "origin": payload["origin"],
         "highlight": highlight,
     }
+
+
+def responses_for_step(
+    step: harness.PreparedStep,
+    readback_record: dict[str, object],
+    *,
+    preflight_record: dict[str, object] | None = None,
+) -> list[harness.HttpResponse]:
+    singular = "interpretation" if step.response_key == "interpretations" else "phrase"
+    record_id = str(readback_record["id"])
+    responses: list[harness.HttpResponse] = []
+    if step.action.startswith("update_"):
+        if preflight_record is None:
+            raise AssertionError("update fake responses require a preflight record")
+        responses.append(
+            harness.HttpResponse(200, {step.response_key: [preflight_record]})
+        )
+    responses.extend(
+        [
+            harness.HttpResponse(200, {singular: {"id": record_id}}),
+            harness.HttpResponse(200, {step.response_key: [readback_record]}),
+        ]
+    )
+    return responses
 
 
 class Issue9SafetyTests(unittest.TestCase):
@@ -169,6 +193,24 @@ class Issue9SafetyTests(unittest.TestCase):
             path,
             "/open/api/v1/interpretations?voc_id=INVALID+ID%2F%3F",
         )
+        self.assertEqual(
+            harness.build_query_path("vocabulary", {"spelling": "sample word"}),
+            "/open/api/v1/vocabulary?spelling=sample+word",
+        )
+        for resource, params in (
+            ("vocabulary/query", {"spelling": "sampleword"}),
+            ("vocabulary", {"voc_id": "INVALID"}),
+            ("phrases", {"spelling": "sampleword"}),
+            ("phrases", {"voc_id": "INVALID", "extra": "blocked"}),
+        ):
+            with self.subTest(resource=resource, params=params), self.assertRaises(
+                harness.SafetyError
+            ):
+                harness.build_query_path(resource, params)
+        with self.assertRaises(harness.SafetyError):
+            harness.HttpRequest(
+                "GET", "/open/api/v1/vocabulary/query?spelling=sampleword"
+            )
         with self.assertRaises(harness.SafetyError):
             harness.HttpRequest("GET", "/api/v1/phrases?voc_id=INVALID")
         with self.assertRaises(harness.SafetyError):
@@ -414,6 +456,126 @@ class Issue9SafetyTests(unittest.TestCase):
             )
         self.assertEqual(transport.requests, [])
 
+    def test_confirmation_binds_deeply_immutable_final_payload(self) -> None:
+        step = harness.prepare_plan_step(self.plan, 1)
+        source_entity = self.plan["operations"][0]["payload"]["interpretation"]
+        source_entity["interpretation"] = "OFFLINE MUTATED SOURCE"
+        self.assertNotEqual(
+            step.payload["interpretation"]["interpretation"],
+            source_entity["interpretation"],
+        )
+        with self.assertRaises(TypeError):
+            step.payload["interpretation"]["interpretation"] = "BLOCKED"
+
+        rollback_source = phrase_rollback()
+        update_step = harness.prepare_plan_step(
+            self.plan,
+            3,
+            phrase_record_id="INVALID_PHRASE_ID",
+            existing_record=rollback_source,
+        )
+        rollback_source["phrase"] = "OFFLINE MUTATED ROLLBACK SOURCE"
+        self.assertEqual(
+            update_step.rollback_snapshot["phrase"], "OFFLINE PREVIOUS PHRASE"
+        )
+        with self.assertRaises(TypeError):
+            update_step.rollback_snapshot["phrase"] = "BLOCKED"
+
+        tampered_payload = step.interactive_preview()["payload"]
+        tampered_payload["interpretation"]["interpretation"] = (
+            "OFFLINE VALID BUT UNCONFIRMED REPLACEMENT"
+        )
+        forged = replace(step, payload=tampered_payload)
+        root, state_store = self.make_store("issue9-tampered-confirmation-")
+        transport = FakeTransport()
+        test_credential = credential()
+        with self.assertRaises(harness.ConfirmationError):
+            harness.SingleStepExecutor(transport).execute(
+                forged,
+                step.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=state_store,
+            )
+        self.assertEqual(transport.requests, [])
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_executor_revalidates_all_send_values_for_forged_steps(self) -> None:
+        create_interpretation = harness.prepare_plan_step(self.plan, 1)
+        create_phrase = harness.prepare_plan_step(self.plan, 2)
+        interpretation_decision = harness.choose_interpretation_operation(
+            self.plan["vocabulary"]["id"],
+            "OFFLINE NEW INTERPRETATION",
+            [
+                harness.ExistingInterpretation(
+                    "INVALID_INTERPRETATION_ID",
+                    "OFFLINE OLD INTERPRETATION",
+                    True,
+                    tuple(TAGS),
+                    "PUBLISHED",
+                )
+            ],
+        )
+        update_interpretation = harness.prepare_operation(
+            interpretation_decision.operation,
+            self.plan["vocabulary"]["id"],
+            existing_record=interpretation_decision.existing_record,
+        )
+        update_phrase = harness.prepare_plan_step(
+            self.plan,
+            3,
+            phrase_record_id="INVALID_PHRASE_ID",
+            existing_record=phrase_rollback(),
+        )
+
+        cases: list[tuple[str, harness.PreparedStep, dict[str, object]]] = []
+        for name, field, value in (
+            ("interpretation-wrong-voc", "voc_id", "INVALID_OTHER_VOCABULARY"),
+            ("interpretation-blank", "interpretation", "  "),
+            ("interpretation-tags", "tags", ["MBA", "BEC", "MBA"]),
+            ("interpretation-status", "status", "DELETED"),
+        ):
+            payload = create_interpretation.interactive_preview()["payload"]
+            payload["interpretation"][field] = value
+            cases.append((name, create_interpretation, payload))
+        for name, field, value in (
+            ("phrase-wrong-voc", "voc_id", "INVALID_OTHER_VOCABULARY"),
+            ("phrase-blank", "phrase", ""),
+            ("translation-blank", "interpretation", "\t"),
+            ("origin-blank", "origin", " "),
+            ("phrase-tags", "tags", ["GMAT", "BEC", "MBA"]),
+        ):
+            payload = create_phrase.interactive_preview()["payload"]
+            payload["phrase"][field] = value
+            cases.append((name, create_phrase, payload))
+        update_interpretation_payload = update_interpretation.interactive_preview()[
+            "payload"
+        ]
+        update_interpretation_payload["id"] = "INVALID_INTERPRETATION_ID"
+        cases.append(
+            ("interpretation-update-id", update_interpretation, update_interpretation_payload)
+        )
+        update_phrase_payload = update_phrase.interactive_preview()["payload"]
+        update_phrase_payload["phrase"]["voc_id"] = self.plan["vocabulary"]["id"]
+        cases.append(("phrase-update-voc", update_phrase, update_phrase_payload))
+
+        for name, valid_step, payload in cases:
+            with self.subTest(name=name):
+                forged = replace(valid_step, payload=payload)
+                root, state_store = self.make_store(f"issue9-forged-{name}-")
+                transport = FakeTransport()
+                test_credential = credential()
+                with self.assertRaises(harness.SafetyError):
+                    harness.SingleStepExecutor(transport).execute(
+                        forged,
+                        forged.confirmation,
+                        test_credential,
+                        valid_gate(test_credential),
+                        state_store=state_store,
+                    )
+                self.assertEqual(transport.requests, [])
+                self.assertEqual(list(root.iterdir()), [])
+
     def test_journal_is_persisted_before_post_and_before_get(self) -> None:
         step = harness.prepare_plan_step(self.plan, 1)
         _, state_store = self.make_store("issue9-order-")
@@ -447,6 +609,123 @@ class Issue9SafetyTests(unittest.TestCase):
         )
         self.assertEqual(state_store.read(1)["status"], "verified")
 
+    def test_update_preflight_blocks_wrong_word_id_and_stale_old_content(self) -> None:
+        snapshot = phrase_rollback("INVALID_TARGET_PHRASE_ID")
+        step = harness.prepare_plan_step(
+            self.plan,
+            3,
+            phrase_record_id="INVALID_TARGET_PHRASE_ID",
+            existing_record=snapshot,
+        )
+        wrong_word_record = dict(snapshot)
+        wrong_word_record["id"] = "INVALID_OTHER_WORD_PHRASE_ID"
+        stale_record = dict(snapshot)
+        stale_record["phrase"] = "OFFLINE CHANGED ON ANOTHER DEVICE"
+
+        for name, record in (
+            ("wrong-word", wrong_word_record),
+            ("stale-content", stale_record),
+        ):
+            with self.subTest(name=name):
+                root, state_store = self.make_store(f"issue9-preflight-{name}-")
+                transport = FakeTransport(
+                    [harness.HttpResponse(200, {"phrases": [record]})]
+                )
+                test_credential = credential()
+                with self.assertRaisesRegex(
+                    harness.VerificationError, "stale or identity mismatch"
+                ):
+                    harness.SingleStepExecutor(transport).execute(
+                        step,
+                        step.confirmation,
+                        test_credential,
+                        valid_gate(test_credential),
+                        state_store=state_store,
+                    )
+                self.assertEqual(len(transport.requests), 1)
+                self.assertEqual(transport.requests[0].method, "GET")
+                self.assertEqual(
+                    transport.requests[0].path,
+                    "/open/api/v1/phrases?voc_id=INVALID_VOCABULARY_ID_ISSUE_2",
+                )
+                self.assertEqual(
+                    [request for request in transport.requests if request.method == "POST"],
+                    [],
+                )
+                self.assertEqual(list(root.iterdir()), [])
+
+    def test_successful_update_preflight_precedes_journal_and_single_post(self) -> None:
+        snapshot = phrase_rollback()
+        step = harness.prepare_plan_step(
+            self.plan,
+            3,
+            phrase_record_id="INVALID_PHRASE_ID",
+            existing_record=snapshot,
+        )
+        readback = phrase_record(step, [[8, 19]])
+        root, state_store = self.make_store("issue9-preflight-order-")
+
+        def inspect_order(request: harness.HttpRequest, index: int) -> None:
+            destination = root / "issue9-step-3.json"
+            if index == 0:
+                self.assertEqual(request.method, "GET")
+                self.assertFalse(destination.exists())
+            elif index == 1:
+                self.assertEqual(request.method, "POST")
+                self.assertEqual(state_store.read(3)["status"], "prepared-not-sent")
+            else:
+                self.assertEqual(request.method, "GET")
+                self.assertEqual(
+                    state_store.read(3)["status"],
+                    "write-succeeded-readback-unverified",
+                )
+
+        transport = FakeTransport(
+            responses_for_step(step, readback, preflight_record=snapshot),
+            hook=inspect_order,
+        )
+        test_credential = credential()
+        harness.SingleStepExecutor(transport).execute(
+            step,
+            step.confirmation,
+            test_credential,
+            valid_gate(test_credential),
+            state_store=state_store,
+        )
+        self.assertEqual([request.method for request in transport.requests], ["GET", "POST", "GET"])
+        self.assertEqual(state_store.read(3)["status"], "verified")
+
+    def test_update_response_cannot_switch_the_preflighted_record_id(self) -> None:
+        snapshot = phrase_rollback()
+        step = harness.prepare_plan_step(
+            self.plan,
+            3,
+            phrase_record_id="INVALID_PHRASE_ID",
+            existing_record=snapshot,
+        )
+        _, state_store = self.make_store("issue9-response-id-switch-")
+        transport = FakeTransport(
+            [
+                harness.HttpResponse(200, {"phrases": [snapshot]}),
+                harness.HttpResponse(
+                    200, {"phrase": {"id": "INVALID_OTHER_PHRASE_ID"}}
+                ),
+            ]
+        )
+        test_credential = credential()
+        with self.assertRaisesRegex(harness.VerificationError, "changed the update target"):
+            harness.SingleStepExecutor(transport).execute(
+                step,
+                step.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=state_store,
+            )
+        self.assertEqual([request.method for request in transport.requests], ["GET", "POST"])
+        state = state_store.read(3)
+        self.assertEqual(state["status"], "write-succeeded-readback-unverified")
+        self.assertIsNone(state["continuation_record_id"])
+
     def test_timeout_and_non_2xx_post_are_unknown_and_never_retried(self) -> None:
         cases: list[tuple[str, harness.HttpResponse | Exception, int | None]] = [
             ("timeout", harness.TransportError("fake timeout"), None),
@@ -469,6 +748,24 @@ class Issue9SafetyTests(unittest.TestCase):
                 state = state_store.read(1)
                 self.assertEqual(state["status"], "write-attempted-outcome-unknown")
                 self.assertEqual(state.get("write_status"), expected_status)
+                self.assertEqual(state["request"]["method"], "POST")
+                self.assertEqual(
+                    state["request"]["path"],
+                    "/open/api/v1/interpretations",
+                )
+                self.assertEqual(
+                    state["request"]["payload"],
+                    step.interactive_preview()["payload"],
+                )
+                serialized = json.dumps(state, ensure_ascii=False)
+                self.assertIn("明显虚假的离线示例释义", serialized)
+                self.assertEqual(
+                    state["credential_fingerprint"], test_credential.fingerprint
+                )
+                self.assertNotIn(FAKE_TOKEN, serialized)
+                self.assertNotIn("Authorization", serialized)
+                self.assertNotIn("Cookie", serialized)
+                self.assertNotIn("response", state)
                 self.assertEqual(len(transport.requests), 1)
                 self.assertEqual(transport.requests[0].method, "POST")
                 replay_transport = FakeTransport()
@@ -562,15 +859,16 @@ class Issue9SafetyTests(unittest.TestCase):
 
     def test_phrase_highlight_is_observed_for_exact_inflected_and_multiple(self) -> None:
         cases = [
-            (2, [{"start": 4, "end": 14}], None),
-            (3, [{"start": 8, "end": 19}], phrase_rollback()),
+            (2, [{"start": 4, "end": 14}], "object-range-array", None),
+            (3, [[8, 19]], "integer-pair-array", phrase_rollback()),
             (
                 4,
                 [{"start": 4, "end": 14}, {"start": 31, "end": 41}],
+                "object-range-array",
                 phrase_rollback(),
             ),
         ]
-        for sequence, ranges, existing in cases:
+        for sequence, ranges, raw_shape, existing in cases:
             with self.subTest(sequence=sequence):
                 kwargs: dict[str, object] = {}
                 if existing is not None:
@@ -584,12 +882,11 @@ class Issue9SafetyTests(unittest.TestCase):
                 _, state_store = self.make_store(f"issue9-highlight-{sequence}-")
                 test_credential = credential()
                 transport = FakeTransport(
-                    [
-                        harness.HttpResponse(
-                            200, {"phrase": {"id": "INVALID_PHRASE_ID"}}
-                        ),
-                        harness.HttpResponse(200, {"phrases": [official_record]}),
-                    ]
+                    responses_for_step(
+                        step,
+                        official_record,
+                        preflight_record=existing,
+                    )
                 )
                 result = harness.SingleStepExecutor(transport).execute(
                     step,
@@ -599,28 +896,44 @@ class Issue9SafetyTests(unittest.TestCase):
                     state_store=state_store,
                 )
                 self.assertEqual(
-                    result.highlight_observation.as_dict()["ranges"], ranges
+                    result.highlight_observation.as_dict()["normalized_ranges"],
+                    [
+                        {"start": item["start"], "end": item["end"]}
+                        if isinstance(item, dict)
+                        else {"start": item[0], "end": item[1]}
+                        for item in ranges
+                    ],
+                )
+                self.assertEqual(result.highlight_observation.raw_shape, raw_shape)
+                self.assertEqual(
+                    result.highlight_observation.outcome, "ranges-observed"
                 )
                 self.assertEqual(
                     result.highlight_observation.semantic_status,
                     "awaiting-owner-app-comparison",
                 )
+                self.assertEqual(result.payload_readback_status, "verified")
                 persisted = state_store.read(sequence)
                 self.assertEqual(persisted["status"], "verified")
                 self.assertEqual(
-                    persisted["result"]["highlight_observation"]["ranges"], ranges
+                    persisted["result"]["payload_readback_status"], "verified"
+                )
+                self.assertEqual(
+                    persisted["result"]["highlight_observation"]["raw_shape"],
+                    raw_shape,
                 )
 
-    def test_missing_or_malformed_highlight_stops_and_remains_unverified(self) -> None:
-        malformed = [
-            None,
-            [],
-            [[4, 14]],
-            [{"start": 4, "end": "14"}],
-            [{"start": 14, "end": 4}],
+    def test_highlight_negative_invalid_and_unknown_do_not_unverify_payload(self) -> None:
+        observations = [
+            (None, "negative", "missing"),
+            ([], "negative", "empty-array"),
+            ([{"start": 4, "end": "14"}], "invalid", "object-range-array"),
+            ([{"start": 14, "end": 4}], "invalid", "object-range-array"),
+            ([{"start": 4, "end": 500}], "invalid", "object-range-array"),
+            (["unrecognized"], "unknown", "unrecognized-array"),
         ]
-        for index, highlight in enumerate(malformed):
-            with self.subTest(highlight=highlight):
+        for index, (highlight, outcome, raw_shape) in enumerate(observations):
+            with self.subTest(highlight=highlight, outcome=outcome):
                 step = harness.prepare_plan_step(self.plan, 2)
                 record = phrase_record(step, [{"start": 4, "end": 14}])
                 if highlight is None:
@@ -630,15 +943,204 @@ class Issue9SafetyTests(unittest.TestCase):
                 _, state_store = self.make_store(f"issue9-bad-highlight-{index}-")
                 test_credential = credential()
                 transport = FakeTransport(
+                    responses_for_step(step, record)
+                )
+                result = harness.SingleStepExecutor(transport).execute(
+                    step,
+                    step.confirmation,
+                    test_credential,
+                    valid_gate(test_credential),
+                    state_store=state_store,
+                )
+                self.assertEqual(result.payload_readback_status, "verified")
+                self.assertEqual(result.highlight_observation.outcome, outcome)
+                self.assertEqual(result.highlight_observation.raw_shape, raw_shape)
+                self.assertNotEqual(
+                    result.highlight_observation.semantic_status,
+                    "automatic-highlight-verified",
+                )
+                state = state_store.read(2)
+                self.assertEqual(state["status"], "verified")
+                self.assertEqual(
+                    state["result"]["highlight_observation"]["outcome"], outcome
+                )
+
+    def test_phrase_continuation_uses_private_server_id_across_three_steps(self) -> None:
+        test_credential = credential()
+        exact_step = harness.prepare_plan_step(self.plan, 2)
+        server_record_id = "INVALID_SERVER_ASSIGNED_PHRASE_ID"
+        exact_record = phrase_record(
+            exact_step,
+            [{"start": 4, "end": 14}],
+            server_record_id,
+        )
+        _, exact_store = self.make_store("issue9-chain-exact-")
+        exact_result = harness.SingleStepExecutor(
+            FakeTransport(responses_for_step(exact_step, exact_record))
+        ).execute(
+            exact_step,
+            exact_step.confirmation,
+            test_credential,
+            valid_gate(test_credential),
+            state_store=exact_store,
+        )
+        self.assertEqual(
+            exact_result.interactive_continuation()["record_id"], server_record_id
+        )
+        self.assertNotIn(server_record_id, json.dumps(exact_result.safe_summary()))
+        self.assertNotIn(server_record_id, repr(exact_result))
+        self.assertEqual(
+            exact_store.read(2)["continuation_record_id"], server_record_id
+        )
+
+        inflected_step = harness.prepare_phrase_continuation_step(
+            self.plan,
+            3,
+            previous_state_store=exact_store,
+            previous_sequence=2,
+            credential_fingerprint=test_credential.fingerprint,
+        )
+        self.assertEqual(
+            inflected_step.path,
+            f"/open/api/v1/phrases/{server_record_id}",
+        )
+        self.assertEqual(
+            inflected_step.interactive_preview()["existing_record"],
+            exact_store.read(2)["verified_record_snapshot"],
+        )
+        inflected_record = phrase_record(
+            inflected_step,
+            [[8, 19]],
+            server_record_id,
+        )
+        _, inflected_store = self.make_store("issue9-chain-inflected-")
+        harness.SingleStepExecutor(
+            FakeTransport(
+                responses_for_step(
+                    inflected_step,
+                    inflected_record,
+                    preflight_record=exact_store.read(2)[
+                        "verified_record_snapshot"
+                    ],
+                )
+            )
+        ).execute(
+            inflected_step,
+            inflected_step.confirmation,
+            test_credential,
+            valid_gate(test_credential),
+            state_store=inflected_store,
+        )
+
+        multiple_step = harness.prepare_phrase_continuation_step(
+            self.plan,
+            4,
+            previous_state_store=inflected_store,
+            previous_sequence=3,
+            credential_fingerprint=test_credential.fingerprint,
+        )
+        self.assertEqual(
+            multiple_step.path,
+            f"/open/api/v1/phrases/{server_record_id}",
+        )
+        self.assertEqual(
+            multiple_step.interactive_preview()["existing_record"],
+            inflected_store.read(3)["verified_record_snapshot"],
+        )
+        with self.assertRaisesRegex(harness.SafetyError, "fingerprint changed"):
+            harness.prepare_phrase_continuation_step(
+                self.plan,
+                4,
+                previous_state_store=inflected_store,
+                previous_sequence=3,
+                credential_fingerprint="0" * 16,
+            )
+
+    def test_readback_recovers_missing_write_response_id_only_when_unique(self) -> None:
+        step = harness.prepare_plan_step(self.plan, 2)
+        test_credential = credential()
+        recovered_id = "INVALID_READBACK_ONLY_PHRASE_ID"
+        recovered_record = phrase_record(
+            step,
+            [{"start": 4, "end": 14}],
+            recovered_id,
+        )
+        _, recovered_store = self.make_store("issue9-readback-id-")
+        result = harness.SingleStepExecutor(
+            FakeTransport(
+                [
+                    harness.HttpResponse(200, {}),
+                    harness.HttpResponse(200, {"phrases": [recovered_record]}),
+                ]
+            )
+        ).execute(
+            step,
+            step.confirmation,
+            test_credential,
+            valid_gate(test_credential),
+            state_store=recovered_store,
+        )
+        self.assertEqual(result.continuation_record_id, recovered_id)
+        self.assertEqual(
+            recovered_store.read(2)["continuation_record_id"], recovered_id
+        )
+
+        second_record = dict(recovered_record)
+        second_record["id"] = "INVALID_SECOND_CANDIDATE_PHRASE_ID"
+        _, ambiguous_store = self.make_store("issue9-readback-id-ambiguous-")
+        with self.assertRaises(harness.VerificationError):
+            harness.SingleStepExecutor(
+                FakeTransport(
                     [
+                        harness.HttpResponse(200, {}),
                         harness.HttpResponse(
-                            200, {"phrase": {"id": "INVALID_PHRASE_ID"}}
+                            200, {"phrases": [recovered_record, second_record]}
                         ),
-                        harness.HttpResponse(200, {"phrases": [record]}),
                     ]
                 )
+            ).execute(
+                step,
+                step.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=ambiguous_store,
+            )
+        ambiguous_state = ambiguous_store.read(2)
+        self.assertEqual(
+            ambiguous_state["status"], "write-succeeded-readback-unverified"
+        )
+        self.assertIsNone(ambiguous_state["continuation_record_id"])
+
+    def test_readback_tags_are_exact_set_with_order_only_ignored(self) -> None:
+        step = harness.prepare_plan_step(self.plan, 1)
+        test_credential = credential()
+        reordered = interpretation_record(step)
+        reordered["tags"] = ["GMAT", "MBA", "BEC"]
+        _, reordered_store = self.make_store("issue9-tags-reordered-")
+        result = harness.SingleStepExecutor(
+            FakeTransport(responses_for_step(step, reordered))
+        ).execute(
+            step,
+            step.confirmation,
+            test_credential,
+            valid_gate(test_credential),
+            state_store=reordered_store,
+        )
+        self.assertEqual(result.payload_readback_status, "verified")
+
+        for name, tags in (
+            ("missing", ["MBA", "BEC"]),
+            ("extra", ["MBA", "BEC", "GMAT", "OTHER"]),
+            ("duplicate", ["MBA", "BEC", "BEC"]),
+        ):
+            with self.subTest(name=name):
+                record = interpretation_record(step)
+                record["tags"] = tags
+                _, state_store = self.make_store(f"issue9-tags-{name}-")
                 with self.assertRaises(harness.VerificationError):
-                    harness.SingleStepExecutor(transport).execute(
+                    harness.SingleStepExecutor(
+                        FakeTransport(responses_for_step(step, record))
+                    ).execute(
                         step,
                         step.confirmation,
                         test_credential,
@@ -646,7 +1148,7 @@ class Issue9SafetyTests(unittest.TestCase):
                         state_store=state_store,
                     )
                 self.assertEqual(
-                    state_store.read(2)["status"],
+                    state_store.read(1)["status"],
                     "write-succeeded-readback-unverified",
                 )
 
@@ -661,17 +1163,11 @@ class Issue9SafetyTests(unittest.TestCase):
         root, state_store = self.make_store("issue9-rollback-")
         test_credential = credential()
         transport = FakeTransport(
-            [
-                harness.HttpResponse(200, {"phrase": {"id": "INVALID_PHRASE_ID"}}),
-                harness.HttpResponse(
-                    200,
-                    {
-                        "phrases": [
-                            phrase_record(step, [{"start": 8, "end": 19}])
-                        ]
-                    },
-                ),
-            ]
+            responses_for_step(
+                step,
+                phrase_record(step, [{"start": 8, "end": 19}]),
+                preflight_record=old_record,
+            )
         )
         harness.SingleStepExecutor(transport).execute(
             step,
@@ -683,6 +1179,11 @@ class Issue9SafetyTests(unittest.TestCase):
         destination = root / "issue9-step-3.json"
         state = state_store.read(3)
         self.assertEqual(state["rollback_snapshot"], old_record)
+        self.assertEqual(state["request"]["method"], "POST")
+        self.assertEqual(
+            state["request"]["payload"], step.interactive_preview()["payload"]
+        )
+        self.assertEqual(state["continuation_record_id"], "INVALID_PHRASE_ID")
         content = destination.read_text(encoding="utf-8")
         self.assertIn("OFFLINE PREVIOUS PHRASE", content)
         self.assertNotIn(FAKE_TOKEN, content)
@@ -691,14 +1192,12 @@ class Issue9SafetyTests(unittest.TestCase):
         self.assertNotIn(ACCOUNT_LABEL, content)
         self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
-        ignored = subprocess.run(
-            ["git", "check-ignore", str(destination)],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(ignored.returncode, 0, ignored.stderr)
+        ignore_rules = {
+            line.strip()
+            for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertIn("artifacts/private/", ignore_rules)
 
     def test_credential_never_appears_in_repr_summary_state_or_error(self) -> None:
         test_credential = credential()
@@ -718,6 +1217,25 @@ class Issue9SafetyTests(unittest.TestCase):
             )
         self.assertNotIn(FAKE_TOKEN, str(context.exception))
         self.assertNotIn(FAKE_TOKEN, json.dumps(state_store.read(1)))
+
+        collision_payload = step.interactive_preview()["payload"]
+        collision_payload["interpretation"]["interpretation"] = FAKE_TOKEN
+        forged = replace(step, payload=collision_payload)
+        collision_root, collision_store = self.make_store(
+            "issue9-token-collision-"
+        )
+        collision_transport = FakeTransport()
+        with self.assertRaises(harness.SafetyError) as collision_context:
+            harness.SingleStepExecutor(collision_transport).execute(
+                forged,
+                forged.confirmation,
+                test_credential,
+                valid_gate(test_credential),
+                state_store=collision_store,
+            )
+        self.assertNotIn(FAKE_TOKEN, str(collision_context.exception))
+        self.assertEqual(collision_transport.requests, [])
+        self.assertEqual(list(collision_root.iterdir()), [])
 
 
 if __name__ == "__main__":

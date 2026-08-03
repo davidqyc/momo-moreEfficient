@@ -44,12 +44,14 @@
 Issue #9 的最小 harness 将能力分为三层：
 
 1. `offline-plan` 是默认且当前唯一可从命令行完成的模式，只复用 Issue #2 的 fixture 校验和 payload 生成，不实例化 transport。
-2. `read-only` 只允许公开 schema 中已核对的 GET 路径，且必须先通过副账号人工门禁；当前命令行没有凭证入口，因此默认阻断。
-3. `live-step` 每个执行器最多尝试一个 POST。交互预览在本地当次显示 method、固定在 `/open/api/v1` 下的 path、真实待写内容，以及更新时的完整旧内容；普通摘要只保留哈希/脱敏内容。精确确认后最多写一次，随后立即 GET 回读。释义只比较 `interpretation`、`tags`、`status`，例句只比较 `phrase`、`interpretation`、`tags`、`origin`；请求/查询字段 `voc_id` 不作为返回记录必需字段。例句还必须取得结构可识别的 `highlight` 整数范围并作为观察结果保存，但其语义正确性仍等待所有者与 App 对照。写入超时、记录 ID 不明确、highlight 缺失/结构不明、回读失败或字段不一致时停止，不自动重试。
+2. `read-only` 只允许公开 schema 中已核对的 `GET /vocabulary?spelling=...`、`GET /interpretations?voc_id=...` 和 `GET /phrases?voc_id=...`，且必须先通过副账号人工门禁；`/vocabulary/query` 是 POST 语义，本 Issue 不开放。当前命令行没有凭证入口，因此默认阻断。
+3. `live-step` 每个执行器最多尝试一个 POST。交互预览在本地当次显示 method、固定在 `/open/api/v1` 下的 path、真实待写内容，以及更新时的完整旧内容；普通摘要只保留哈希/脱敏内容。prepare 后的 path、payload 和旧记录快照被隔离并递归冻结；执行器在 journal 和发送前再次验证 action/path/payload/vocabulary 完整合同，并按最终 method、path、payload 重算精确确认码。update 还必须先按目标 `voc_id` 做一次只读 GET，唯一命中目标记录 ID 且所有旧可写字段与 rollback snapshot 一致后，才允许创建 journal 和尝试 POST。随后立即 GET 回读：释义只比较 `interpretation`、`tags`、`status`，例句只比较 `phrase`、`interpretation`、`tags`、`origin`；三标签按无重复、无缺失、无额外的精确集合比较，顺序不作为合同；请求/查询字段 `voc_id` 不要求出现在返回记录中。写入超时、记录 ID 不明确、回读失败或字段不一致时停止，不自动重试。
 
 真实 transport 固定生产 host `open.maimemo.com`，连接和读取均要求有限超时；GET 查询统一用 `urlencode` 构造，记录 ID 只接受安全单一路径段。它通过依赖注入与执行逻辑隔离，自动化测试只使用内存 fake transport，并由进程级 socket/URL 断网钩子兜底。本轮没有配置或读取 Token，也没有发送请求。
 
-所有 live write 都必须使用 Git 已忽略的 `artifacts/private/` journal，并在 POST 前先以严格本地权限保存 `prepared-not-sent`，随后只允许转为 `write-attempted-outcome-unknown`、`write-succeeded-readback-unverified` 或 `verified`。POST 非 2xx、GET 失败、记录歧义、字段不一致或 highlight 不可识别都会留下 unresolved 状态；同一步存在任何 journal 时默认禁止重放，仅提示人工检查，不提供自动恢复或重试。普通摘要、PR 和 ZIP 不含原始私人内容；为支持人工回滚，私有 journal 可以保存该条用户自建记录恢复所需的完整旧释义/例句字段，但绝不保存 Token、Authorization、Cookie、原始响应或主账号信息，目录/文件权限分别收紧到 `0700`/`0600`。自动化测试只写入明显虚假的临时私有状态并在测试后移除。
+例句回读把 payload 验证与 `highlight` 观察分开记录。对象范围数组和二维整数范围数组都会规范化，并保留原始形状说明；每个范围须满足 `0 <= start < end <= 英文例句长度`。缺失、空数组、不合法范围或未知结构分别记录为 negative、invalid 或 unknown，但只要例句正文、翻译、标签和来源回读正确，写入本身仍标记为 verified；这不等于自动高亮语义成功，exact、inflected、multiple 三步仍等待所有者在 App 中逐项对照。
+
+所有 live write 都必须使用 Git 已忽略的 `artifacts/private/` journal，并在 POST 前先以严格本地权限保存 `prepared-not-sent`，随后只允许转为 `write-attempted-outcome-unknown`、`write-succeeded-readback-unverified` 或 `verified`。POST 非 2xx、GET 失败、记录歧义或字段不一致都会留下 unresolved 状态；同一步存在任何 journal 时默认禁止重放，仅提示人工检查，不提供自动恢复或重试。普通摘要、PR 和 ZIP 不含原始 ID 或私人正文；为支持人工恢复，私有 journal 保存最终 method、完整相对 path、实际待写 payload、完整 rollback snapshot、凭证非敏感指纹、恢复提示，以及服务器唯一确定后的真实记录 ID 和筛选后的可写字段快照。例句 exact 创建后的真实 ID 只从该受保护状态传给 inflected，再传给 multiple；普通输出只显示 ID fingerprint。私有 journal 绝不保存 Token、Authorization、Cookie、主账号信息或原始未筛选响应，目录/文件权限分别收紧到 `0700`/`0600`。自动化测试只写入明显虚假的临时私有状态并在测试后移除。
 
 进入真实阶段仍需所有者人工完成：准备专用副账号和合法、真实、愿意保留的单词内容；在 App 中确认当前登录的确为副账号；通过独立的本地私有凭证注入方式启动；逐步核对每次预览、输入精确确认，并在 App 内验证跨账号发现、英文高亮、中文位置和来源展示。主账号 Token 永远不是 Issue #2/#9 的输入。
 

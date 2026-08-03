@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -32,6 +33,7 @@ MAX_RESPONSE_BYTES = 1_048_576
 IDENTITY_ENDPOINT_FINDING = "没有找到"
 TEST_ACCOUNT_CREDENTIAL_SOURCE = "secondary-test-account"
 CONFIRMATION_PREFIX = "CONFIRM WRITE STEP"
+REQUIRED_TAGS = tuple(issue2_smoke.REQUIRED_TAGS)
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "issue2-smoke-input.example.json"
 PRIVATE_STATE_ROOT = ROOT / "artifacts" / "private"
@@ -81,17 +83,19 @@ def _validate_reviewed_request(method: str, path: str) -> None:
     if method == "GET":
         parsed = urlsplit(path)
         endpoints = {
-            f"{OPEN_API_PREFIX}/vocabulary",
-            f"{OPEN_API_PREFIX}/vocabulary/query",
-            f"{OPEN_API_PREFIX}/interpretations",
-            f"{OPEN_API_PREFIX}/phrases",
+            f"{OPEN_API_PREFIX}/vocabulary": "spelling",
+            f"{OPEN_API_PREFIX}/interpretations": "voc_id",
+            f"{OPEN_API_PREFIX}/phrases": "voc_id",
         }
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
         if (
             not parsed.scheme
             and not parsed.netloc
+            and not parsed.fragment
             and parsed.path in endpoints
-            and parsed.query
-            and parse_qsl(parsed.query, keep_blank_values=True)
+            and len(pairs) == 1
+            and pairs[0][0] == endpoints[parsed.path]
+            and pairs[0][1] != ""
         ):
             return
     elif method == "POST":
@@ -111,10 +115,15 @@ def _safe_record_id(value: Any, label: str) -> str:
 
 
 def build_query_path(resource: str, params: Mapping[str, Any]) -> str:
-    if resource not in {"vocabulary", "vocabulary/query", "interpretations", "phrases"}:
+    contracts = {
+        "vocabulary": "spelling",
+        "interpretations": "voc_id",
+        "phrases": "voc_id",
+    }
+    if resource not in contracts:
         raise SafetyError("query resource is not a reviewed endpoint")
-    if not params:
-        raise SafetyError("documented GET requests require query parameters")
+    if set(params) != {contracts[resource]}:
+        raise SafetyError("documented GET query parameters do not match the endpoint")
     for key, value in params.items():
         if (
             not isinstance(key, str)
@@ -138,6 +147,28 @@ def _fingerprint(value: str) -> dict[str, Any]:
     }
 
 
+def _freeze_json(value: Any) -> Any:
+    """Defensively copy JSON-shaped data into recursively immutable containers."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return deepcopy(value)
+
+
+def _thaw_json(value: Any) -> Any:
+    """Return a detached JSON-serializable copy of frozen prepared data."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_json(item) for item in value]
+    return deepcopy(value)
+
+
 _SENSITIVE_KEYS = {"authorization", "cookie", "token", "access_token"}
 _CONTENT_KEYS = {
     "id",
@@ -157,7 +188,7 @@ def redact(value: Any, *, key: str | None = None) -> Any:
         return "[REDACTED]"
     if isinstance(value, Mapping):
         return {str(item_key): redact(item, key=str(item_key)) for item_key, item in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [redact(item, key=key) for item in value]
     if isinstance(value, str) and normalized_key in _CONTENT_KEYS:
         return {"fingerprint": _fingerprint(value)}
@@ -172,9 +203,22 @@ def _assert_no_sensitive_keys(value: Any, path: str = "value") -> None:
             if any(term in normalized for term in ("authorization", "cookie", "token")):
                 raise SafetyError(f"{path} contains a forbidden sensitive field")
             _assert_no_sensitive_keys(item, f"{path}.{key}")
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _assert_no_sensitive_keys(item, f"{path}[{index}]")
+
+
+def _contains_credential_material(value: Any, credential_value: str) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_credential_material(item, credential_value)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _contains_credential_material(item, credential_value) for item in value
+        )
+    return isinstance(value, str) and credential_value in value
 
 
 @dataclass(frozen=True)
@@ -195,6 +239,8 @@ class HttpRequest:
             raise SafetyError("GET requests must not carry a request payload")
         if self.method == "POST" and not isinstance(self.payload, Mapping):
             raise SafetyError("POST requests require a reviewed object payload")
+        if self.payload is not None:
+            object.__setattr__(self, "payload", _freeze_json(self.payload))
 
 
 @dataclass(frozen=True, repr=False)
@@ -292,7 +338,9 @@ class ProductionHttpTransport:
             "Authorization": f"Bearer {credential.token}",
         }
         if request.payload is not None:
-            payload = json.dumps(request.payload, ensure_ascii=False).encode("utf-8")
+            payload = json.dumps(
+                _thaw_json(request.payload), ensure_ascii=False
+            ).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
         try:
@@ -387,6 +435,7 @@ def choose_interpretation_operation(
 class PreparedStep:
     sequence: int
     action: str
+    vocabulary_id: str
     method: str
     path: str
     payload: Mapping[str, Any]
@@ -395,14 +444,24 @@ class PreparedStep:
     confirmation: str
     rollback_snapshot: Mapping[str, Any] | None
 
+    def __post_init__(self) -> None:
+        if isinstance(self.payload, Mapping):
+            object.__setattr__(self, "payload", _freeze_json(self.payload))
+        if isinstance(self.rollback_snapshot, Mapping):
+            object.__setattr__(
+                self,
+                "rollback_snapshot",
+                _freeze_json(self.rollback_snapshot),
+            )
+
     def interactive_preview(self) -> dict[str, Any]:
         return {
             "sequence": self.sequence,
             "action": self.action,
             "method": self.method,
             "path": self.path,
-            "payload": deepcopy(self.payload),
-            "existing_record": deepcopy(self.rollback_snapshot),
+            "payload": _thaw_json(self.payload),
+            "existing_record": _thaw_json(self.rollback_snapshot),
             "required_confirmation": self.confirmation,
         }
 
@@ -425,13 +484,18 @@ class PreparedStep:
         **details: Any,
     ) -> dict[str, Any]:
         document = {
-            "version": 2,
+            "version": 3,
             "sequence": self.sequence,
             "action": self.action,
             "status": status,
             "credential_fingerprint": credential_fingerprint,
             "safe_step_summary": self.safe_summary(),
-            "rollback_snapshot": deepcopy(self.rollback_snapshot),
+            "request": {
+                "method": self.method,
+                "path": self.path,
+                "payload": _thaw_json(self.payload),
+            },
+            "rollback_snapshot": _thaw_json(self.rollback_snapshot),
             **details,
         }
         _assert_no_sensitive_keys(document)
@@ -442,7 +506,7 @@ def _confirmation_for(
     sequence: int, method: str, path: str, payload: Mapping[str, Any]
 ) -> str:
     canonical = json.dumps(
-        {"method": method, "path": path, "payload": payload},
+        {"method": method, "path": path, "payload": _thaw_json(payload)},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -476,10 +540,11 @@ def _normalize_rollback_record(
         )
     snapshot = {key: deepcopy(existing_record[key]) for key in required}
     _safe_record_id(snapshot["id"], "rollback record id")
-    if not isinstance(snapshot["tags"], list) or not all(
+    if not isinstance(snapshot["tags"], (list, tuple)) or not all(
         isinstance(tag, str) for tag in snapshot["tags"]
     ):
         raise SafetyError("rollback record tags must be a string list")
+    snapshot["tags"] = list(snapshot["tags"])
     for key, value in snapshot.items():
         if key not in {"tags"} and not isinstance(value, str):
             raise SafetyError(f"rollback record {key} must be a string")
@@ -487,53 +552,100 @@ def _normalize_rollback_record(
     return snapshot
 
 
+_ACTION_CONTRACTS: dict[str, tuple[str, tuple[str, ...], str, bool]] = {
+    "create_interpretation": (
+        "interpretation",
+        ("voc_id", "interpretation", "tags", "status"),
+        "interpretations",
+        False,
+    ),
+    "update_interpretation": (
+        "interpretation",
+        ("interpretation", "tags", "status"),
+        "interpretations",
+        True,
+    ),
+    "create_phrase_exact_case": (
+        "phrase",
+        ("voc_id", "phrase", "interpretation", "tags", "origin"),
+        "phrases",
+        False,
+    ),
+    "update_phrase_inflected_case": (
+        "phrase",
+        ("phrase", "interpretation", "tags", "origin"),
+        "phrases",
+        True,
+    ),
+    "update_phrase_multiple_case": (
+        "phrase",
+        ("phrase", "interpretation", "tags", "origin"),
+        "phrases",
+        True,
+    ),
+}
+
+
+def _require_nonempty_text(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SafetyError(f"{label} must be a non-empty string")
+    return value
+
+
+def _validate_required_request_tags(value: Any) -> None:
+    if not isinstance(value, (list, tuple)) or tuple(value) != REQUIRED_TAGS:
+        raise SafetyError("write tags must be exactly MBA, BEC, GMAT")
+
+
 def _validate_operation_payload(
     action: str,
     path: str,
     payload: Mapping[str, Any],
+    vocabulary_id: str,
 ) -> None:
-    contracts = {
-        "create_interpretation": (
-            "interpretation",
-            {"voc_id", "interpretation", "tags", "status"},
-            "/interpretations",
-        ),
-        "update_interpretation": (
-            "interpretation",
-            {"interpretation", "tags", "status"},
-            "/interpretations/",
-        ),
-        "create_phrase_exact_case": (
-            "phrase",
-            {"voc_id", "phrase", "interpretation", "tags", "origin"},
-            "/phrases",
-        ),
-        "update_phrase_inflected_case": (
-            "phrase",
-            {"phrase", "interpretation", "tags", "origin"},
-            "/phrases/",
-        ),
-        "update_phrase_multiple_case": (
-            "phrase",
-            {"phrase", "interpretation", "tags", "origin"},
-            "/phrases/",
-        ),
-    }
-    contract = contracts.get(action)
+    contract = _ACTION_CONTRACTS.get(action)
     if contract is None:
         raise SafetyError("operation action is outside the reviewed write contract")
-    entity_key, expected_fields, expected_path = contract
+    entity_key, expected_fields, resource, is_update = contract
+    target_vocabulary_id = _safe_record_id(vocabulary_id, "target vocabulary id")
     if set(payload) != {entity_key}:
         raise SafetyError("write payload top-level keys do not match the reviewed contract")
     entity = payload.get(entity_key)
-    if not isinstance(entity, Mapping) or set(entity) != expected_fields:
+    if not isinstance(entity, Mapping) or set(entity) != set(expected_fields):
         raise SafetyError("write payload entity keys do not match the reviewed contract")
-    suffix = path.removeprefix(OPEN_API_PREFIX)
-    if expected_path.endswith("/"):
-        if not suffix.startswith(expected_path):
+    if is_update:
+        match = re.fullmatch(
+            rf"{re.escape(OPEN_API_PREFIX)}/{resource}/([A-Za-z0-9_-]+)",
+            path,
+        )
+        if match is None:
             raise SafetyError("write action does not match its reviewed update path")
-    elif suffix != expected_path:
+        _safe_record_id(match.group(1), "update record id")
+    elif path != f"{OPEN_API_PREFIX}/{resource}":
         raise SafetyError("write action does not match its reviewed create path")
+
+    _validate_required_request_tags(entity.get("tags"))
+    if entity_key == "interpretation":
+        _require_nonempty_text(entity.get("interpretation"), "interpretation")
+        if entity.get("status") != "PUBLISHED":
+            raise SafetyError("interpretation status must be PUBLISHED")
+    else:
+        for field_name in ("phrase", "interpretation", "origin"):
+            _require_nonempty_text(entity.get(field_name), f"phrase {field_name}")
+
+    if is_update:
+        if "voc_id" in entity or "id" in entity:
+            raise SafetyError("update payload must not contain voc_id or id")
+    elif entity.get("voc_id") != target_vocabulary_id:
+        raise SafetyError("create payload voc_id does not match the target vocabulary")
+
+
+def _response_contract(action: str) -> tuple[str, str, bool]:
+    contract = _ACTION_CONTRACTS.get(action)
+    if contract is None:
+        raise SafetyError("operation action is outside the reviewed write contract")
+    entity_key, _fields, resource, is_update = contract
+    return entity_key, resource, is_update
 
 
 def prepare_operation(
@@ -557,44 +669,86 @@ def prepare_operation(
     ):
         raise SafetyError("operation is not one reviewed write step")
 
+    target_vocabulary_id = _safe_record_id(vocabulary_id, "target vocabulary id")
     if issue2_smoke.CREATED_PHRASE_ID in path:
         if not phrase_record_id:
             raise SafetyError("phrase update requires the previously captured record id")
         record_id = _safe_record_id(phrase_record_id, "phrase record id")
         path = path.replace(issue2_smoke.CREATED_PHRASE_ID, record_id)
 
+    payload_copy = _thaw_json(payload)
     _validate_api_path(path)
     _validate_reviewed_request(method, path)
-    _assert_no_sensitive_keys(payload, "write payload")
-    _validate_operation_payload(action, path, payload)
+    _assert_no_sensitive_keys(payload_copy, "write payload")
+    _validate_operation_payload(action, path, payload_copy, target_vocabulary_id)
     if action.startswith("update_") and existing_record is None:
         raise SafetyError("update steps require a pre-write record snapshot")
     rollback_snapshot = _normalize_rollback_record(action, existing_record)
     if rollback_snapshot is not None and path.rsplit("/", 1)[-1] != rollback_snapshot["id"]:
         raise SafetyError("rollback record id does not match the update path")
-    if "/interpretations" in path:
-        readback_path = build_query_path(
-            "interpretations", {"voc_id": vocabulary_id}
-        )
-        response_key = "interpretations"
-    elif "/phrases" in path:
-        readback_path = build_query_path("phrases", {"voc_id": vocabulary_id})
-        response_key = "phrases"
-    else:
-        raise SafetyError("write path is outside the reviewed Issue #2 endpoints")
+    _entity_key, resource, _is_update = _response_contract(action)
+    readback_path = build_query_path(resource, {"voc_id": target_vocabulary_id})
+    response_key = resource
     _validate_api_path(readback_path)
 
     return PreparedStep(
         sequence=sequence,
         action=action,
+        vocabulary_id=target_vocabulary_id,
         method=method,
         path=path,
-        payload=payload,
+        payload=payload_copy,
         readback_path=readback_path,
         response_key=response_key,
-        confirmation=_confirmation_for(sequence, method, path, payload),
+        confirmation=_confirmation_for(sequence, method, path, payload_copy),
         rollback_snapshot=rollback_snapshot,
     )
+
+
+def _validate_prepared_step(step: PreparedStep) -> None:
+    """Revalidate every value at the final executor trust boundary."""
+
+    if not isinstance(step, PreparedStep):
+        raise SafetyError("executor requires one reviewed PreparedStep")
+    if not isinstance(step.sequence, int) or isinstance(step.sequence, bool) or step.sequence < 1:
+        raise SafetyError("prepared step sequence must be a positive integer")
+    if step.method != "POST" or not isinstance(step.path, str):
+        raise SafetyError("prepared step method/path are outside the write contract")
+    if not isinstance(step.action, str) or not isinstance(step.payload, Mapping):
+        raise SafetyError("prepared step action/payload are outside the write contract")
+    target_vocabulary_id = _safe_record_id(
+        step.vocabulary_id, "target vocabulary id"
+    )
+    _validate_api_path(step.path)
+    _validate_reviewed_request(step.method, step.path)
+    _assert_no_sensitive_keys(step.payload, "write payload")
+    _validate_operation_payload(
+        step.action,
+        step.path,
+        step.payload,
+        target_vocabulary_id,
+    )
+
+    _entity_key, resource, is_update = _response_contract(step.action)
+    if step.response_key != resource:
+        raise SafetyError("prepared response key does not match the write action")
+    expected_readback = build_query_path(
+        resource, {"voc_id": target_vocabulary_id}
+    )
+    if step.readback_path != expected_readback:
+        raise SafetyError("prepared readback path does not match the target vocabulary")
+
+    normalized = _normalize_rollback_record(
+        step.action,
+        _thaw_json(step.rollback_snapshot),
+    )
+    if _thaw_json(step.rollback_snapshot) != _thaw_json(normalized):
+        raise SafetyError("prepared rollback snapshot is not canonical")
+    if is_update:
+        if normalized is None or step.path.rsplit("/", 1)[-1] != normalized["id"]:
+            raise SafetyError("prepared update target and rollback record do not match")
+    elif normalized is not None:
+        raise SafetyError("prepared create must not carry a rollback snapshot")
 
 
 def build_offline_plan(path: Path = DEFAULT_FIXTURE) -> dict[str, Any]:
@@ -652,11 +806,20 @@ def run_read_only_probe(
 def _extract_written_id(step: PreparedStep, response: HttpResponse) -> str | None:
     singular = "interpretation" if step.response_key == "interpretations" else "phrase"
     entity = response.body.get(singular)
-    if isinstance(entity, Mapping) and isinstance(entity.get("id"), str):
-        return entity["id"]
     path_tail = step.path.rsplit("/", 1)[-1]
-    if path_tail not in {"interpretations", "phrases"}:
-        return path_tail
+    update_id = path_tail if path_tail not in {"interpretations", "phrases"} else None
+    if isinstance(entity, Mapping) and "id" in entity:
+        if not isinstance(entity.get("id"), str):
+            raise VerificationError("write response record id is unsafe")
+        try:
+            response_id = _safe_record_id(entity["id"], "write response record id")
+        except SafetyError:
+            raise VerificationError("write response record id is unsafe") from None
+        if update_id is not None and response_id != update_id:
+            raise VerificationError("write response record id changed the update target")
+        return response_id
+    if update_id is not None:
+        return _safe_record_id(update_id, "update record id")
     return None
 
 
@@ -668,7 +831,9 @@ def _select_readback_record(
     raw_records = response.body.get(step.response_key)
     if not isinstance(raw_records, list):
         raise VerificationError("readback response does not contain the expected list")
-    records = [record for record in raw_records if isinstance(record, Mapping)]
+    if not all(isinstance(record, Mapping) for record in raw_records):
+        raise VerificationError("readback list contains an invalid record")
+    records = list(raw_records)
     if written_id is not None:
         matches = [record for record in records if record.get("id") == written_id]
     else:
@@ -704,26 +869,86 @@ def _expected_fields(step: PreparedStep) -> Mapping[str, Any]:
 
 
 def _verify_fields(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> None:
-    mismatches = [key for key, value in expected.items() if actual.get(key) != value]
+    mismatches: list[str] = []
+    for key, value in expected.items():
+        actual_value = actual.get(key)
+        if key == "tags":
+            if not _tags_equal(value, actual_value):
+                mismatches.append(key)
+        elif actual_value != value:
+            mismatches.append(key)
     if mismatches:
         raise VerificationError(
             f"readback differs in expected fields: {', '.join(sorted(mismatches))}"
         )
 
 
+def _tags_equal(expected: Any, actual: Any) -> bool:
+    if not isinstance(expected, (list, tuple)) or not isinstance(
+        actual, (list, tuple)
+    ):
+        return False
+    if not all(isinstance(tag, str) for tag in (*expected, *actual)):
+        return False
+    if len(expected) != len(set(expected)) or len(actual) != len(set(actual)):
+        return False
+    return set(expected) == set(actual)
+
+
+def _record_id(record: Mapping[str, Any]) -> str:
+    try:
+        return _safe_record_id(record.get("id"), "readback record id")
+    except SafetyError:
+        raise VerificationError("readback record id is absent or unsafe") from None
+
+
+def _record_snapshot(step: PreparedStep, record: Mapping[str, Any]) -> dict[str, Any]:
+    fields = _READBACK_FIELDS.get(step.action)
+    if fields is None:
+        raise VerificationError("write action has no snapshot contract")
+    snapshot = {"id": _record_id(record)}
+    for name in fields:
+        if name not in record:
+            raise VerificationError(f"readback record is missing writable field: {name}")
+        snapshot[name] = _thaw_json(record[name])
+    _assert_no_sensitive_keys(snapshot, "verified record snapshot")
+    return snapshot
+
+
+def _verify_update_preflight(
+    step: PreparedStep,
+    response: HttpResponse,
+) -> Mapping[str, Any]:
+    if not 200 <= response.status < 300:
+        raise VerificationError("update preflight returned a non-success status")
+    target_id = _safe_record_id(step.path.rsplit("/", 1)[-1], "update record id")
+    record = _select_readback_record(step, response, target_id)
+    snapshot = _thaw_json(step.rollback_snapshot)
+    if not isinstance(snapshot, Mapping) or snapshot.get("id") != target_id:
+        raise VerificationError("update preflight rollback identity is invalid")
+    expected = {name: snapshot[name] for name in _READBACK_FIELDS[step.action]}
+    _verify_fields(expected, record)
+    return record
+
+
 @dataclass(frozen=True)
 class HighlightObservation:
-    ranges: tuple[tuple[int, int], ...]
-    structure_verified: bool = True
+    outcome: str
+    raw_shape: str
+    normalized_ranges: tuple[tuple[int, int], ...] = ()
     semantic_status: str = "awaiting-owner-app-comparison"
+    reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "ranges": [
-                {"start": start, "end": end} for start, end in self.ranges
+            "outcome": self.outcome,
+            "raw_shape": self.raw_shape,
+            "normalized_ranges": [
+                {"start": start, "end": end}
+                for start, end in self.normalized_ranges
             ],
-            "structure_verified": self.structure_verified,
             "semantic_status": self.semantic_status,
+            "reason": self.reason,
         }
 
 
@@ -733,48 +958,91 @@ def _observe_highlight(
 ) -> HighlightObservation | None:
     if step.response_key != "phrases":
         return None
-    raw = actual.get("highlight")
-    if not isinstance(raw, list) or not raw:
-        raise VerificationError("phrase highlight is missing or not a non-empty range list")
+    if "highlight" not in actual:
+        return HighlightObservation(
+            outcome="negative",
+            raw_shape="missing",
+            semantic_status="automatic-highlight-not-observed",
+            reason="highlight field is missing",
+        )
+    raw = actual["highlight"]
+    if raw == []:
+        return HighlightObservation(
+            outcome="negative",
+            raw_shape="empty-array",
+            semantic_status="automatic-highlight-not-observed",
+            reason="highlight range array is empty",
+        )
+    if not isinstance(raw, list):
+        return HighlightObservation(
+            outcome="unknown",
+            raw_shape=f"non-array:{type(raw).__name__}",
+            semantic_status="not-verified",
+            reason="highlight structure is not a recognized range array",
+        )
 
+    if all(isinstance(item, Mapping) for item in raw):
+        raw_shape = "object-range-array"
+        candidates = [(item.get("start"), item.get("end")) for item in raw]
+    elif all(isinstance(item, (list, tuple)) and len(item) == 2 for item in raw):
+        raw_shape = "integer-pair-array"
+        candidates = [(item[0], item[1]) for item in raw]
+    else:
+        return HighlightObservation(
+            outcome="unknown",
+            raw_shape="unrecognized-array",
+            semantic_status="not-verified",
+            reason="highlight array mixes or omits recognized range shapes",
+        )
+
+    phrase = actual.get("phrase")
+    phrase_length = len(phrase) if isinstance(phrase, str) else -1
     ranges: list[tuple[int, int]] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, Mapping):
-            raise VerificationError(f"phrase highlight range {index} is not an object")
-        start = item.get("start")
-        end = item.get("end")
+    for index, (start, end) in enumerate(candidates):
         if (
             not isinstance(start, int)
             or isinstance(start, bool)
             or not isinstance(end, int)
             or isinstance(end, bool)
-            or start < 0
-            or end < 0
-            or start > end
+            or not 0 <= start < end <= phrase_length
         ):
-            raise VerificationError(
-                f"phrase highlight range {index} has invalid start/end"
+            return HighlightObservation(
+                outcome="invalid",
+                raw_shape=raw_shape,
+                semantic_status="not-verified",
+                reason=f"highlight range {index} is invalid or out of bounds",
             )
         ranges.append((start, end))
-    return HighlightObservation(tuple(ranges))
+    return HighlightObservation(
+        outcome="ranges-observed",
+        raw_shape=raw_shape,
+        normalized_ranges=tuple(ranges),
+    )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class StepResult:
     sequence: int
     action: str
     status: str
+    payload_readback_status: str
     write_status: int
     read_status: int
     record_id_fingerprint: Mapping[str, Any] | None
+    continuation_record_id: str | None = field(repr=False)
+    verified_record_snapshot: Mapping[str, Any] = field(repr=False)
     verified_fields: tuple[str, ...]
     highlight_observation: HighlightObservation | None
+
+    def __repr__(self) -> str:
+        return f"StepResult({self.safe_summary()!r})"
 
     def safe_summary(self) -> dict[str, Any]:
         return {
             "sequence": self.sequence,
             "action": self.action,
             "status": self.status,
+            "payload_readback_status": self.payload_readback_status,
             "write_status": self.write_status,
             "read_status": self.read_status,
             "record_id_fingerprint": self.record_id_fingerprint,
@@ -786,8 +1054,35 @@ class StepResult:
             ),
         }
 
-    def persisted_state(self) -> dict[str, Any]:
-        return self.safe_summary()
+    def interactive_continuation(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "action": self.action,
+            "record_id": self.continuation_record_id,
+        }
+
+    def private_persisted_state(self) -> dict[str, Any]:
+        document = {
+            **self.safe_summary(),
+            "continuation_record_id": self.continuation_record_id,
+            "verified_record_snapshot": _thaw_json(self.verified_record_snapshot),
+        }
+        _assert_no_sensitive_keys(document, "private result")
+        return document
+
+
+@dataclass(frozen=True, repr=False)
+class PrivateContinuation:
+    record_id: str = field(repr=False)
+    action: str
+    credential_fingerprint: str
+    record_snapshot: Mapping[str, Any] = field(repr=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"PrivateContinuation(action={self.action!r}, record_id=<private>, "
+            f"credential_fingerprint={self.credential_fingerprint!r})"
+        )
 
 
 class PrivateStateStore:
@@ -806,6 +1101,20 @@ class PrivateStateStore:
 
     def _destination(self, sequence: int) -> Path:
         return self.root / f"issue9-step-{sequence}.json"
+
+    def assert_absent(self, sequence: int) -> None:
+        destination = self._destination(sequence)
+        if os.path.lexists(destination):
+            existing_status = "unreadable"
+            try:
+                existing_status = str(self.read(sequence).get("status", "unknown"))
+            except SafetyError:
+                pass
+            raise SafetyError(
+                f"step {sequence} already has private state '{existing_status}'; "
+                "do not replay it. Inspect artifacts/private and obtain separate "
+                "manual recovery approval."
+            )
 
     def _fsync_root(self) -> None:
         descriptor = os.open(self.root, os.O_RDONLY)
@@ -944,7 +1253,10 @@ class PrivateStateStore:
         *,
         write_status: int,
         record_id_fingerprint: Mapping[str, Any] | None,
+        continuation_record_id: str | None,
     ) -> Path:
+        if continuation_record_id is not None:
+            _safe_record_id(continuation_record_id, "continuation record id")
         return self._transition(
             step,
             credential_fingerprint,
@@ -952,6 +1264,7 @@ class PrivateStateStore:
             "write-succeeded-readback-unverified",
             write_status=write_status,
             record_id_fingerprint=record_id_fingerprint,
+            continuation_record_id=continuation_record_id,
             recovery_hint=(
                 "The POST succeeded but readback is not verified. Do not replay; "
                 "inspect the test account before separate manual recovery approval."
@@ -990,13 +1303,68 @@ class PrivateStateStore:
             credential_fingerprint,
             {"write-succeeded-readback-unverified"},
             "verified",
-            result=result.persisted_state(),
+            continuation_record_id=result.continuation_record_id,
+            verified_record_snapshot=_thaw_json(result.verified_record_snapshot),
+            result=result.private_persisted_state(),
             read_status=result.read_status,
             recovery_hint=(
                 "This step is verified and must not be replayed without separate "
                 "manual recovery approval."
             ),
         )
+
+    def load_verified_continuation(self, sequence: int) -> PrivateContinuation:
+        state = self.read(sequence)
+        if state.get("status") != "verified":
+            raise SafetyError("previous phrase step is not verified; continuation blocked")
+        record_id = _safe_record_id(
+            state.get("continuation_record_id"), "private continuation record id"
+        )
+        credential_fingerprint = state.get("credential_fingerprint")
+        action = state.get("action")
+        snapshot = state.get("verified_record_snapshot")
+        if not isinstance(credential_fingerprint, str) or not credential_fingerprint:
+            raise SafetyError("private continuation credential fingerprint is missing")
+        if not isinstance(snapshot, Mapping) or snapshot.get("id") != record_id:
+            raise SafetyError("private continuation record snapshot is missing")
+        if not isinstance(action, str):
+            raise SafetyError("private continuation action is missing")
+        return PrivateContinuation(
+            record_id=record_id,
+            action=action,
+            credential_fingerprint=credential_fingerprint,
+            record_snapshot=_freeze_json(snapshot),
+        )
+
+
+def prepare_phrase_continuation_step(
+    plan: Mapping[str, Any],
+    sequence: int,
+    *,
+    previous_state_store: PrivateStateStore,
+    previous_sequence: int,
+    credential_fingerprint: str,
+) -> PreparedStep:
+    """Prepare only the reviewed exact -> inflected -> multiple phrase chain."""
+
+    expected_previous = {
+        3: (2, "create_phrase_exact_case"),
+        4: (3, "update_phrase_inflected_case"),
+    }
+    expected = expected_previous.get(sequence)
+    if expected is None or previous_sequence != expected[0]:
+        raise SafetyError("phrase continuation sequence is outside the reviewed matrix")
+    continuation = previous_state_store.load_verified_continuation(previous_sequence)
+    if continuation.action != expected[1]:
+        raise SafetyError("private continuation action does not match the phrase matrix")
+    if continuation.credential_fingerprint != credential_fingerprint:
+        raise SafetyError("phrase continuation credential fingerprint changed")
+    return prepare_plan_step(
+        plan,
+        sequence,
+        phrase_record_id=continuation.record_id,
+        existing_record=_thaw_json(continuation.record_snapshot),
+    )
 
 
 class SingleStepExecutor:
@@ -1018,19 +1386,84 @@ class SingleStepExecutor:
         gate.validate(credential)
         if self._attempted:
             raise SafetyError("this executor already attempted its single write step")
-        if provided_confirmation != step.confirmation:
-            raise ConfirmationError("write confirmation does not match exactly")
         if state_store is None:
             raise SafetyError("every live write requires a private state store")
 
+        if _contains_credential_material(step.payload, credential.token) or (
+            step.rollback_snapshot is not None
+            and _contains_credential_material(
+                step.rollback_snapshot, credential.token
+            )
+        ):
+            raise SafetyError(
+                "prepared content contains injected credential material; stop before "
+                "preview persistence or any request"
+            )
+
+        _validate_prepared_step(step)
+        write_request = HttpRequest(
+            step.method,
+            step.path,
+            _thaw_json(step.payload),
+        )
+        recomputed_confirmation = _confirmation_for(
+            step.sequence,
+            write_request.method,
+            write_request.path,
+            write_request.payload,
+        )
+        if (
+            recomputed_confirmation != step.confirmation
+            or recomputed_confirmation != provided_confirmation
+        ):
+            raise ConfirmationError(
+                "write confirmation is not bound to the final method/path/payload"
+            )
+
         credential_fingerprint = credential.fingerprint
+        state_store.assert_absent(step.sequence)
+
+        _entity_key, _resource, is_update = _response_contract(step.action)
+        if is_update:
+            try:
+                preflight_response = self.transport.send(
+                    HttpRequest("GET", step.readback_path), credential
+                )
+            except TransportError:
+                raise VerificationError(
+                    "update preflight failed; no write was sent. Inspect the test "
+                    "account and retry only after manual review."
+                ) from None
+            try:
+                _verify_update_preflight(step, preflight_response)
+            except (SafetyError, VerificationError):
+                raise VerificationError(
+                    "update preflight found a stale or identity mismatch; no write "
+                    "was sent"
+                ) from None
+
+        # Repeat the full validation at the last boundary before journal creation
+        # and POST. Prepared data is immutable, so the same values are journaled
+        # and carried by the already-frozen HttpRequest.
+        _validate_prepared_step(step)
+        final_confirmation = _confirmation_for(
+            step.sequence,
+            write_request.method,
+            write_request.path,
+            write_request.payload,
+        )
+        if (
+            final_confirmation != step.confirmation
+            or final_confirmation != provided_confirmation
+        ):
+            raise ConfirmationError(
+                "write confirmation changed before the final send boundary"
+            )
         state_store.begin(step, credential_fingerprint)
 
         self._attempted = True
         try:
-            write_response = self.transport.send(
-                HttpRequest(step.method, step.path, step.payload), credential
-            )
+            write_response = self.transport.send(write_request, credential)
         except TransportError:
             try:
                 state_store.mark_unknown(
@@ -1065,7 +1498,12 @@ class SingleStepExecutor:
                 "unknown; do not retry and inspect manually"
             )
 
-        written_id = _extract_written_id(step, write_response)
+        written_id_error: VerificationError | None = None
+        try:
+            written_id = _extract_written_id(step, write_response)
+        except VerificationError as exc:
+            written_id = None
+            written_id_error = exc
         record_id_fingerprint = _fingerprint(written_id) if written_id else None
         try:
             state_store.mark_write_succeeded(
@@ -1073,12 +1511,26 @@ class SingleStepExecutor:
                 credential_fingerprint,
                 write_status=write_response.status,
                 record_id_fingerprint=record_id_fingerprint,
+                continuation_record_id=written_id,
             )
         except SafetyError:
             raise UnknownOutcomeError(
                 "write succeeded but the unverified journal transition failed; "
                 "do not continue or retry"
             ) from None
+        if written_id_error is not None:
+            try:
+                state_store.preserve_unverified(
+                    step,
+                    credential_fingerprint,
+                    reason="write-response-record-id-invalid",
+                )
+            except SafetyError:
+                raise VerificationError(
+                    "write succeeded with an invalid record id and the unresolved "
+                    "journal could not be updated; do not replay"
+                ) from None
+            raise written_id_error
         try:
             read_response = self.transport.send(
                 HttpRequest("GET", step.readback_path), credential
@@ -1115,6 +1567,8 @@ class SingleStepExecutor:
             record = _select_readback_record(step, read_response, written_id)
             expected = _expected_fields(step)
             _verify_fields(expected, record)
+            verified_record_snapshot = _record_snapshot(step, record)
+            continuation_record_id = verified_record_snapshot["id"]
             highlight_observation = _observe_highlight(step, record)
         except VerificationError:
             try:
@@ -1134,9 +1588,12 @@ class SingleStepExecutor:
             sequence=step.sequence,
             action=step.action,
             status="verified",
+            payload_readback_status="verified",
             write_status=write_response.status,
             read_status=read_response.status,
-            record_id_fingerprint=record_id_fingerprint,
+            record_id_fingerprint=_fingerprint(continuation_record_id),
+            continuation_record_id=continuation_record_id,
+            verified_record_snapshot=_freeze_json(verified_record_snapshot),
             verified_fields=tuple(sorted(expected)),
             highlight_observation=highlight_observation,
         )
