@@ -133,6 +133,54 @@ def _phrase_fields(case: dict[str, Any], origin: str) -> dict[str, Any]:
     }
 
 
+def _require_path_id(value: Any, path: str) -> str:
+    identifier = _require_text(value, path)
+    if "/" in identifier or "?" in identifier or "#" in identifier:
+        _fail(f"{path} must be one path segment")
+    return identifier
+
+
+def build_interpretation_operation(
+    vocabulary_id: str,
+    text: str,
+    *,
+    existing_id: str | None = None,
+    sequence: int = 1,
+) -> dict[str, Any]:
+    """Build the schema-reviewed create/update operation used by both phases."""
+
+    vocabulary_id = _require_path_id(vocabulary_id, "vocabulary_id")
+    text = _require_text(text, "interpretation text")
+    fields: dict[str, Any] = {
+        "interpretation": text,
+        "tags": list(REQUIRED_TAGS),
+        "status": "PUBLISHED",
+    }
+
+    if existing_id is None:
+        fields = {"voc_id": vocabulary_id, **fields}
+        return {
+            "sequence": sequence,
+            "action": "create_interpretation",
+            "method": "POST",
+            "path": f"{OPEN_API_PREFIX}/interpretations",
+            "payload": {"interpretation": fields},
+            "future_live_guard": "preview, confirm, then read back by voc_id",
+        }
+
+    record_id = _require_path_id(existing_id, "existing interpretation id")
+    return {
+        "sequence": sequence,
+        "action": "update_interpretation",
+        "method": "POST",
+        "path": f"{OPEN_API_PREFIX}/interpretations/{record_id}",
+        "payload": {"interpretation": fields, "id": record_id},
+        "future_live_guard": (
+            "show existing and replacement, confirm, then read back by voc_id"
+        ),
+    }
+
+
 def build_plan(fixture: dict[str, Any]) -> dict[str, Any]:
     validated = validate_fixture(fixture)
     vocabulary = validated["vocabulary"]
@@ -141,21 +189,9 @@ def build_plan(fixture: dict[str, Any]) -> dict[str, Any]:
     cases = phrase["cases"]
 
     operations: list[dict[str, Any]] = [
-        {
-            "sequence": 1,
-            "action": "create_interpretation",
-            "method": "POST",
-            "path": f"{OPEN_API_PREFIX}/interpretations",
-            "payload": {
-                "interpretation": {
-                    "voc_id": vocabulary["id"],
-                    "interpretation": interpretation["text"],
-                    "tags": list(REQUIRED_TAGS),
-                    "status": "PUBLISHED",
-                }
-            },
-            "future_live_guard": "preview, confirm, then read back by voc_id",
-        },
+        build_interpretation_operation(
+            vocabulary["id"], interpretation["text"], sequence=1
+        ),
         {
             "sequence": 2,
             "action": "create_phrase_exact_case",
