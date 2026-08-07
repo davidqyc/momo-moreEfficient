@@ -1510,6 +1510,56 @@ def _classify_vocabulary_response_envelope(body: Any) -> str:
     return RESPONSE_ENVELOPE_UNKNOWN_OBJECT
 
 
+# Issue #20: the one compatibility container this project accepts.
+#
+# The fourth owner-authorized run reported ``missing-voc`` together with
+# ``response_envelope = data-voc-wrapper``, so production structurally answers
+# ``{"data": {"voc": {...}}}`` while the first-party documentation still records
+# the top-level ``{"voc": {...}}``. Exactly those two locations are accepted.
+# ``result``/``vocabulary`` containers, a bare vocabulary-shaped body, business
+# metadata and anything unreviewed all stay fail-closed as before.
+READ_ONLY_COMPATIBILITY_CONTAINER_KEY = "data"
+
+
+def _canonical_probe_vocabulary_body(body: Any) -> Any:
+    """Return the canonical ``{"voc": ...}`` view of a vocabulary response.
+
+    This is the whole compatibility boundary, and it only ever *relocates* a
+    value — it never inspects, relaxes or decides anything about the record it
+    hands on:
+
+    * the documented top-level ``voc`` always wins. While it is present the body
+      is returned unchanged, so a malformed documented response can never be
+      silently bypassed by a second candidate;
+    * only when the documented field is absent may the single observed
+      production location ``data.voc`` be used, and only when ``data`` really is
+      a mapping that really contains ``voc``;
+    * anything else is returned unchanged, which keeps the existing
+      ``missing-voc`` rejection — and its sanitized envelope diagnostic —
+      exactly as it was.
+
+    The canonical result is a new, project-owned one-key mapping built here: the
+    caller's body is never mutated or persisted, and no key name or value beyond
+    the two allowlisted names is read, copied, counted, hashed or emitted.
+    """
+    if not isinstance(body, Mapping):
+        return body
+    if RESPONSE_ENVELOPE_VOC_KEY in body:
+        return body
+    if READ_ONLY_COMPATIBILITY_CONTAINER_KEY not in body:
+        return body
+    wrapper = body[READ_ONLY_COMPATIBILITY_CONTAINER_KEY]
+    if not isinstance(wrapper, Mapping) or RESPONSE_ENVELOPE_VOC_KEY not in wrapper:
+        return body
+    # Deliberately *not* validated here: whether the relocated value is a usable
+    # vocabulary record stays the unchanged responsibility of
+    # :func:`_validate_probe_vocabulary`. The Issue #18 locating classifier,
+    # which accepts broader types on purpose, must never become the acceptance
+    # rule, so this hands the value on untouched and lets the existing
+    # checkpoints reject it by their existing reasons.
+    return {RESPONSE_ENVELOPE_VOC_KEY: wrapper[RESPONSE_ENVELOPE_VOC_KEY]}
+
+
 READ_ONLY_STATUS_ENUMS: Mapping[str, tuple[str, ...]] = {
     "interpretations": ("PUBLISHED", "UNPUBLISHED", "DELETED"),
     "phrases": ("PUBLISHED", "DELETED"),
@@ -2017,11 +2067,19 @@ class ReadOnlyProbeExecutor:
             credential,
         )
         try:
+            # Issue #20: the documented top-level ``voc`` and the one observed
+            # ``data.voc`` production location are canonicalized in memory to the
+            # same project-owned view, so both the unchanged strict validation
+            # and the existing response-shape summary see one stable shape and
+            # the raw production body is never mutated, echoed or persisted.
+            canonical_vocabulary_body = _canonical_probe_vocabulary_body(
+                vocabulary_response.body
+            )
             vocabulary_id, returned_spelling = _validate_probe_vocabulary(
-                vocabulary_response.body, requested_word
+                canonical_vocabulary_body, requested_word
             )
             vocabulary_shape = _read_only_response_shape(
-                vocabulary_response.body, "vocabulary"
+                canonical_vocabulary_body, "vocabulary"
             )
         except Exception as rejected_vocabulary:
             # The body is passed in memory only, so a ``missing-voc`` rejection
