@@ -2816,22 +2816,43 @@ class PrivateContinuation:
         )
 
 
+# The closed set of journal file-name prefixes this project may create below
+# ``artifacts/private/``. A prefix is always selected by identity from this
+# tuple, so a caller-supplied string can never become part of a file name.
+PRIVATE_JOURNAL_PREFIXES: tuple[str, ...] = (
+    "issue9-step",
+    "issue24-interpretation-create",
+)
+
+
 class PrivateStateStore:
     """Durable, private per-step journal below ignored artifacts/private/."""
 
-    def __init__(self, root: Path = PRIVATE_STATE_ROOT) -> None:
+    def __init__(
+        self,
+        root: Path = PRIVATE_STATE_ROOT,
+        *,
+        journal_prefix: str = "issue9-step",
+    ) -> None:
         resolved = root.resolve()
         private_root = PRIVATE_STATE_ROOT.resolve()
         if resolved != private_root and private_root not in resolved.parents:
             raise SafetyError("private state must remain below artifacts/private")
         self.root = resolved
+        prefix = next(
+            (item for item in PRIVATE_JOURNAL_PREFIXES if item == journal_prefix),
+            None,
+        )
+        if prefix is None:
+            raise SafetyError("private journal prefix is outside the fixed project set")
+        self.journal_prefix = prefix
 
     def _ensure_root(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
 
     def _destination(self, sequence: int) -> Path:
-        return self.root / f"issue9-step-{sequence}.json"
+        return self.root / f"{self.journal_prefix}-{sequence}.json"
 
     def assert_absent(self, sequence: int) -> None:
         destination = self._destination(sequence)
@@ -2895,7 +2916,7 @@ class PrivateStateStore:
         if not destination.exists() or destination.is_symlink():
             raise SafetyError("private state transition has no safe existing journal")
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".issue9-step-{sequence}-",
+            prefix=f".{self.journal_prefix}-{sequence}-",
             suffix=".tmp",
             dir=self.root,
         )
@@ -2950,6 +2971,23 @@ class PrivateStateStore:
             ),
         )
 
+    def _transition_sequence(
+        self,
+        sequence: int,
+        credential_fingerprint: str,
+        expected_statuses: set[str],
+        new_status: str,
+        **details: Any,
+    ) -> Path:
+        current = self.read(sequence)
+        if current.get("status") not in expected_statuses:
+            raise SafetyError("private state transition was attempted from an unsafe status")
+        if current.get("credential_fingerprint") != credential_fingerprint:
+            raise SafetyError("private state credential fingerprint changed mid-step")
+        document = dict(current)
+        document.update(status=new_status, **details)
+        return self._replace_document(sequence, document)
+
     def _transition(
         self,
         step: PreparedStep,
@@ -2958,14 +2996,13 @@ class PrivateStateStore:
         new_status: str,
         **details: Any,
     ) -> Path:
-        current = self.read(step.sequence)
-        if current.get("status") not in expected_statuses:
-            raise SafetyError("private state transition was attempted from an unsafe status")
-        if current.get("credential_fingerprint") != credential_fingerprint:
-            raise SafetyError("private state credential fingerprint changed mid-step")
-        document = dict(current)
-        document.update(status=new_status, **details)
-        return self._replace_document(step.sequence, document)
+        return self._transition_sequence(
+            step.sequence,
+            credential_fingerprint,
+            expected_statuses,
+            new_status,
+            **details,
+        )
 
     def mark_unknown(
         self,
@@ -3076,6 +3113,112 @@ class PrivateStateStore:
             action=action,
             credential_fingerprint=credential_fingerprint,
             record_snapshot=_freeze_json(snapshot),
+        )
+
+    # --- Issue #24 one-shot interpretation-create journal -------------------
+    #
+    # These reuse the same reviewed primitives as the Issue #9 journal: 0700
+    # directory, 0600 file, ``O_EXCL``/``O_NOFOLLOW`` creation, atomic replace,
+    # ``fsync``, sensitive-key screening and the replay block. Only the document
+    # shape and the transition names differ.
+
+    def begin_interpretation_create(
+        self,
+        plan: "InterpretationCreatePlan",
+        credential_fingerprint: str,
+    ) -> Path:
+        return self._create_document(
+            INTERPRETATION_CREATE_JOURNAL_SEQUENCE,
+            plan.journal_document(
+                INTERPRETATION_CREATE_JOURNAL_PREPARED,
+                credential_fingerprint,
+            ),
+        )
+
+    def mark_interpretation_create_unknown(
+        self,
+        credential_fingerprint: str,
+        *,
+        reason: str,
+        write_status: int | None,
+    ) -> Path:
+        return self._transition_sequence(
+            INTERPRETATION_CREATE_JOURNAL_SEQUENCE,
+            credential_fingerprint,
+            {INTERPRETATION_CREATE_JOURNAL_PREPARED},
+            INTERPRETATION_CREATE_JOURNAL_UNKNOWN,
+            post_attempted=True,
+            post_count=1,
+            write_status=_plain_http_status(write_status),
+            write_outcome=WRITE_OUTCOME_NOT_VERIFIED,
+            reason=reason,
+            recovery_hint=(
+                "One POST was attempted and its outcome is unknown. Never POST "
+                "again. Recovery is GET-only: inspect the secondary/test account "
+                "and this private journal before any separately approved action."
+            ),
+        )
+
+    def mark_interpretation_create_acknowledged(
+        self,
+        credential_fingerprint: str,
+        *,
+        write_status: int,
+    ) -> Path:
+        return self._transition_sequence(
+            INTERPRETATION_CREATE_JOURNAL_SEQUENCE,
+            credential_fingerprint,
+            {INTERPRETATION_CREATE_JOURNAL_PREPARED},
+            INTERPRETATION_CREATE_JOURNAL_ACKNOWLEDGED,
+            post_attempted=True,
+            post_count=1,
+            write_status=_plain_http_status(write_status),
+            write_outcome=WRITE_OUTCOME_NOT_VERIFIED,
+            recovery_hint=(
+                "The single POST returned a success status but the readback has "
+                "not verified it yet. Never POST again; recovery is GET-only."
+            ),
+        )
+
+    def mark_interpretation_create_readback(
+        self,
+        credential_fingerprint: str,
+        *,
+        readback_result: str,
+        write_outcome: str,
+        read_status: int | None = None,
+        created_record_id_fingerprint: str | None = None,
+    ) -> Path:
+        outcome = _pinned_write_outcome(write_outcome)
+        if outcome is None or outcome == WRITE_OUTCOME_NOT_ATTEMPTED:
+            raise SafetyError("interpretation-create readback outcome is outside the fixed enum")
+        verified = outcome in (
+            WRITE_OUTCOME_CONFIRMED_SUCCESS,
+            WRITE_OUTCOME_RECOVERED_SUCCESS,
+        )
+        if verified != (created_record_id_fingerprint is not None):
+            raise SafetyError("interpretation-create readback outcome and record disagree")
+        return self._transition_sequence(
+            INTERPRETATION_CREATE_JOURNAL_SEQUENCE,
+            credential_fingerprint,
+            {
+                INTERPRETATION_CREATE_JOURNAL_UNKNOWN,
+                INTERPRETATION_CREATE_JOURNAL_ACKNOWLEDGED,
+            },
+            (
+                INTERPRETATION_CREATE_JOURNAL_VERIFIED
+                if verified
+                else INTERPRETATION_CREATE_JOURNAL_UNRESOLVED
+            ),
+            readback_attempted=True,
+            readback_result=_pinned_readback_result(readback_result),
+            read_status=_plain_http_status(read_status),
+            created_record_id_fingerprint=created_record_id_fingerprint,
+            write_outcome=outcome,
+            recovery_hint=(
+                "This one-shot write is closed. Never replay it and never POST "
+                "again; any further inspection is GET-only."
+            ),
         )
 
 
@@ -3418,6 +3561,1314 @@ class SingleStepExecutor:
         return result
 
 
+# ---------------------------------------------------------------------------
+# Issue #24: one-shot secondary-account interpretation CREATE with strict readback
+# ---------------------------------------------------------------------------
+#
+# This is the project's first write-capable entry point. It is deliberately not
+# the general importer: the whole payload is project-owned and fixed here, so no
+# caller and no argv value can choose what gets published. The command is
+# structurally capped at three reviewed GETs and exactly one POST, it never
+# retries, and its success criterion is the post-write authenticated-collection
+# readback against a preflight baseline of exactly zero records — never a record
+# id extracted from the POST response, which production has already shown can
+# carry undocumented envelopes.
+
+INTERPRETATION_CREATE_MODE = "interpretation-create-probe"
+INTERPRETATION_CREATE_OPERATION = "interpretation-create"
+INTERPRETATION_CREATE_PATH = f"{OPEN_API_PREFIX}/interpretations"
+# The fixed, project-owned first-write target. It is legitimate dictionary-like
+# business-English content suitable for the Issue #2 tag matrix; meaningless
+# strings such as "API test" or random characters are forbidden by the current
+# Maimemo Open Platform terms and are not accepted here either, because the
+# content is not caller-mutable at all in this phase.
+INTERPRETATION_CREATE_SPELLING = "acquisition"
+INTERPRETATION_CREATE_TEXT = "n. 收购；购置；获得"
+INTERPRETATION_CREATE_TAGS: tuple[str, ...] = ("MBA", "BEC", "GMAT")
+INTERPRETATION_CREATE_STATUS = "PUBLISHED"
+INTERPRETATION_CREATE_JOURNAL_PREFIX = "issue24-interpretation-create"
+INTERPRETATION_CREATE_JOURNAL_SEQUENCE = 1
+INTERPRETATION_CREATE_JOURNAL_PREPARED = "prepared-not-sent"
+INTERPRETATION_CREATE_JOURNAL_UNKNOWN = "write-attempted-outcome-unknown"
+INTERPRETATION_CREATE_JOURNAL_ACKNOWLEDGED = "write-acknowledged-readback-unverified"
+INTERPRETATION_CREATE_JOURNAL_UNRESOLVED = "write-unresolved"
+INTERPRETATION_CREATE_JOURNAL_VERIFIED = "verified"
+# A brand-new, write-specific confirmation. It deliberately shares no wording
+# with READ_ONLY_CONFIRMATION_PREFIX so a read-only confirmation can never be
+# mistaken for — or pasted as — a write confirmation.
+WRITE_CONFIRMATION_PREFIX = "CONFIRM ONE REAL INTERPRETATION WRITE"
+WRITE_PRICING_TERMS_CLAUSE = "PRICING-TERMS-CHECKED: YES"
+WRITE_ONE_POST_CLAUSE = "EXACTLY-ONE-POST-NO-RETRY-IMMEDIATE-READBACK"
+WRITE_POLICY_STATEMENT = "EXACTLY ONE POST / NO RETRY / IMMEDIATE READBACK"
+MAX_INTERPRETATION_CREATE_GETS = 3
+MAX_INTERPRETATION_CREATE_POSTS = 1
+MAX_INTERPRETATION_CREATE_REQUESTS = (
+    MAX_INTERPRETATION_CREATE_GETS + MAX_INTERPRETATION_CREATE_POSTS
+)
+INTERPRETATION_CREATE_READ_PATHS: tuple[str, ...] = (
+    f"{OPEN_API_PREFIX}/vocabulary",
+    f"{OPEN_API_PREFIX}/interpretations",
+)
+
+INTERPRETATION_CREATE_FAILURE_STAGES: tuple[str, ...] = (
+    "transport-init",
+    "preflight-vocabulary",
+    "preflight-interpretations",
+    "confirmation",
+    "write",
+    "readback",
+)
+INTERPRETATION_CREATE_FAILURE_CLASSES: tuple[str, ...] = (
+    "transport",
+    "http-status",
+    "schema",
+    "safety",
+    "confirmation",
+    "ambiguous",
+    "mismatch",
+    "unknown-write-outcome",
+)
+WRITE_OUTCOME_NOT_ATTEMPTED = "not-attempted"
+WRITE_OUTCOME_CONFIRMED_SUCCESS = "confirmed-success"
+WRITE_OUTCOME_RECOVERED_SUCCESS = "recovered-success"
+WRITE_OUTCOME_NOT_VERIFIED = "not-verified"
+WRITE_OUTCOME_AMBIGUOUS = "ambiguous"
+INTERPRETATION_CREATE_WRITE_OUTCOMES: tuple[str, ...] = (
+    WRITE_OUTCOME_NOT_ATTEMPTED,
+    WRITE_OUTCOME_CONFIRMED_SUCCESS,
+    WRITE_OUTCOME_RECOVERED_SUCCESS,
+    WRITE_OUTCOME_NOT_VERIFIED,
+    WRITE_OUTCOME_AMBIGUOUS,
+)
+READBACK_RESULT_MATCHED = "matched-exactly-one"
+READBACK_RESULT_EMPTY = "no-record"
+READBACK_RESULT_MULTIPLE = "multiple-records"
+READBACK_RESULT_MISMATCH = "record-mismatch"
+READBACK_RESULT_UNREADABLE = "readback-unreadable"
+INTERPRETATION_CREATE_READBACK_RESULTS: tuple[str, ...] = (
+    READBACK_RESULT_MATCHED,
+    READBACK_RESULT_EMPTY,
+    READBACK_RESULT_MULTIPLE,
+    READBACK_RESULT_MISMATCH,
+    READBACK_RESULT_UNREADABLE,
+)
+INTERPRETATION_CREATE_FAILURE_MESSAGE = (
+    "interpretation-create probe stopped safely; only project-owned sanitized "
+    "diagnostic fields are available"
+)
+
+
+def _pinned_write_outcome(value: Any) -> "str | None":
+    """Return the module-owned outcome constant equal to ``value``, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    return next(
+        (item for item in INTERPRETATION_CREATE_WRITE_OUTCOMES if item == value), None
+    )
+
+
+def _pinned_readback_result(value: Any) -> str:
+    """Return the module-owned readback-result constant equal to ``value``."""
+    if not isinstance(value, str):
+        raise SafetyError("readback result is outside the fixed project enum")
+    pinned = next(
+        (item for item in INTERPRETATION_CREATE_READBACK_RESULTS if item == value), None
+    )
+    if pinned is None:
+        raise SafetyError("readback result is outside the fixed project enum")
+    return pinned
+
+
+def _validate_interpretation_create_contract() -> None:
+    """Fail closed if the fixed write contract ever drifts."""
+    _validate_read_only_origin_contract()
+    if (
+        INTERPRETATION_CREATE_PATH != "/open/api/v1/interpretations"
+        or INTERPRETATION_CREATE_SPELLING != "acquisition"
+        or INTERPRETATION_CREATE_TEXT != "n. 收购；购置；获得"
+        or INTERPRETATION_CREATE_TAGS != ("MBA", "BEC", "GMAT")
+        or INTERPRETATION_CREATE_TAGS != REQUIRED_TAGS
+        or INTERPRETATION_CREATE_STATUS != "PUBLISHED"
+        or MAX_INTERPRETATION_CREATE_GETS != 3
+        or MAX_INTERPRETATION_CREATE_POSTS != 1
+        or INTERPRETATION_CREATE_READ_PATHS
+        != ("/open/api/v1/vocabulary", "/open/api/v1/interpretations")
+        or INTERPRETATION_CREATE_JOURNAL_PREFIX not in PRIVATE_JOURNAL_PREFIXES
+        or WRITE_CONFIRMATION_PREFIX == READ_ONLY_CONFIRMATION_PREFIX
+        or "WRITE" not in WRITE_CONFIRMATION_PREFIX
+    ):
+        raise SafetyError("the fixed interpretation-create write contract changed")
+
+
+def _documented_interpretation_create_read_path(path: str) -> None:
+    """Allow only the two reviewed GET endpoints this probe may read.
+
+    Phrases are deliberately outside the set: this command performs no phrase
+    request of any kind.
+    """
+    _documented_read_path(path)
+    if urlsplit(path).path not in INTERPRETATION_CREATE_READ_PATHS:
+        raise SafetyError(
+            "interpretation-create probe reads only vocabulary and interpretations"
+        )
+
+
+def _validate_interpretation_create_body(body: Any, vocabulary_id: str) -> None:
+    """Reject anything that is not the exact fixed CREATE payload."""
+    if not isinstance(body, Mapping):
+        raise SafetyError("interpretation create body must be one reviewed object")
+    thawed = _thaw_json(body)
+    _assert_no_sensitive_keys(thawed, "interpretation create body")
+    _validate_operation_payload(
+        "create_interpretation",
+        INTERPRETATION_CREATE_PATH,
+        thawed,
+        vocabulary_id,
+    )
+    entity = thawed["interpretation"]
+    if (
+        entity.get("voc_id") != vocabulary_id
+        or entity.get("interpretation") != INTERPRETATION_CREATE_TEXT
+        or tuple(entity.get("tags") or ()) != INTERPRETATION_CREATE_TAGS
+        or entity.get("status") != INTERPRETATION_CREATE_STATUS
+    ):
+        raise SafetyError(
+            "interpretation create body is not the fixed project-owned payload"
+        )
+
+
+@dataclass(frozen=True, repr=False)
+class InterpretationCreatePlan:
+    """The immutable write plan: preview, confirmation and POST share one source.
+
+    Every externally visible artifact — the owner preview, the confirmation
+    digest, the private journal document and the actual request body — is derived
+    from :attr:`request_body`, which is recursively frozen at construction. There
+    is deliberately no second, mutable dictionary that could drift between
+    preview time and send time.
+
+    The raw ``vocabulary_id`` is bound into the confirmation digest but never
+    leaves through ``repr``, ``str``, the preview, the journal or the result:
+    those carry only :attr:`voc_id_fingerprint`.
+    """
+
+    account_label: str = field(repr=False)
+    credential_fingerprint: str
+    requested_spelling: str
+    returned_spelling: str
+    vocabulary_id: str = field(repr=False)
+    preflight_interpretation_count: int
+    request_body: Mapping[str, Any] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "request_body", _freeze_json(self.request_body))
+        self.revalidate()
+
+    def revalidate(self) -> None:
+        """Recheck every bound value; called again immediately before the POST."""
+        _validate_interpretation_create_contract()
+        _validate_account_label_shape(self.account_label)
+        if (
+            not isinstance(self.credential_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{16}", self.credential_fingerprint) is None
+        ):
+            raise SafetyError("credential fingerprint does not meet the fixed policy")
+        if self.requested_spelling != INTERPRETATION_CREATE_SPELLING:
+            raise SafetyError("interpretation-create spelling is not the fixed target")
+        if not isinstance(self.returned_spelling, str):
+            raise SafetyError("returned spelling is structurally invalid")
+        if _normalize_probe_spelling(self.returned_spelling) != _normalize_probe_spelling(
+            self.requested_spelling
+        ):
+            raise SafetyError("returned spelling does not match the requested spelling")
+        _safe_record_id(self.vocabulary_id, "target vocabulary id")
+        if (
+            not isinstance(self.preflight_interpretation_count, int)
+            or isinstance(self.preflight_interpretation_count, bool)
+            or self.preflight_interpretation_count != 0
+        ):
+            raise SafetyError(
+                "an interpretation create requires an exactly-zero preflight baseline"
+            )
+        _validate_interpretation_create_body(self.request_body, self.vocabulary_id)
+
+    def __repr__(self) -> str:
+        return (
+            "InterpretationCreatePlan(account_label=<redacted>, "
+            f"credential_fingerprint={self.credential_fingerprint!r}, "
+            f"requested_spelling={self.requested_spelling!r}, "
+            "vocabulary_id=<redacted>, "
+            f"voc_id_fingerprint={self.voc_id_fingerprint!r})"
+        )
+
+    def __str__(self) -> str:
+        return (
+            "<interpretation-create plan; account/vocabulary id redacted; "
+            f"fingerprint={self.credential_fingerprint}>"
+        )
+
+    @property
+    def voc_id_fingerprint(self) -> str:
+        return hashlib.sha256(self.vocabulary_id.encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def request_body_digest(self) -> str:
+        """The canonical digest of the one frozen body that will be sent."""
+        canonical = json.dumps(
+            _thaw_json(self.request_body),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    @property
+    def readback_path(self) -> str:
+        return build_query_path("interpretations", {"voc_id": self.vocabulary_id})
+
+    def write_request(self) -> HttpRequest:
+        """Build the single POST from the frozen plan body, never from a copy."""
+        self.revalidate()
+        return HttpRequest(
+            "POST",
+            INTERPRETATION_CREATE_PATH,
+            _thaw_json(self.request_body),
+        )
+
+    def confirmation_binding(self) -> dict[str, Any]:
+        return {
+            "operation": INTERPRETATION_CREATE_OPERATION,
+            "host": PRODUCTION_BASE_URL,
+            "method": "POST",
+            "path": INTERPRETATION_CREATE_PATH,
+            "account_label": self.account_label,
+            "credential_fingerprint": self.credential_fingerprint,
+            "requested_spelling": self.requested_spelling,
+            "normalized_spelling": _normalize_probe_spelling(self.requested_spelling),
+            # The raw id is bound but never emitted: only the digest travels.
+            "vocabulary_id": self.vocabulary_id,
+            "interpretation": INTERPRETATION_CREATE_TEXT,
+            "tags": list(INTERPRETATION_CREATE_TAGS),
+            "status": INTERPRETATION_CREATE_STATUS,
+            "preflight_interpretation_count": self.preflight_interpretation_count,
+            "request_body_digest": self.request_body_digest,
+            "pricing_and_terms_checked": True,
+        }
+
+    @property
+    def expected_confirmation(self) -> str:
+        self.revalidate()
+        canonical = json.dumps(
+            self.confirmation_binding(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256(canonical).hexdigest()[:16]
+        return (
+            f"{WRITE_CONFIRMATION_PREFIX}: {digest} "
+            f"TOKEN-FP: {self.credential_fingerprint} "
+            f"{WRITE_PRICING_TERMS_CLAUSE} {WRITE_ONE_POST_CLAUSE}"
+        )
+
+    def safe_preview(self) -> dict[str, Any]:
+        """Owner-readable preview. Contains no raw id, token or server content."""
+        return {
+            "mode": INTERPRETATION_CREATE_MODE,
+            "operation": INTERPRETATION_CREATE_OPERATION,
+            "account_label": "[REDACTED]",
+            "token_fingerprint": self.credential_fingerprint,
+            "host": PRODUCTION_BASE_URL,
+            "method": "POST",
+            "path": INTERPRETATION_CREATE_PATH,
+            "requested_spelling": self.requested_spelling,
+            "returned_spelling": self.returned_spelling,
+            "intended_interpretation": INTERPRETATION_CREATE_TEXT,
+            "intended_tags": list(INTERPRETATION_CREATE_TAGS),
+            "intended_status": INTERPRETATION_CREATE_STATUS,
+            "preflight_interpretation_count": self.preflight_interpretation_count,
+            "voc_id_fingerprint": self.voc_id_fingerprint,
+            "request_body_digest": self.request_body_digest,
+            "write_policy": WRITE_POLICY_STATEMENT,
+            "maximum_requests": {
+                "get": MAX_INTERPRETATION_CREATE_GETS,
+                "post": MAX_INTERPRETATION_CREATE_POSTS,
+                "retries": 0,
+                "put_patch_delete": 0,
+                "phrase_calls": 0,
+            },
+            "required_confirmation": self.expected_confirmation,
+            "manual_gate": (
+                "Confirm current official pricing/terms permit personal "
+                "secondary/test-account use and show no mandatory metered API fee."
+            ),
+        }
+
+    def journal_document(
+        self,
+        status: str,
+        credential_fingerprint: str,
+    ) -> dict[str, Any]:
+        """The minimum write-continuity evidence, with no raw id or credential."""
+        if credential_fingerprint != self.credential_fingerprint:
+            raise SafetyError("journal credential fingerprint does not match the plan")
+        document = {
+            "version": 1,
+            "mode": INTERPRETATION_CREATE_MODE,
+            "operation": INTERPRETATION_CREATE_OPERATION,
+            "sequence": INTERPRETATION_CREATE_JOURNAL_SEQUENCE,
+            "status": status,
+            "credential_fingerprint": credential_fingerprint,
+            "host": PRODUCTION_BASE_URL,
+            "method": "POST",
+            "path": INTERPRETATION_CREATE_PATH,
+            "requested_spelling": self.requested_spelling,
+            "voc_id_fingerprint": self.voc_id_fingerprint,
+            "intended_interpretation": INTERPRETATION_CREATE_TEXT,
+            "intended_tags": list(INTERPRETATION_CREATE_TAGS),
+            "intended_status": INTERPRETATION_CREATE_STATUS,
+            "preflight_interpretation_count": self.preflight_interpretation_count,
+            "request_body_digest": self.request_body_digest,
+            "post_attempted": False,
+            "post_count": 0,
+            "readback_attempted": False,
+            "readback_result": None,
+            "write_status": None,
+            "read_status": None,
+            "created_record_id_fingerprint": None,
+            "write_outcome": WRITE_OUTCOME_NOT_ATTEMPTED,
+            "recovery_hint": (
+                "No POST has been sent yet. If this run is interrupted, never "
+                "replay it: recovery is GET-only."
+            ),
+        }
+        _assert_no_sensitive_keys(document, "interpretation-create journal")
+        return document
+
+    def validate(self, credential: TestAccountCredential) -> None:
+        """Rebind the plan to the exact manual secondary-account gate."""
+        self.revalidate()
+        account_gate = ManualAccountGate(
+            allow_network=True,
+            account_label=self.account_label,
+            credential_fingerprint=self.credential_fingerprint,
+            confirmation=(
+                f"CONFIRM SECONDARY TEST ACCOUNT: {self.account_label} "
+                f"TOKEN-FP: {self.credential_fingerprint}"
+            ),
+        )
+        account_gate.validate(credential)
+        if _contains_credential_material(
+            _thaw_json(self.request_body), credential.token
+        ) or credential.token in (
+            self.requested_spelling,
+            self.returned_spelling,
+            self.vocabulary_id,
+        ):
+            raise SafetyError("write plan contains forbidden credential material")
+
+    def validate_confirmation(self, provided: Any) -> None:
+        if not isinstance(provided, str) or provided != self.expected_confirmation:
+            raise ConfirmationError(
+                "interpretation-create write confirmation does not match exactly"
+            )
+
+
+def build_interpretation_create_plan(
+    *,
+    account_label: str,
+    credential_fingerprint: str,
+    returned_spelling: str,
+    vocabulary_id: str,
+    preflight_interpretation_count: int,
+) -> InterpretationCreatePlan:
+    """Build the one immutable plan. The payload is fixed, never caller-supplied."""
+    _validate_interpretation_create_contract()
+    target = _safe_record_id(vocabulary_id, "target vocabulary id")
+    return InterpretationCreatePlan(
+        account_label=account_label,
+        credential_fingerprint=credential_fingerprint,
+        requested_spelling=INTERPRETATION_CREATE_SPELLING,
+        returned_spelling=returned_spelling,
+        vocabulary_id=target,
+        preflight_interpretation_count=preflight_interpretation_count,
+        request_body={
+            "interpretation": {
+                "voc_id": target,
+                "interpretation": INTERPRETATION_CREATE_TEXT,
+                "tags": list(INTERPRETATION_CREATE_TAGS),
+                "status": INTERPRETATION_CREATE_STATUS,
+            }
+        },
+    )
+
+
+def _interpretation_create_records(response: Any) -> list[Mapping[str, Any]]:
+    """Strictly validate one authenticated interpretations collection response."""
+    checked = _require_read_success(response)
+    canonical = _canonical_probe_collection_body(checked.body, "interpretations")
+    if not isinstance(canonical, Mapping):
+        raise SafetyError("interpretation collection response is not an object")
+    records = canonical.get("interpretations")
+    if not isinstance(records, list):
+        raise SafetyError("interpretation collection is not an array")
+    seen: set[str] = set()
+    validated: list[Mapping[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise SafetyError("interpretation collection contains a malformed item")
+        record_id = _safe_record_id(record.get("id"), "interpretation record id")
+        if record_id in seen:
+            raise SafetyError("interpretation collection contains duplicate ids")
+        seen.add(record_id)
+        _read_only_record_status(record, "interpretations")
+        validated.append(record)
+    return validated
+
+
+def _verify_interpretation_create_record(record: Mapping[str, Any]) -> str:
+    """Return the created record id only when it matches the intended write exactly.
+
+    Tags are compared as a set-like API field: exactly three, each expected tag
+    present exactly once, server ordering irrelevant, duplicates and extras
+    rejected.
+    """
+    try:
+        record_id = _safe_record_id(record.get("id"), "created interpretation id")
+    except SafetyError:
+        raise VerificationError("created interpretation id is absent or unsafe") from None
+    if record.get("interpretation") != INTERPRETATION_CREATE_TEXT:
+        raise VerificationError(
+            "created interpretation text does not match the intended text"
+        )
+    tags = record.get("tags")
+    if not isinstance(tags, list) or len(tags) != len(INTERPRETATION_CREATE_TAGS):
+        raise VerificationError(
+            "created interpretation tags are not the intended three-tag set"
+        )
+    if not _tags_equal(list(INTERPRETATION_CREATE_TAGS), tags):
+        raise VerificationError(
+            "created interpretation tags are not the intended three-tag set"
+        )
+    try:
+        status = _read_only_record_status(record, "interpretations")
+    except SafetyError:
+        raise VerificationError(
+            "created interpretation status is outside the documented enum"
+        ) from None
+    if status != INTERPRETATION_CREATE_STATUS:
+        raise VerificationError("created interpretation status is not PUBLISHED")
+    return record_id
+
+
+@dataclass(frozen=True, repr=False)
+class InterpretationCreateDiagnostic:
+    """Closed project-owned metadata for one failed interpretation-create probe.
+
+    Like the Issue #14/#16/#18 read-only diagnostic, every field is either a
+    constant chosen by identity from a closed enum or a small locally counted
+    integer, so no server text, body, header or external exception message can
+    travel through it.
+
+    ``post_attempted`` is derived from ``post_count``, which the guarded
+    transport increments *before* delegating a POST. It is therefore a
+    conservative over-approximation: it can be true for a POST that never
+    reached the server, but it can never be false for one that did.
+    """
+
+    failure_stage: str
+    failure_class: str
+    http_status: int | None
+    post_attempted: bool
+    post_count: int
+    readback_attempted: bool
+    write_outcome: str
+    requests_attempted: int
+    requests_completed: int
+
+    def __post_init__(self) -> None:
+        stage = next(
+            (
+                item
+                for item in INTERPRETATION_CREATE_FAILURE_STAGES
+                if item == self.failure_stage
+            ),
+            None,
+        )
+        if stage is None:
+            raise SafetyError("write failure stage is outside the fixed enum")
+        object.__setattr__(self, "failure_stage", stage)
+        failure_class = next(
+            (
+                item
+                for item in INTERPRETATION_CREATE_FAILURE_CLASSES
+                if item == self.failure_class
+            ),
+            None,
+        )
+        if failure_class is None:
+            raise SafetyError("write failure class is outside the fixed enum")
+        object.__setattr__(self, "failure_class", failure_class)
+        outcome = _pinned_write_outcome(self.write_outcome)
+        if outcome is None:
+            raise SafetyError("write outcome is outside the fixed enum")
+        if outcome in (
+            WRITE_OUTCOME_CONFIRMED_SUCCESS,
+            WRITE_OUTCOME_RECOVERED_SUCCESS,
+        ):
+            raise SafetyError("a failure diagnostic can never report a successful write")
+        object.__setattr__(self, "write_outcome", outcome)
+        for name in ("post_attempted", "readback_attempted"):
+            if not isinstance(getattr(self, name), bool):
+                raise SafetyError("write diagnostic flags must be plain booleans")
+        if (
+            not isinstance(self.post_count, int)
+            or isinstance(self.post_count, bool)
+            or not 0 <= self.post_count <= MAX_INTERPRETATION_CREATE_POSTS
+        ):
+            raise SafetyError("write diagnostic POST count is outside the fixed range")
+        if self.post_attempted != (self.post_count == 1):
+            raise SafetyError("write diagnostic POST flag and count disagree")
+        if self.readback_attempted and self.post_count != 1:
+            raise SafetyError("a readback can only follow one attempted POST")
+        if (self.write_outcome == WRITE_OUTCOME_NOT_ATTEMPTED) != (self.post_count == 0):
+            raise SafetyError("write outcome and POST count disagree")
+        if self.write_outcome == WRITE_OUTCOME_AMBIGUOUS and not self.readback_attempted:
+            raise SafetyError("an ambiguous outcome requires a completed readback")
+        for name in ("requests_attempted", "requests_completed"):
+            counter = getattr(self, name)
+            if (
+                not isinstance(counter, int)
+                or isinstance(counter, bool)
+                or not 0 <= counter <= MAX_INTERPRETATION_CREATE_REQUESTS
+            ):
+                raise SafetyError("write request counter is outside the fixed range")
+        if self.requests_completed > self.requests_attempted:
+            raise SafetyError("completed count cannot exceed attempted count")
+        if self.failure_stage == "transport-init" and self.requests_attempted:
+            raise SafetyError("transport-init cannot follow a dispatched request")
+        if (
+            self.failure_stage
+            in ("transport-init", "preflight-vocabulary", "preflight-interpretations", "confirmation")
+            and self.post_count
+        ):
+            raise SafetyError("no POST may precede the write stage")
+        if self.failure_stage == "readback" and not self.readback_attempted:
+            raise SafetyError("a readback-stage failure requires an attempted readback")
+        status = self.http_status
+        if self.failure_class in ("transport", "safety", "confirmation"):
+            if status is not None:
+                raise SafetyError("no HTTP status may be reported without a response")
+        elif self.failure_class in ("http-status", "schema"):
+            if _plain_http_status(status) is None:
+                raise SafetyError("reported HTTP status is not a plain numeric status code")
+            if self.failure_class == "http-status" and 200 <= status < 300:
+                raise SafetyError("a success status cannot be an http-status failure")
+            if self.failure_class == "schema" and not 200 <= status < 300:
+                raise SafetyError("a schema failure must follow a success status")
+            if not self.requests_completed:
+                raise SafetyError("a reported HTTP status requires a completed request")
+            object.__setattr__(self, "http_status", _plain_http_status(status))
+        elif status is not None:
+            if _plain_http_status(status) is None:
+                raise SafetyError("reported HTTP status is not a plain numeric status code")
+            if not self.requests_completed:
+                raise SafetyError("a reported HTTP status requires a completed request")
+            object.__setattr__(self, "http_status", _plain_http_status(status))
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "mode": INTERPRETATION_CREATE_MODE,
+            "status": "failed",
+            "operation": INTERPRETATION_CREATE_OPERATION,
+            "failure_stage": self.failure_stage,
+            "failure_class": self.failure_class,
+            "http_status": self.http_status,
+            "post_attempted": self.post_attempted,
+            "post_count": self.post_count,
+            "readback_attempted": self.readback_attempted,
+            "write_outcome": self.write_outcome,
+            "requests_attempted": self.requests_attempted,
+            "requests_completed": self.requests_completed,
+        }
+
+    def __repr__(self) -> str:
+        return f"InterpretationCreateDiagnostic({self.safe_summary()!r})"
+
+    def __str__(self) -> str:
+        return json.dumps(self.safe_summary(), ensure_ascii=False, sort_keys=True)
+
+
+class InterpretationCreateFailure(SafetyError):
+    """A write-probe failure carrying sanitized project-owned fields only."""
+
+    def __init__(self, diagnostic: InterpretationCreateDiagnostic) -> None:
+        if not isinstance(diagnostic, InterpretationCreateDiagnostic):
+            raise SafetyError("write failure requires a project-owned diagnostic")
+        super().__init__(INTERPRETATION_CREATE_FAILURE_MESSAGE)
+        self.diagnostic = diagnostic
+
+    def safe_summary(self) -> dict[str, Any]:
+        return self.diagnostic.safe_summary()
+
+    def detach_external_context(self) -> "InterpretationCreateFailure":
+        self.__cause__ = None
+        self.__context__ = None
+        self.__suppress_context__ = True
+        return self
+
+    def __repr__(self) -> str:
+        return f"InterpretationCreateFailure({self.diagnostic!r})"
+
+    def __str__(self) -> str:
+        return INTERPRETATION_CREATE_FAILURE_MESSAGE
+
+
+class SingleInterpretationWriteGuard:
+    """Structurally cap the probe at three reviewed GETs and exactly one POST.
+
+    The POST counter is incremented **before** the delegate is called, so once a
+    POST invocation begins a second one is impossible in this process no matter
+    how the first one ends — timeout, reset, TLS failure, malformed body, 4xx,
+    5xx or an exception raised inside the executor's own error handling.
+    """
+
+    def __init__(self, delegate: Transport) -> None:
+        _validate_interpretation_create_contract()
+        self._delegate = delegate
+        self.get_count = 0
+        self.post_count = 0
+
+    @property
+    def post_attempted(self) -> bool:
+        return self.post_count >= 1
+
+    def send(
+        self,
+        request: HttpRequest,
+        credential: TestAccountCredential,
+    ) -> HttpResponse:
+        _validate_interpretation_create_contract()
+        if not isinstance(request, HttpRequest):
+            raise SafetyError("interpretation-create transport requires one reviewed request")
+        if request.method == "GET":
+            if request.payload is not None:
+                raise SafetyError("a reviewed GET must not carry a request payload")
+            _documented_interpretation_create_read_path(request.path)
+            if self.get_count >= MAX_INTERPRETATION_CREATE_GETS:
+                raise SafetyError("interpretation-create probe exhausted its GET budget")
+            self.get_count += 1
+            return self._delegate.send(request, credential)
+        if request.method == "POST":
+            if request.path != INTERPRETATION_CREATE_PATH:
+                raise SafetyError(
+                    "interpretation-create probe may POST only the reviewed create path"
+                )
+            if self.post_count >= MAX_INTERPRETATION_CREATE_POSTS:
+                raise SafetyError(
+                    "interpretation-create probe already attempted its single POST"
+                )
+            # Count first: from here a second POST is impossible in this process.
+            self.post_count += 1
+            return self._delegate.send(request, credential)
+        raise SafetyError("interpretation-create probe accepts only reviewed GET and POST")
+
+
+class _InterpretationCreateProgress:
+    """Track the stage, the request counters and the guard-owned POST count."""
+
+    def __init__(self, guard: SingleInterpretationWriteGuard) -> None:
+        self._guard = guard
+        self.stage = "transport-init"
+        self.requests_attempted = 0
+        self.requests_completed = 0
+        self.readback_attempted = False
+
+    def enter(self, stage: str) -> None:
+        if stage == "transport-init" or stage not in INTERPRETATION_CREATE_FAILURE_STAGES:
+            raise SafetyError("write request stage is outside the fixed enum")
+        self.stage = stage
+
+    def dispatched(self) -> None:
+        self.requests_attempted += 1
+
+    def responded(self) -> None:
+        self.requests_completed += 1
+
+    def failure(
+        self,
+        failure_class: str,
+        http_status: int | None = None,
+        write_outcome: str | None = None,
+    ) -> InterpretationCreateFailure:
+        post_count = self._guard.post_count
+        if write_outcome is None:
+            write_outcome = (
+                WRITE_OUTCOME_NOT_ATTEMPTED
+                if post_count == 0
+                else WRITE_OUTCOME_NOT_VERIFIED
+            )
+        return InterpretationCreateFailure(
+            InterpretationCreateDiagnostic(
+                failure_stage=self.stage,
+                failure_class=failure_class,
+                http_status=http_status,
+                post_attempted=post_count >= 1,
+                post_count=post_count,
+                readback_attempted=self.readback_attempted,
+                write_outcome=write_outcome,
+                requests_attempted=self.requests_attempted,
+                requests_completed=self.requests_completed,
+            )
+        )
+
+    def contained_failure(self) -> InterpretationCreateFailure:
+        """A last-resort diagnostic that is always constructible.
+
+        An unclassifiable internal state must still leave the executor as one
+        sanitized, conservative fail-closed object rather than as an unhandled
+        exception whose traceback could carry external text. The reported POST
+        count still comes from the guard, so this can never under-report a
+        dispatched write.
+        """
+        post_count = 1 if self._guard.post_count else 0
+        clamp = MAX_INTERPRETATION_CREATE_REQUESTS
+        attempted = min(max(self.requests_attempted, 0), clamp)
+        completed = min(max(self.requests_completed, 0), attempted)
+        return InterpretationCreateFailure(
+            InterpretationCreateDiagnostic(
+                failure_stage="write" if post_count else "confirmation",
+                failure_class="safety",
+                http_status=None,
+                post_attempted=bool(post_count),
+                post_count=post_count,
+                readback_attempted=False,
+                write_outcome=(
+                    WRITE_OUTCOME_NOT_VERIFIED
+                    if post_count
+                    else WRITE_OUTCOME_NOT_ATTEMPTED
+                ),
+                requests_attempted=attempted,
+                requests_completed=completed,
+            )
+        )
+
+
+class InterpretationCreateExecutor:
+    """One-shot executor: at most three reviewed GETs and exactly one POST.
+
+    ``preflight`` may run once and ``commit`` may run once per instance, and the
+    guarded transport enforces the request budget independently of both.
+    """
+
+    def __init__(self, transport: Transport) -> None:
+        _validate_interpretation_create_contract()
+        self._guard = SingleInterpretationWriteGuard(transport)
+        self._progress = _InterpretationCreateProgress(self._guard)
+        self._preflight_done = False
+        self._commit_started = False
+        self._write_invocation_started = False
+
+    @property
+    def post_count(self) -> int:
+        return self._guard.post_count
+
+    def _send_read(
+        self,
+        stage: str,
+        request: HttpRequest,
+        credential: TestAccountCredential,
+        *,
+        write_outcome: str | None = None,
+    ) -> tuple[HttpResponse, int]:
+        self._progress.enter(stage)
+        self._progress.dispatched()
+        try:
+            response = self._guard.send(request, credential)
+        except TransportResponseError as rejected:
+            rejected_status = rejected.http_status
+            if rejected_status is None:
+                raise self._progress.failure("transport", None, write_outcome) from None
+            self._progress.responded()
+            if 200 <= rejected_status < 300:
+                raise self._progress.failure(
+                    "schema", rejected_status, write_outcome
+                ) from None
+            raise self._progress.failure(
+                "http-status", rejected_status, write_outcome
+            ) from None
+        except SafetyError:
+            raise self._progress.failure("safety", None, write_outcome) from None
+        except Exception:
+            raise self._progress.failure("transport", None, write_outcome) from None
+        status = _read_only_response_status(response)
+        if status is None:
+            raise self._progress.failure("transport", None, write_outcome) from None
+        self._progress.responded()
+        if not 200 <= status < 300:
+            raise self._progress.failure(
+                "http-status", status, write_outcome
+            ) from None
+        try:
+            _require_read_success(response)
+        except Exception:
+            raise self._progress.failure("schema", status, write_outcome) from None
+        return response, status
+
+    # --- preflight ---------------------------------------------------------
+
+    def preflight(
+        self,
+        credential: TestAccountCredential,
+        account_label: str,
+    ) -> InterpretationCreatePlan:
+        try:
+            return self._preflight(credential, account_label)
+        except InterpretationCreateFailure as failure:
+            raise failure.detach_external_context() from None
+        except Exception:
+            unclassified = self._contained_failure()
+        raise unclassified.detach_external_context() from None
+
+    def _contained_failure(self) -> InterpretationCreateFailure:
+        try:
+            return self._progress.failure("safety")
+        except Exception:
+            return self._progress.contained_failure()
+
+    def _preflight(
+        self,
+        credential: TestAccountCredential,
+        account_label: str,
+    ) -> InterpretationCreatePlan:
+        try:
+            if self._preflight_done or self._commit_started:
+                raise SafetyError("this executor already ran its single preflight")
+            _validate_interpretation_create_contract()
+            label = _validate_account_label_shape(account_label)
+            fingerprint = credential.fingerprint
+            ManualAccountGate(
+                allow_network=True,
+                account_label=label,
+                credential_fingerprint=fingerprint,
+                confirmation=(
+                    f"CONFIRM SECONDARY TEST ACCOUNT: {label} TOKEN-FP: {fingerprint}"
+                ),
+            ).validate(credential)
+            vocabulary_request = HttpRequest(
+                "GET",
+                build_query_path(
+                    "vocabulary", {"spelling": INTERPRETATION_CREATE_SPELLING}
+                ),
+            )
+        except Exception:
+            raise self._progress.failure("safety") from None
+
+        vocabulary_response, vocabulary_status = self._send_read(
+            "preflight-vocabulary", vocabulary_request, credential
+        )
+        try:
+            vocabulary_id, returned_spelling = _validate_probe_vocabulary(
+                _canonical_probe_vocabulary_body(vocabulary_response.body),
+                INTERPRETATION_CREATE_SPELLING,
+            )
+        except Exception:
+            raise self._progress.failure("schema", vocabulary_status) from None
+
+        try:
+            interpretations_request = HttpRequest(
+                "GET", build_query_path("interpretations", {"voc_id": vocabulary_id})
+            )
+        except Exception:
+            self._progress.enter("preflight-interpretations")
+            raise self._progress.failure("safety") from None
+        interpretations_response, interpretations_status = self._send_read(
+            "preflight-interpretations", interpretations_request, credential
+        )
+        try:
+            records = _interpretation_create_records(interpretations_response)
+        except Exception:
+            raise self._progress.failure("schema", interpretations_status) from None
+
+        # The zero baseline is the whole recovery invariant. One record means the
+        # update flow is required and is deliberately out of scope here; more than
+        # one is ambiguous. Neither may fall back to a write.
+        if len(records) > 1:
+            raise self._progress.failure(
+                "ambiguous", interpretations_status
+            ) from None
+        if len(records) != 0:
+            raise self._progress.failure("safety") from None
+
+        try:
+            plan = build_interpretation_create_plan(
+                account_label=account_label,
+                credential_fingerprint=credential.fingerprint,
+                returned_spelling=returned_spelling,
+                vocabulary_id=vocabulary_id,
+                preflight_interpretation_count=len(records),
+            )
+            plan.validate(credential)
+            if _contains_credential_material(plan.safe_preview(), credential.token):
+                raise SafetyError("write preview contains forbidden credential material")
+        except Exception:
+            raise self._progress.failure("safety") from None
+        self._preflight_done = True
+        return plan
+
+    # --- commit ------------------------------------------------------------
+
+    def commit(
+        self,
+        plan: InterpretationCreatePlan,
+        provided_confirmation: str,
+        credential: TestAccountCredential,
+        *,
+        state_store: PrivateStateStore | None,
+    ) -> "InterpretationCreateResult":
+        try:
+            return self._commit(plan, provided_confirmation, credential, state_store)
+        except InterpretationCreateFailure as failure:
+            raise failure.detach_external_context() from None
+        except Exception:
+            unclassified = self._contained_failure()
+        raise unclassified.detach_external_context() from None
+
+    def _commit(
+        self,
+        plan: InterpretationCreatePlan,
+        provided_confirmation: str,
+        credential: TestAccountCredential,
+        state_store: PrivateStateStore | None,
+    ) -> "InterpretationCreateResult":
+        # Only advance the reported stage while nothing has been written yet: a
+        # second commit call after a dispatched POST must keep the stage where
+        # that POST left it, so the diagnostic can never claim "not-attempted".
+        if self._guard.post_count == 0:
+            self._progress.enter("confirmation")
+        try:
+            if not isinstance(plan, InterpretationCreatePlan):
+                raise SafetyError("commit requires one reviewed immutable write plan")
+            if not self._preflight_done:
+                raise SafetyError("commit requires a completed zero-baseline preflight")
+            if self._commit_started:
+                raise SafetyError("this executor already ran its single write step")
+            if not isinstance(state_store, PrivateStateStore):
+                raise SafetyError("every live write requires a private journal")
+            if state_store.journal_prefix != INTERPRETATION_CREATE_JOURNAL_PREFIX:
+                raise SafetyError("write journal prefix is outside the reviewed namespace")
+            self._commit_started = True
+            _validate_interpretation_create_contract()
+            plan.revalidate()
+            plan.validate(credential)
+        except Exception:
+            raise self._contained_failure() from None
+
+        try:
+            plan.validate_confirmation(provided_confirmation)
+        except Exception:
+            raise self._progress.failure("confirmation") from None
+
+        self._progress.enter("write")
+        try:
+            state_store.assert_absent(INTERPRETATION_CREATE_JOURNAL_SEQUENCE)
+            state_store.begin_interpretation_create(plan, credential.fingerprint)
+        except Exception:
+            raise self._progress.failure("safety") from None
+
+        # Last boundary before the single POST: revalidate the immutable plan and
+        # recompute the exact confirmation from it, then build the request from
+        # that same frozen body.
+        try:
+            plan.revalidate()
+            if plan.expected_confirmation != provided_confirmation:
+                raise ConfirmationError("write confirmation changed before the send boundary")
+            write_request = plan.write_request()
+            if _contains_credential_material(
+                _thaw_json(write_request.payload), credential.token
+            ):
+                raise SafetyError("write request contains forbidden credential material")
+        except ConfirmationError:
+            raise self._progress.failure("confirmation") from None
+        except Exception:
+            raise self._progress.failure("safety") from None
+
+        write_status, uncertain = self._attempt_single_post(write_request, credential)
+
+        if self._guard.post_count == 0:
+            # The guard refused to dispatch, so nothing was written. There is
+            # nothing to recover and no readback is performed.
+            raise self._progress.failure("safety", None, WRITE_OUTCOME_NOT_ATTEMPTED) from None
+
+        try:
+            if uncertain:
+                state_store.mark_interpretation_create_unknown(
+                    credential.fingerprint,
+                    reason="write-outcome-unknown",
+                    write_status=write_status,
+                )
+            else:
+                state_store.mark_interpretation_create_acknowledged(
+                    credential.fingerprint,
+                    write_status=write_status,
+                )
+        except Exception:
+            # A journal failure never re-enters the POST path; it fails closed.
+            raise self._progress.failure(
+                "unknown-write-outcome", write_status, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+
+        return self._recover_by_readback(
+            plan, credential, state_store, write_status, uncertain
+        )
+
+    def _attempt_single_post(
+        self,
+        write_request: HttpRequest,
+        credential: TestAccountCredential,
+    ) -> tuple[int | None, bool]:
+        """Invoke the POST exactly once and classify its outcome.
+
+        Returns ``(sanitized status or None, uncertain)``. No exception path in
+        this method — or anywhere downstream — can send a second POST: the guard
+        has already consumed the single POST budget before delegating.
+        """
+        if self._write_invocation_started:
+            raise SafetyError("a second POST invocation was attempted")
+        self._write_invocation_started = True
+        self._progress.dispatched()
+        try:
+            write_response = self._guard.send(write_request, credential)
+        except TransportResponseError as rejected:
+            status = rejected.http_status
+            if status is not None:
+                self._progress.responded()
+            return status, True
+        except Exception:
+            return None, True
+        status = _read_only_response_status(write_response)
+        if status is None:
+            return None, True
+        self._progress.responded()
+        return status, not 200 <= status < 300
+
+    def _recover_by_readback(
+        self,
+        plan: InterpretationCreatePlan,
+        credential: TestAccountCredential,
+        state_store: PrivateStateStore,
+        write_status: int | None,
+        uncertain: bool,
+    ) -> "InterpretationCreateResult":
+        """Perform exactly one GET-only readback. This is never a write retry."""
+        self._progress.enter("readback")
+        self._progress.readback_attempted = True
+        try:
+            read_request = HttpRequest("GET", plan.readback_path)
+        except Exception:
+            self._preserve_unresolved(
+                state_store, credential, READBACK_RESULT_UNREADABLE, None
+            )
+            raise self._progress.failure("safety", None, WRITE_OUTCOME_NOT_VERIFIED) from None
+
+        try:
+            read_response, read_status = self._send_read(
+                "readback",
+                read_request,
+                credential,
+                write_outcome=WRITE_OUTCOME_NOT_VERIFIED,
+            )
+        except InterpretationCreateFailure:
+            self._preserve_unresolved(
+                state_store, credential, READBACK_RESULT_UNREADABLE, None
+            )
+            raise
+
+        try:
+            records = _interpretation_create_records(read_response)
+        except Exception:
+            self._preserve_unresolved(
+                state_store, credential, READBACK_RESULT_UNREADABLE, read_status
+            )
+            raise self._progress.failure(
+                "schema", read_status, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+
+        if len(records) == 0:
+            self._preserve_unresolved(
+                state_store, credential, READBACK_RESULT_EMPTY, read_status
+            )
+            raise self._progress.failure(
+                "unknown-write-outcome", read_status, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+        if len(records) > 1:
+            self._preserve_unresolved(
+                state_store, credential, READBACK_RESULT_MULTIPLE, read_status
+            )
+            raise self._progress.failure(
+                "ambiguous", read_status, WRITE_OUTCOME_AMBIGUOUS
+            ) from None
+        try:
+            record_id = _verify_interpretation_create_record(records[0])
+        except Exception:
+            self._preserve_unresolved(
+                state_store, credential, READBACK_RESULT_MISMATCH, read_status
+            )
+            raise self._progress.failure(
+                "mismatch", read_status, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+
+        outcome = (
+            WRITE_OUTCOME_RECOVERED_SUCCESS if uncertain else WRITE_OUTCOME_CONFIRMED_SUCCESS
+        )
+        record_id_fingerprint = hashlib.sha256(
+            record_id.encode("utf-8")
+        ).hexdigest()[:16]
+        try:
+            state_store.mark_interpretation_create_readback(
+                credential.fingerprint,
+                readback_result=READBACK_RESULT_MATCHED,
+                write_outcome=outcome,
+                read_status=read_status,
+                created_record_id_fingerprint=record_id_fingerprint,
+            )
+        except Exception:
+            raise self._progress.failure(
+                "safety", None, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+
+        result = InterpretationCreateResult(
+            write_outcome=outcome,
+            requested_spelling=plan.requested_spelling,
+            preflight_count=plan.preflight_interpretation_count,
+            post_write_count=len(records),
+            voc_id_fingerprint=plan.voc_id_fingerprint,
+            created_record_id_fingerprint=record_id_fingerprint,
+            post_http_status=_plain_http_status(write_status),
+            readback_http_status=read_status,
+            post_count=self._guard.post_count,
+            requests_attempted=self._progress.requests_attempted,
+            requests_completed=self._progress.requests_completed,
+        )
+        if _contains_credential_material(result.safe_summary(), credential.token):
+            raise self._progress.failure(
+                "safety", None, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+        return result
+
+    def _preserve_unresolved(
+        self,
+        state_store: PrivateStateStore,
+        credential: TestAccountCredential,
+        readback_result: str,
+        read_status: int | None,
+    ) -> None:
+        """Record an unresolved readback. A journal failure here is swallowed:
+        it must never change the fail-closed outcome and never causes a retry."""
+        try:
+            state_store.mark_interpretation_create_readback(
+                credential.fingerprint,
+                readback_result=readback_result,
+                write_outcome=(
+                    WRITE_OUTCOME_AMBIGUOUS
+                    if readback_result == READBACK_RESULT_MULTIPLE
+                    else WRITE_OUTCOME_NOT_VERIFIED
+                ),
+                read_status=read_status,
+                created_record_id_fingerprint=None,
+            )
+        except Exception:
+            return None
+        return None
+
+
+@dataclass(frozen=True, repr=False)
+class InterpretationCreateResult:
+    """Sanitized success result. Project-owned and fingerprint values only."""
+
+    write_outcome: str
+    requested_spelling: str
+    preflight_count: int
+    post_write_count: int
+    voc_id_fingerprint: str
+    created_record_id_fingerprint: str
+    post_http_status: int | None
+    readback_http_status: int
+    post_count: int
+    requests_attempted: int
+    requests_completed: int
+
+    def __post_init__(self) -> None:
+        outcome = _pinned_write_outcome(self.write_outcome)
+        if outcome not in (
+            WRITE_OUTCOME_CONFIRMED_SUCCESS,
+            WRITE_OUTCOME_RECOVERED_SUCCESS,
+        ):
+            raise SafetyError("a write result must report one verified success outcome")
+        object.__setattr__(self, "write_outcome", outcome)
+        if self.requested_spelling != INTERPRETATION_CREATE_SPELLING:
+            raise SafetyError("write result spelling is not the fixed target")
+        if self.preflight_count != 0 or self.post_write_count != 1:
+            raise SafetyError("write result counts violate the zero-baseline contract")
+        if self.post_count != MAX_INTERPRETATION_CREATE_POSTS:
+            raise SafetyError("a verified write must report exactly one POST")
+        for name in ("voc_id_fingerprint", "created_record_id_fingerprint"):
+            if re.fullmatch(r"[0-9a-f]{16}", getattr(self, name)) is None:
+                raise SafetyError("write result fingerprints must be fixed-shape digests")
+        if self.post_http_status is not None and _plain_http_status(
+            self.post_http_status
+        ) is None:
+            raise SafetyError("write result POST status is not a plain numeric status")
+        if _plain_http_status(self.readback_http_status) is None or not (
+            200 <= self.readback_http_status < 300
+        ):
+            raise SafetyError("a verified write requires a 2xx readback status")
+        if (
+            self.write_outcome == WRITE_OUTCOME_CONFIRMED_SUCCESS
+            and (
+                self.post_http_status is None
+                or not 200 <= self.post_http_status < 300
+            )
+        ):
+            raise SafetyError("a confirmed success requires a 2xx POST status")
+
+    @property
+    def status(self) -> str:
+        return (
+            "succeeded"
+            if self.write_outcome == WRITE_OUTCOME_CONFIRMED_SUCCESS
+            else "recovered-succeeded"
+        )
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "mode": INTERPRETATION_CREATE_MODE,
+            "status": self.status,
+            "operation": "create",
+            "write_outcome": self.write_outcome,
+            "requested_spelling": self.requested_spelling,
+            "preflight_count": self.preflight_count,
+            "post_write_count": self.post_write_count,
+            "intended_interpretation": INTERPRETATION_CREATE_TEXT,
+            "intended_tags": list(INTERPRETATION_CREATE_TAGS),
+            "intended_status": INTERPRETATION_CREATE_STATUS,
+            "voc_id_fingerprint": self.voc_id_fingerprint,
+            "created_record_id_fingerprint": self.created_record_id_fingerprint,
+            "post_http_status": self.post_http_status,
+            "readback_http_status": self.readback_http_status,
+            "post_count": self.post_count,
+            "readback_attempted": True,
+            "requests_attempted": self.requests_attempted,
+            "requests_completed": self.requests_completed,
+        }
+
+    def __repr__(self) -> str:
+        return f"InterpretationCreateResult({self.safe_summary()!r})"
+
+    def __str__(self) -> str:
+        return json.dumps(self.safe_summary(), ensure_ascii=False, sort_keys=True)
+
+
 CLI_PROGRAM_NAME = "issue9_live_harness.py"
 SANITIZED_ARGV_ERROR = (
     "command line arguments were rejected; the rejected argument names and "
@@ -3465,6 +4916,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     read_only.add_argument("--word", required=True)
     read_only.add_argument("--account-label", required=True)
     read_only.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="explicitly acknowledge that this command may create the locked transport",
+    )
+    interpretation_create = commands.add_parser(
+        "interpretation-create-probe",
+        help=(
+            "run the explicitly confirmed secondary-account one-shot interpretation "
+            "CREATE; the written content is fixed by this project and is not "
+            "accepted from the command line"
+        ),
+    )
+    interpretation_create.add_argument("--account-label", required=True)
+    interpretation_create.add_argument(
         "--allow-network",
         action="store_true",
         help="explicitly acknowledge that this command may create the locked transport",
@@ -3594,6 +5059,146 @@ def _run_read_only_probe_cli(
     return 0
 
 
+UNCLASSIFIED_INTERPRETATION_CREATE_FAILURE = InterpretationCreateDiagnostic(
+    failure_stage="transport-init",
+    failure_class="safety",
+    http_status=None,
+    post_attempted=False,
+    post_count=0,
+    readback_attempted=False,
+    write_outcome=WRITE_OUTCOME_NOT_ATTEMPTED,
+    requests_attempted=0,
+    requests_completed=0,
+)
+
+
+def _print_interpretation_create_failure(
+    diagnostic: InterpretationCreateDiagnostic,
+) -> None:
+    """Print exactly one sanitized write diagnostic object and nothing else."""
+    if not isinstance(diagnostic, InterpretationCreateDiagnostic):
+        diagnostic = UNCLASSIFIED_INTERPRETATION_CREATE_FAILURE
+    print(
+        json.dumps(
+            diagnostic.safe_summary(),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def _run_interpretation_create_probe_cli(
+    args: argparse.Namespace,
+    *,
+    token_prompt: Callable[[str], str],
+    confirmation_prompt: Callable[[str], str],
+    transport_factory: Callable[[], Transport],
+    stdin_isatty: Callable[[], bool],
+    state_store_factory: Callable[[], PrivateStateStore] | None = None,
+) -> int:
+    if not args.allow_network:
+        print(
+            "BLOCKED: interpretation-create-probe requires the explicit "
+            "--allow-network flag."
+        )
+        return 3
+    if args.input != DEFAULT_FIXTURE:
+        print(
+            "BLOCKED: interpretation-create-probe does not accept an input or "
+            "config file."
+        )
+        return 3
+    try:
+        account_label = _validate_account_label_shape(args.account_label)
+        _validate_interpretation_create_contract()
+    except SafetyError:
+        print(
+            "BLOCKED: interpretation-create-probe account label or fixed write "
+            "contract failed validation."
+        )
+        return 3
+    if not stdin_isatty():
+        print(
+            "BLOCKED: interpretation-create-probe requires an interactive "
+            "terminal; pipes are forbidden."
+        )
+        return 3
+
+    try:
+        token = _hidden_prompt(
+            token_prompt,
+            "Secondary/test-account Maimemo Token (hidden): ",
+        )
+        credential = TestAccountCredential(token, account_label)
+    except Exception:
+        print("BLOCKED: hidden secondary-account credential was not accepted.")
+        return 3
+
+    try:
+        state_store = (
+            state_store_factory()
+            if state_store_factory is not None
+            else PrivateStateStore(journal_prefix=INTERPRETATION_CREATE_JOURNAL_PREFIX)
+        )
+        executor = InterpretationCreateExecutor(transport_factory())
+    except Exception:
+        _print_interpretation_create_failure(
+            InterpretationCreateDiagnostic(
+                failure_stage="transport-init",
+                failure_class="transport",
+                http_status=None,
+                post_attempted=False,
+                post_count=0,
+                readback_attempted=False,
+                write_outcome=WRITE_OUTCOME_NOT_ATTEMPTED,
+                requests_attempted=0,
+                requests_completed=0,
+            )
+        )
+        return 4
+
+    print(f"INTERPRETATION CREATE PROBE — {WRITE_POLICY_STATEMENT}")
+    try:
+        plan = executor.preflight(credential, account_label)
+    except InterpretationCreateFailure as failure:
+        _print_interpretation_create_failure(failure.diagnostic)
+        return 4
+    except Exception:
+        _print_interpretation_create_failure(UNCLASSIFIED_INTERPRETATION_CREATE_FAILURE)
+        return 4
+
+    print(
+        json.dumps(plan.safe_preview(), ensure_ascii=False, indent=2, sort_keys=True)
+    )
+    try:
+        provided_confirmation = _hidden_prompt(
+            confirmation_prompt,
+            "Exact interpretation-create WRITE confirmation (hidden): ",
+        )
+    except Exception:
+        print("BLOCKED: the exact write confirmation was not accepted.")
+        return 3
+
+    try:
+        result = executor.commit(
+            plan,
+            provided_confirmation,
+            credential,
+            state_store=state_store,
+        )
+    except InterpretationCreateFailure as failure:
+        _print_interpretation_create_failure(failure.diagnostic)
+        return 4
+    except Exception:
+        # Defensive only: commit converts every failure into a classified
+        # InterpretationCreateFailure.
+        _print_interpretation_create_failure(UNCLASSIFIED_INTERPRETATION_CREATE_FAILURE)
+        return 4
+    print(json.dumps(result.safe_summary(), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -3601,6 +5206,7 @@ def main(
     confirmation_prompt: Callable[[str], str] | None = None,
     transport_factory: Callable[[], Transport] | None = None,
     stdin_isatty: Callable[[], bool] | None = None,
+    state_store_factory: Callable[[], PrivateStateStore] | None = None,
 ) -> int:
     args = parse_args(argv)
     if args.command == "read-only-probe":
@@ -3610,6 +5216,15 @@ def main(
             confirmation_prompt=confirmation_prompt or getpass.getpass,
             transport_factory=transport_factory or ProductionHttpTransport,
             stdin_isatty=stdin_isatty or sys.stdin.isatty,
+        )
+    if args.command == "interpretation-create-probe":
+        return _run_interpretation_create_probe_cli(
+            args,
+            token_prompt=token_prompt or getpass.getpass,
+            confirmation_prompt=confirmation_prompt or getpass.getpass,
+            transport_factory=transport_factory or ProductionHttpTransport,
+            stdin_isatty=stdin_isatty or sys.stdin.isatty,
+            state_store_factory=state_store_factory,
         )
     if args.mode != "offline-plan":
         print(

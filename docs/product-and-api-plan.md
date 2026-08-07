@@ -1,6 +1,6 @@
 # 产品需求与 API 验证计划
 
-最后更新：2026-08-03
+最后更新：2026-08-08
 
 ## 1. 项目目标
 
@@ -380,6 +380,85 @@ Issue #18 的外层分类器**没有**被用作验收校验器：collection 路�
 `response_shapes.interpretations` / `response_shapes.phrases` 仍是项目自有摘要 `{"canonical_key": <key>, "canonical_key_present": true, "unknown_top_level_field_count": 0}`。三条 GET 全部使用 `data` 外层的假流程，其脱敏成功摘要与全部使用文档顶层形状的假流程**逐字段完全相同**——这是下一次真实运行前的关键回归目标。
 
 Issue #22 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。下一次真实 GET-only 运行仍属 Issue #13，需要单独授权。
+
+> 后续更新：该修复已在 Issue #13 的最终真实运行中端到端验证通过，见 2.9。
+
+### 2.9 Issue #24 一次性自建释义 CREATE 入口（本轮同样为零真实请求）
+
+#### 已确认事实：Issue #13 的 GET-only 目标已经完成
+
+合并 collection `data` 兼容修复后，所有者授权的最后一次副账号 GET-only `apple` 运行**成功**。这是**事实**，不是推断：
+
+- 三条已复核 GET 全部完成，HTTP 状态均为 **200**：vocabulary 200、interpretations 200、phrases 200；
+- 返回拼写与请求词 `apple` 一致，vocabulary 走通了 canonical `voc` 验收路径；
+- interpretations 与 phrases 两个 collection 也都通过各自的 canonical 验收路径；
+- 该副账号在该次运行中 `interpretation_count = 0`、`phrase_count = 0`（对 `apple` 既没有自建释义，也没有自建例句）；
+- 没有发生重试、写入或响应持久化，没有凭证泄漏。
+
+至此 Issue #13 的只读运行时验证目标关闭：2.7 与 2.8 记录的生产 `data` 外层兼容在真实副账号上端到端生效。**该结果不授权任何写入。**
+
+#### 下一阶段：第一次真实写入只做一条自建释义 CREATE
+
+Issue #24 只**准备**这个入口，实现与审阅全程离线。它刻意不是通用批量导入器：
+
+- 命令形态（未来真实运行时使用）：
+
+  ```bash
+  /usr/bin/python3 scripts/issue9_live_harness.py interpretation-create-probe --account-label "副账号测试" --allow-network
+  ```
+
+- **默认且唯一目标词为 `acquisition`**；释义、标签、状态全部由本项目固定，**不接受任何命令行内容参数**：
+
+  | 字段 | 固定值 |
+  | --- | --- |
+  | spelling | `acquisition` |
+  | interpretation | `n. 收购；购置；获得` |
+  | tags | `MBA`、`BEC`、`GMAT`（恰好三个） |
+  | status | `PUBLISHED` |
+
+- **零基线 preflight**：先 `GET /vocabulary?spelling=acquisition`，再 `GET /interpretations?voc_id=<resolved-id>`；只有当前账号自建释义数量**恰好为 0** 才允许进入预览。为 1 条时阻断（本阶段不提供 update），为多条时按 `ambiguous` 阻断；两种情况都不自动改词、不自动转 update、不发出 POST。
+- **最多一个 POST**：`POST /open/api/v1/interpretations`，请求体恰好是
+
+  ```json
+  {
+    "interpretation": {
+      "voc_id": "<resolved-id>",
+      "interpretation": "n. 收购；购置；获得",
+      "tags": ["MBA", "BEC", "GMAT"],
+      "status": "PUBLISHED"
+    }
+  }
+  ```
+
+  没有额外字段，没有顶层 `id`，没有 update 语义，没有例句语义。
+- **写后立即回读**：POST 之后恰好一次 `GET /interpretations?voc_id=<resolved-id>`。
+- **结果未知时只用 GET 恢复**：超时、连接重置、TLS/读失败、正文 I/O 失败、非法 UTF-8、非法 JSON、异常完整响应形状、4xx/5xx——一律**不再 POST**，只做那一次回读。回读是安全的，不是写入重试。
+- **不做 update / delete / 例句写入**：整条命令连 phrases 端点都不读。
+- **主账号 Token 仍完全不受支持**：账号标签必须正向包含副账号语义并拒绝主账号/生产语义，凭证只经交互式隐藏 `getpass` 进入内存。
+
+网络序列的硬上限是 **3 个 GET + 1 个 POST**，0 次重试，0 个 PUT/PATCH/DELETE，0 次例句调用。受门禁的 transport 在委托真实请求**之前**就把 POST 计数加一，因此一旦 POST 开始调用，同一进程内第二个 POST 在结构上不可能发生——无论第一个 POST 以超时、重置、TLS 失败、畸形正文、4xx、5xx 还是 journal 失败结束。
+
+#### 确认短语与不可变写入计划
+
+preflight 通过后构造一个递归冻结的写入计划。预览、确认摘要、私有 journal 与真正发出的请求体**同源**：都从这一个冻结 body 派生，不存在第二份可变字典。确认短语是全新的、写入专用的（与只读确认用词完全不同，且包含 `WRITE`），并绑定：operation、固定 host、method/path、请求拼写、原始 `voc_id`（只进摘要、绝不输出）、释义正文、标签元组、状态、账号标签、Token 指纹、费用/条款已复核标记，以及 canonical 请求体摘要。任何一项在预览之后被改动，确认即失效。POST 之前会再次校验不可变计划并重算确认绑定。
+
+#### 成败判定只看零基线回读
+
+写入结果**不依赖**从 POST 响应里取记录 ID——生产 GET 已经出现过未文档化的 `data` 外层，不应再造一个脆弱的 POST 响应解析依赖。2xx 只当作确认收到。判定成功要求那一次回读同时满足：集合恰好 1 条记录、记录 ID 满足既有安全策略、释义正文逐字相同、标签按**集合语义**恰好为 `MBA`/`BEC`/`GMAT`（长度为 3、每个期望标签恰好一次、允许服务端顺序不同、拒绝重复与多余）、状态恰为 `PUBLISHED`。回读 0 条为 `not-verified`，多条为 `ambiguous`，1 条但不匹配为 `mismatch`，回读本身 transport/schema 失败为 `not-verified`；四种都 fail closed，且都不会再 POST。
+
+失败时只输出项目自有的封闭诊断：`failure_stage`（`transport-init`、`preflight-vocabulary`、`preflight-interpretations`、`confirmation`、`write`、`readback`）、`failure_class`（`transport`、`http-status`、`schema`、`safety`、`confirmation`、`ambiguous`、`mismatch`、`unknown-write-outcome`）、`http_status`，以及 `post_attempted`、`post_count`、`readback_attempted` 和封闭的 `write_outcome`（`not-attempted`、`confirmed-success`、`recovered-success`、`not-verified`、`ambiguous`）。成功输出只含 mode、状态、operation、请求拼写、preflight/写后数量、固定的标签与状态、`voc_id` 指纹、创建记录 ID 指纹、安全可知的 POST 状态和计数器。Token、Authorization、原始 `voc_id`、原始记录 ID、原始响应、服务端键名一律不出现。
+
+#### 私有 journal
+
+复用既有被忽略的 `artifacts/private/` 模型（目录 `0700`、文件 `0600`、`O_EXCL`/`O_NOFOLLOW` 创建、原子替换、敏感键筛查、同一步存在 journal 即禁止重放），只是换成独立的 `issue24-interpretation-create-<n>.json` 命名空间。它保存的是最小写入连续性证据：operation、请求拼写、`voc_id` **指纹**、拟写入的释义/标签/状态、preflight 基线数量、请求体摘要、`post_attempted`、脱敏后的 POST 状态、回读结果，以及创建记录的**指纹**。它不保存 Token、Authorization、Cookie、账号标签、原始 `voc_id` 或原始记录 ID，也不新增任何删除/清理自动化。POST 之后 journal 写入失败只会 fail closed，绝不导致第二次 POST。
+
+#### 条款与内容要求
+
+真实运行必须使用合法的、词典式的真实内容。**不得**发布 `API test`、`dummy`、随机字符或其他无意义测试内容——当前墨墨开放平台条款明确禁止无意义/测试性质的发布内容。本阶段直接把内容固定在代码里，调用方无法修改，正是为了让这条要求不可绕过。
+
+#### 本轮边界
+
+Issue #24 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。第一次真实写入仍需在本 PR 合并并经独立审阅之后，由所有者另开单独 Issue 明确授权，并在执行前重新核对当前官方费用与条款。
 
 ## 3. 真实用户工作流
 
