@@ -1518,46 +1518,98 @@ def _classify_vocabulary_response_envelope(body: Any) -> str:
 # the top-level ``{"voc": {...}}``. Exactly those two locations are accepted.
 # ``result``/``vocabulary`` containers, a bare vocabulary-shaped body, business
 # metadata and anything unreviewed all stay fail-closed as before.
+#
+# Issue #22 reuses the very same container for the two read-only collection GETs
+# — and nothing else. See :func:`_canonical_probe_collection_body`.
 READ_ONLY_COMPATIBILITY_CONTAINER_KEY = "data"
+
+
+def _relocated_compatibility_body(body: Any, canonical_key: str) -> Any:
+    """Return the canonical ``{canonical_key: ...}`` view of a read-only body.
+
+    This is the whole compatibility boundary shared by every read-only GET, and
+    it only ever *relocates* a value — it never inspects, relaxes or decides
+    anything about the value it hands on:
+
+    * the documented top-level ``canonical_key`` always wins. While it is present
+      the body is returned unchanged, so a malformed documented response can
+      never be silently bypassed by a second candidate;
+    * only when the documented field is absent may the single compatibility
+      location ``data.<canonical_key>`` be used, and only when ``data`` really is
+      a mapping that really contains that exact key;
+    * anything else is returned unchanged, which keeps every existing rejection —
+      and its sanitized diagnostic — exactly as it was.
+
+    The canonical result is a new, project-owned one-key mapping built here: the
+    caller's body is never mutated or persisted, and no key name or value beyond
+    the two allowlisted names is read, copied, counted, hashed or emitted.
+
+    ``canonical_key`` is always a module-owned constant chosen by identity by the
+    callers below, so a caller-supplied string can never become the emitted key.
+    """
+    if not isinstance(body, Mapping):
+        return body
+    if canonical_key in body:
+        return body
+    if READ_ONLY_COMPATIBILITY_CONTAINER_KEY not in body:
+        return body
+    wrapper = body[READ_ONLY_COMPATIBILITY_CONTAINER_KEY]
+    if not isinstance(wrapper, Mapping) or canonical_key not in wrapper:
+        return body
+    # Deliberately *not* validated here: whether the relocated value is usable
+    # stays the unchanged responsibility of the existing strict validators. The
+    # Issue #18 locating classifier, which accepts broader types on purpose, must
+    # never become the acceptance rule, so this hands the value on untouched and
+    # lets the existing checkpoints reject it by their existing reasons.
+    return {canonical_key: wrapper[canonical_key]}
 
 
 def _canonical_probe_vocabulary_body(body: Any) -> Any:
     """Return the canonical ``{"voc": ...}`` view of a vocabulary response.
 
-    This is the whole compatibility boundary, and it only ever *relocates* a
-    value — it never inspects, relaxes or decides anything about the record it
-    hands on:
-
-    * the documented top-level ``voc`` always wins. While it is present the body
-      is returned unchanged, so a malformed documented response can never be
-      silently bypassed by a second candidate;
-    * only when the documented field is absent may the single observed
-      production location ``data.voc`` be used, and only when ``data`` really is
-      a mapping that really contains ``voc``;
-    * anything else is returned unchanged, which keeps the existing
-      ``missing-voc`` rejection — and its sanitized envelope diagnostic —
-      exactly as it was.
-
-    The canonical result is a new, project-owned one-key mapping built here: the
-    caller's body is never mutated or persisted, and no key name or value beyond
-    the two allowlisted names is read, copied, counted, hashed or emitted.
+    Exactly two locations are accepted, in this order: the documented top-level
+    ``voc``, then — only when that key is absent — the observed production
+    location ``data.voc``. Whether the relocated record is acceptable stays the
+    unchanged responsibility of :func:`_validate_probe_vocabulary`.
     """
-    if not isinstance(body, Mapping):
-        return body
-    if RESPONSE_ENVELOPE_VOC_KEY in body:
-        return body
-    if READ_ONLY_COMPATIBILITY_CONTAINER_KEY not in body:
-        return body
-    wrapper = body[READ_ONLY_COMPATIBILITY_CONTAINER_KEY]
-    if not isinstance(wrapper, Mapping) or RESPONSE_ENVELOPE_VOC_KEY not in wrapper:
-        return body
-    # Deliberately *not* validated here: whether the relocated value is a usable
-    # vocabulary record stays the unchanged responsibility of
-    # :func:`_validate_probe_vocabulary`. The Issue #18 locating classifier,
-    # which accepts broader types on purpose, must never become the acceptance
-    # rule, so this hands the value on untouched and lets the existing
-    # checkpoints reject it by their existing reasons.
-    return {RESPONSE_ENVELOPE_VOC_KEY: wrapper[RESPONSE_ENVELOPE_VOC_KEY]}
+    return _relocated_compatibility_body(body, RESPONSE_ENVELOPE_VOC_KEY)
+
+
+# Issue #22: the two read-only collection endpoints, by their documented keys.
+#
+# The fifth owner-authorized run advanced past vocabulary and reported
+# ``failure_stage = interpretations`` with ``http_status = 200`` and
+# ``schema_reason = other-reviewed-schema``: the second GET completes and is then
+# rejected inside collection parsing. Since ``data.voc`` was directly observed on
+# the vocabulary endpoint, ``data.interpretations`` is the leading compatibility
+# inference; ``data.phrases`` has *not* been observed and is supported
+# proactively so the same narrow contract holds for both collection GETs.
+#
+# Each endpoint accepts its own canonical key and nothing else: no cross-endpoint
+# key, no ``result``/``items``/``records`` container, no bare array, no generic
+# ``data`` contents and no unreviewed wrapper.
+READ_ONLY_COLLECTION_KEYS: tuple[str, ...] = ("interpretations", "phrases")
+
+
+def _canonical_probe_collection_body(body: Any, response_key: str) -> Any:
+    """Return the canonical ``{response_key: ...}`` view of a collection response.
+
+    ``response_key`` must name one of the two documented collection endpoints; an
+    undocumented endpoint is a local programming error and fails closed exactly
+    like the neighbouring collection validators. The key used to build the
+    canonical view is the module-level constant itself, selected by identity, so
+    a caller-supplied string that merely compares equal can never be emitted.
+
+    Only the endpoint's own canonical key is ever looked up — inside ``data`` as
+    well — so a ``phrases`` payload can never satisfy the interpretations GET,
+    and the generic contents of ``data`` never become an accepted collection.
+    """
+    canonical = next(
+        (item for item in READ_ONLY_COLLECTION_KEYS if item == response_key), None
+    )
+    if canonical is None:
+        raise SafetyError("read-only record collection is not a documented endpoint")
+    return _relocated_compatibility_body(body, canonical)
 
 
 READ_ONLY_STATUS_ENUMS: Mapping[str, tuple[str, ...]] = {
@@ -1629,7 +1681,13 @@ def _summarize_read_only_records(
     inspect_highlight: bool,
 ) -> tuple[int, dict[str, int], dict[str, int], dict[str, Any]]:
     response = _require_read_success(response)
-    records = response.body.get(response_key)
+    # Issue #22: the documented top-level collection key and the single
+    # ``data.<key>`` compatibility location are canonicalized in memory to the
+    # same project-owned view, so both the unchanged strict validation below and
+    # the existing response-shape summary see one stable shape and the raw
+    # production body is never mutated, echoed or persisted.
+    canonical_body = _canonical_probe_collection_body(response.body, response_key)
+    records = canonical_body.get(response_key)
     if not isinstance(records, list):
         raise SafetyError("read-only record collection is not an array")
     seen_ids: set[str] = set()
@@ -1654,7 +1712,7 @@ def _summarize_read_only_records(
         len(records),
         statuses,
         highlight_shapes,
-        _read_only_response_shape(response.body, response_key),
+        _read_only_response_shape(canonical_body, response_key),
     )
 
 
