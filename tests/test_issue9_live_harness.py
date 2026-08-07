@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import io
 import json
@@ -3153,6 +3154,13 @@ SERVER_MESSAGE_SENTINEL = "PRIVATE SERVER ERROR MESSAGE SENTINEL"
 REDIRECT_LOCATION_SENTINEL = "https://redirect-target.invalid/private-sentinel-path"
 TRANSPORT_EXCEPTION_SENTINEL = "PRIVATE TRANSPORT EXCEPTION SENTINEL"
 PRODUCTION_IO_SENTINEL = "PRIVATE-PRODUCTION-IO-SENTINEL"
+# Issue #16: a non-empty string voc id that the unchanged local
+# ``_safe_record_id`` policy rejects because of its punctuation. This is the
+# hypothesis the next owner-authorized run has to prove or disprove, so it must
+# be classified exactly and must never appear in any output.
+VOC_ID_PUNCTUATION_SENTINEL = "PRIVATE.ISSUE16/VOC ID+SENTINEL"
+SPELLING_SENTINEL = "PRIVATEISSUE16SPELLINGSENTINEL"
+INJECTED_REASON_SENTINEL = "PRIVATE-INJECTED-SCHEMA-REASON-SENTINEL"
 SENTINELS = (
     FAKE_TOKEN,
     SERVER_KEY_SENTINEL,
@@ -3161,6 +3169,9 @@ SENTINELS = (
     REDIRECT_LOCATION_SENTINEL,
     TRANSPORT_EXCEPTION_SENTINEL,
     PRODUCTION_IO_SENTINEL,
+    VOC_ID_PUNCTUATION_SENTINEL,
+    SPELLING_SENTINEL,
+    INJECTED_REASON_SENTINEL,
 )
 
 
@@ -3187,6 +3198,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
         http_status: int | None,
         attempted: int,
         completed: int,
+        schema_reason: str | None = None,
     ) -> dict[str, object]:
         return {
             "mode": "read-only-probe",
@@ -3194,9 +3206,145 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             "failure_stage": stage,
             "failure_class": failure_class,
             "http_status": http_status,
+            "schema_reason": schema_reason,
             "requests_attempted": attempted,
             "requests_completed": completed,
         }
+
+    def vocabulary_schema_reason_cases(
+        self,
+    ) -> list[tuple[str, list[object], dict[str, object], int]]:
+        """Issue #16: one case per vocabulary-stage ``schema_reason``.
+
+        Every case is a completely received HTTP 200 on the first GET, exactly
+        like the real second owner-authorized run, so the only thing that varies
+        is which reviewed checkpoint the body violates.
+        """
+
+        def voc_case(
+            name: str,
+            body: object,
+            schema_reason: str,
+        ) -> tuple[str, list[object], dict[str, object], int]:
+            return (
+                name,
+                [harness.HttpResponse(200, body)],
+                self.expected("vocabulary", "schema", 200, 1, 1, schema_reason),
+                1,
+            )
+
+        def rejected_body_case(
+            name: str,
+            schema_reason: object,
+            expected_reason: str,
+        ) -> tuple[str, list[object], dict[str, object], int]:
+            return (
+                name,
+                [harness.TransportResponseError(200, schema_reason)],
+                self.expected("vocabulary", "schema", 200, 1, 1, expected_reason),
+                1,
+            )
+
+        return [
+            rejected_body_case(
+                "vocabulary-body-invalid-utf8",
+                harness.SCHEMA_REASON_BODY_INVALID_UTF8,
+                "body-invalid-utf8",
+            ),
+            rejected_body_case(
+                "vocabulary-body-invalid-json",
+                harness.SCHEMA_REASON_BODY_INVALID_JSON,
+                "body-invalid-json",
+            ),
+            rejected_body_case(
+                "vocabulary-body-not-object-from-transport",
+                harness.SCHEMA_REASON_BODY_NOT_OBJECT,
+                "body-not-object",
+            ),
+            rejected_body_case(
+                "vocabulary-body-too-large",
+                harness.SCHEMA_REASON_BODY_TOO_LARGE,
+                "body-too-large",
+            ),
+            rejected_body_case(
+                "vocabulary-injected-reason-is-not-project-owned",
+                INJECTED_REASON_SENTINEL,
+                "other-reviewed-schema",
+            ),
+            voc_case(
+                "vocabulary-body-not-object-non-string-key",
+                {7: [SERVER_BODY_SENTINEL]},
+                "body-not-object",
+            ),
+            voc_case(
+                "vocabulary-top-level-response-policy",
+                {
+                    "voc": {"id": self.VOCABULARY_ID, "spelling": self.RETURNED_WORD},
+                    f"{SERVER_KEY_SENTINEL}-token": SERVER_BODY_SENTINEL,
+                },
+                "top-level-response-policy",
+            ),
+            voc_case(
+                "vocabulary-missing-voc-field",
+                {SERVER_KEY_SENTINEL: SERVER_BODY_SENTINEL},
+                "missing-voc",
+            ),
+            voc_case(
+                "vocabulary-voc-not-object",
+                {"voc": SERVER_BODY_SENTINEL},
+                "voc-not-object",
+            ),
+            voc_case(
+                "vocabulary-voc-id-missing",
+                {"voc": {"spelling": self.RETURNED_WORD}},
+                "voc-id-missing-or-not-string",
+            ),
+            voc_case(
+                "vocabulary-voc-id-not-a-string",
+                {"voc": {"id": 20260808, "spelling": self.RETURNED_WORD}},
+                "voc-id-missing-or-not-string",
+            ),
+            voc_case(
+                "vocabulary-voc-id-empty",
+                {"voc": {"id": "", "spelling": self.RETURNED_WORD}},
+                "voc-id-empty",
+            ),
+            voc_case(
+                "vocabulary-voc-id-local-policy",
+                {
+                    "voc": {
+                        "id": VOC_ID_PUNCTUATION_SENTINEL,
+                        "spelling": self.RETURNED_WORD,
+                    }
+                },
+                "voc-id-local-policy",
+            ),
+            voc_case(
+                "vocabulary-spelling-missing",
+                {"voc": {"id": self.VOCABULARY_ID}},
+                "spelling-missing-or-not-string",
+            ),
+            voc_case(
+                "vocabulary-spelling-not-a-string",
+                {"voc": {"id": self.VOCABULARY_ID, "spelling": [SPELLING_SENTINEL]}},
+                "spelling-missing-or-not-string",
+            ),
+            voc_case(
+                "vocabulary-spelling-local-policy",
+                {
+                    "voc": {
+                        "id": self.VOCABULARY_ID,
+                        "spelling": f" {self.RETURNED_WORD} ",
+                    }
+                },
+                "spelling-local-policy",
+            ),
+            voc_case(
+                "vocabulary-spelling-mismatch-sentinel",
+                {"voc": {"id": self.VOCABULARY_ID, "spelling": SPELLING_SENTINEL}},
+                "spelling-mismatch",
+            ),
+        ]
 
     def failure_cases(self) -> list[tuple[str, list[object], dict[str, object], int]]:
         """(name, queued transport results, expected diagnostic, request count)."""
@@ -3241,7 +3389,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             (
                 "vocabulary-schema-missing-voc",
                 [harness.HttpResponse(200, self.hostile_body())],
-                self.expected("vocabulary", "schema", 200, 1, 1),
+                self.expected("vocabulary", "schema", 200, 1, 1, "missing-voc"),
                 1,
             ),
             (
@@ -3249,7 +3397,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                 self.responses(
                     vocabulary={"id": self.VOCABULARY_ID, "spelling": "otherword"}
                 ),
-                self.expected("vocabulary", "schema", 200, 1, 1),
+                self.expected("vocabulary", "schema", 200, 1, 1, "spelling-mismatch"),
                 1,
             ),
             (
@@ -3279,13 +3427,17 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             (
                 "phrases-response-rejected-undecodable-success",
                 [valid[0], valid[1], harness.TransportResponseError(200)],
-                self.expected("phrases", "schema", 200, 3, 3),
+                self.expected(
+                    "phrases", "schema", 200, 3, 3, "other-reviewed-schema"
+                ),
                 3,
             ),
             (
                 "interpretations-schema-not-an-array",
                 self.responses(interpretations={"nested": SERVER_BODY_SENTINEL}),
-                self.expected("interpretations", "schema", 200, 2, 2),
+                self.expected(
+                    "interpretations", "schema", 200, 2, 2, "other-reviewed-schema"
+                ),
                 2,
             ),
             (
@@ -3295,7 +3447,9 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                         self.interpretation_record(status=SERVER_BODY_SENTINEL)
                     ]
                 ),
-                self.expected("interpretations", "schema", 200, 2, 2),
+                self.expected(
+                    "interpretations", "schema", 200, 2, 2, "other-reviewed-schema"
+                ),
                 2,
             ),
             (
@@ -3319,7 +3473,9 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                         }
                     ]
                 ),
-                self.expected("phrases", "schema", 200, 3, 3),
+                self.expected(
+                    "phrases", "schema", 200, 3, 3, "other-reviewed-schema"
+                ),
                 3,
             ),
             (
@@ -3334,10 +3490,13 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                         }
                     ]
                 ),
-                self.expected("phrases", "schema", 200, 3, 3),
+                self.expected(
+                    "phrases", "schema", 200, 3, 3, "other-reviewed-schema"
+                ),
                 3,
             ),
         ]
+        cases.extend(self.vocabulary_schema_reason_cases())
         for status in (401, 403, 404, 429, 500, 503):
             cases.append(
                 (
@@ -3534,7 +3693,9 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
         failure, transport = self.run_failure(responses)
         self.assertEqual(
             failure.safe_summary(),
-            self.expected("interpretations", "schema", 200, 2, 2),
+            self.expected(
+                "interpretations", "schema", 200, 2, 2, "other-reviewed-schema"
+            ),
         )
         self.assertEqual(len(transport.requests), 2)
         rendered = self.rendered_failure(failure)
@@ -3859,25 +4020,33 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                 "success-invalid-json",
                 200,
                 f"<html>{SERVER_BODY_SENTINEL}</html>".encode("utf-8"),
-                self.expected("vocabulary", "schema", 200, 1, 1),
+                self.expected(
+                    "vocabulary", "schema", 200, 1, 1, "body-invalid-json"
+                ),
             ),
             (
                 "success-not-an-object",
                 200,
                 self.production_body([SERVER_BODY_SENTINEL]),  # type: ignore[arg-type]
-                self.expected("vocabulary", "schema", 200, 1, 1),
+                self.expected(
+                    "vocabulary", "schema", 200, 1, 1, "body-not-object"
+                ),
             ),
             (
                 "success-invalid-utf8",
                 200,
                 b"\xff\xfe" + SERVER_BODY_SENTINEL.encode("utf-16"),
-                self.expected("vocabulary", "schema", 200, 1, 1),
+                self.expected(
+                    "vocabulary", "schema", 200, 1, 1, "body-invalid-utf8"
+                ),
             ),
             (
                 "success-oversized",
                 200,
                 oversized,
-                self.expected("vocabulary", "schema", 200, 1, 1),
+                self.expected(
+                    "vocabulary", "schema", 200, 1, 1, "body-too-large"
+                ),
             ),
             (
                 "unauthorized-invalid-json",
@@ -4055,6 +4224,27 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             {"requests_attempted": True, "requests_completed": True},
             {"failure_stage": "transport-init"},
             {"requests_completed": 0},
+            # Issue #16: only a schema failure may carry a schema reason.
+            {"schema_reason": "missing-voc"},
+            {"failure_class": "schema", "http_status": 200, "schema_reason": None},
+            {
+                "failure_class": "schema",
+                "http_status": 200,
+                "schema_reason": INJECTED_REASON_SENTINEL,
+            },
+            {"failure_class": "schema", "http_status": 200, "schema_reason": ""},
+            {"failure_class": "schema", "http_status": 200, "schema_reason": 7},
+            {
+                "failure_class": "schema",
+                "http_status": 200,
+                "schema_reason": ["missing-voc"],
+            },
+            {
+                "failure_class": "transport",
+                "http_status": None,
+                "requests_completed": 0,
+                "schema_reason": "missing-voc",
+            },
         )
         for override in rejected:
             with self.subTest(override=tuple(override)):
@@ -4111,6 +4301,250 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             self.assertNotIn(absent, result)
         for sentinel in SENTINELS:
             self.assertNotIn(sentinel, stdout + stderr)
+
+    # ------------------------------------------------------------------
+    # Issue #16: pinpoint which reviewed checkpoint a live 200 body violated.
+    # Every case below is fake/no-network; no real credential is read and no
+    # Maimemo request is ever sent.
+    # ------------------------------------------------------------------
+
+    def test_every_vocabulary_schema_reason_is_reported_exactly(self) -> None:
+        for name, responses, expected, request_count in (
+            self.vocabulary_schema_reason_cases()
+        ):
+            with self.subTest(case=name):
+                failure, transport = self.run_failure(responses)
+                summary = failure.safe_summary()
+                self.assertEqual(summary, expected)
+                # The live shape we are diagnosing: one complete HTTP 200 on the
+                # first GET, no follow-up request, no retry.
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertEqual(summary["http_status"], 200)
+                self.assertEqual(summary["requests_attempted"], 1)
+                self.assertEqual(summary["requests_completed"], 1)
+                self.assertEqual(request_count, 1)
+                self.assertEqual(len(transport.requests), 1)
+                self.assertEqual(transport.requests[0].method, "GET")
+                self.assertIn(
+                    summary["schema_reason"], harness.READ_ONLY_SCHEMA_REASONS
+                )
+                rendered = self.rendered_failure(failure)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+                self.assertNotIn(self.VOCABULARY_ID, rendered)
+                self.assertNotIn(self.RETURNED_WORD, rendered)
+                self.assertNotIn(ACCOUNT_LABEL, rendered)
+                self.assertIsNone(failure.__cause__)
+                self.assertIsNone(failure.__context__)
+
+    def test_every_vocabulary_schema_reason_is_covered_by_a_case(self) -> None:
+        observed = {
+            expected["schema_reason"]
+            for _name, _responses, expected, _count in (
+                self.vocabulary_schema_reason_cases()
+            )
+        }
+        self.assertEqual(observed, set(harness.READ_ONLY_SCHEMA_REASONS))
+
+    def test_punctuated_string_voc_id_is_local_policy_and_never_echoed(self) -> None:
+        """The hypothesis the next owner-authorized run must prove or disprove.
+
+        A voc id that exists, is a non-empty string and would satisfy the
+        first-party ``id: string`` contract, but not this project's unchanged
+        path-segment policy, must be named `voc-id-local-policy` and must not be
+        echoed anywhere.
+        """
+        body = {
+            "voc": {
+                "id": VOC_ID_PUNCTUATION_SENTINEL,
+                "spelling": self.RETURNED_WORD,
+            }
+        }
+        expected = self.expected(
+            "vocabulary", "schema", 200, 1, 1, "voc-id-local-policy"
+        )
+
+        failure, transport = self.run_failure([harness.HttpResponse(200, body)])
+        self.assertEqual(failure.safe_summary(), expected)
+        self.assertEqual(len(transport.requests), 1)
+        rendered = self.rendered_failure(failure)
+        self.assertNotIn(VOC_ID_PUNCTUATION_SENTINEL, rendered)
+        # Not the whole id, and not any distinctive fragment of it either.
+        for fragment in ("PRIVATE.ISSUE16", "/VOC", "ID+SENTINEL"):
+            self.assertNotIn(fragment, rendered)
+        self.assertNotIn(
+            hashlib.sha256(VOC_ID_PUNCTUATION_SENTINEL.encode("utf-8")).hexdigest()[
+                :16
+            ],
+            rendered,
+        )
+        self.assertIsNone(failure.__cause__)
+        self.assertIsNone(failure.__context__)
+
+        transport = FakeTransport([harness.HttpResponse(200, body)])
+        exit_code, stdout, stderr = self.run_cli(lambda: transport)
+        self.assertEqual(exit_code, 4)
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(self.cli_diagnostic(stdout), expected)
+        rendered = stdout + stderr
+        self.assertNotIn(VOC_ID_PUNCTUATION_SENTINEL, rendered)
+        for fragment in ("PRIVATE.ISSUE16", "/VOC", "ID+SENTINEL"):
+            self.assertNotIn(fragment, rendered)
+        self.assertNotIn("Traceback", rendered)
+
+    def test_vocabulary_id_acceptance_policy_is_unchanged(self) -> None:
+        """Issue #16 diagnoses the mismatch; it must not relax the rule."""
+        with self.assertRaises(harness.SafetyError):
+            harness._safe_record_id(VOC_ID_PUNCTUATION_SENTINEL, "vocabulary id")
+        for accepted in (self.VOCABULARY_ID, "abc", "A-b_9"):
+            with self.subTest(voc_id=accepted):
+                self.assertEqual(
+                    harness._safe_record_id(accepted, "vocabulary id"), accepted
+                )
+                self.assertEqual(
+                    harness._probe_vocabulary_record_id(accepted), accepted
+                )
+        for rejected in (VOC_ID_PUNCTUATION_SENTINEL, "../unsafe", "a b", "a/b", "a.b"):
+            with self.subTest(voc_id=rejected):
+                with self.assertRaises(harness.SchemaReasonError) as context:
+                    harness._probe_vocabulary_record_id(rejected)
+                self.assertEqual(
+                    context.exception.schema_reason, "voc-id-local-policy"
+                )
+                self.assertNotIn(
+                    rejected, f"{context.exception}{context.exception!r}"
+                )
+
+    def test_schema_reason_enum_stays_closed_and_project_owned(self) -> None:
+        self.assertEqual(
+            harness.READ_ONLY_SCHEMA_REASONS,
+            (
+                "body-invalid-utf8",
+                "body-invalid-json",
+                "body-not-object",
+                "body-too-large",
+                "missing-voc",
+                "voc-not-object",
+                "voc-id-missing-or-not-string",
+                "voc-id-empty",
+                "voc-id-local-policy",
+                "spelling-missing-or-not-string",
+                "spelling-local-policy",
+                "spelling-mismatch",
+                "top-level-response-policy",
+                "other-reviewed-schema",
+            ),
+        )
+        self.assertEqual(
+            len(set(harness.READ_ONLY_SCHEMA_REASONS)),
+            len(harness.READ_ONLY_SCHEMA_REASONS),
+        )
+        # An equal-but-distinct string is replaced by the module-owned constant,
+        # so no externally built string object can ever be emitted.
+        equal_copy = "".join(["missing", "-", "voc"])
+        self.assertIsNot(equal_copy, harness.SCHEMA_REASON_MISSING_VOC)
+        emitted = harness.ReadOnlyFailureDiagnostic(
+            failure_stage="vocabulary",
+            failure_class="schema",
+            http_status=200,
+            requests_attempted=1,
+            requests_completed=1,
+            schema_reason=equal_copy,
+        ).schema_reason
+        self.assertIs(emitted, harness.SCHEMA_REASON_MISSING_VOC)
+
+    def test_schema_reason_is_null_exactly_for_non_schema_failures(self) -> None:
+        for name, responses, expected, _count in self.failure_cases():
+            with self.subTest(case=name):
+                summary = self.run_failure(responses)[0].safe_summary()
+                self.assertEqual(summary, expected)
+                if summary["failure_class"] == "schema":
+                    self.assertIn(
+                        summary["schema_reason"], harness.READ_ONLY_SCHEMA_REASONS
+                    )
+                else:
+                    self.assertIn(
+                        summary["failure_class"],
+                        ("transport", "http-status", "safety"),
+                    )
+                    self.assertIsNone(summary["schema_reason"])
+
+    def test_failure_diagnostic_exposes_only_the_contract_fields(self) -> None:
+        for name, responses, _expected, _count in self.failure_cases():
+            with self.subTest(case=name):
+                self.assertEqual(
+                    set(self.run_failure(responses)[0].safe_summary()),
+                    {
+                        "mode",
+                        "status",
+                        "failure_stage",
+                        "failure_class",
+                        "http_status",
+                        "schema_reason",
+                        "requests_attempted",
+                        "requests_completed",
+                    },
+                )
+
+    def test_externally_supplied_schema_reason_never_escapes(self) -> None:
+        class HostileRejection(harness.TransportResponseError):
+            def __init__(self) -> None:
+                super().__init__(200)
+                self.schema_reason = INJECTED_REASON_SENTINEL
+
+        class HostileSchemaError(harness.SafetyError):
+            def __init__(self) -> None:
+                super().__init__(SERVER_MESSAGE_SENTINEL)
+                self.schema_reason = SERVER_BODY_SENTINEL
+
+        self.assertIsNone(
+            harness.TransportResponseError(200, INJECTED_REASON_SENTINEL).schema_reason
+        )
+        self.assertEqual(
+            harness._schema_reason_of(HostileSchemaError()), "other-reviewed-schema"
+        )
+        with self.assertRaises(harness.SafetyError):
+            harness.SchemaReasonError(INJECTED_REASON_SENTINEL, "unused message")
+
+        failure, transport = self.run_failure([HostileRejection()])
+        self.assertEqual(
+            failure.safe_summary(),
+            self.expected(
+                "vocabulary", "schema", 200, 1, 1, "other-reviewed-schema"
+            ),
+        )
+        self.assertEqual(len(transport.requests), 1)
+        rendered = self.rendered_failure(failure)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+
+    def test_body_io_failures_keep_transport_class_with_no_schema_reason(self) -> None:
+        """Issue #16 must not regress the PR #15 body-I/O repair."""
+        for name, error in self.io_errors():
+            for status in (200, 401):
+                with self.subTest(error=name, status=status):
+                    failure, state = self.run_production_probe(
+                        [{"status": status, "body": error}]
+                    )
+                    summary = failure.safe_summary()
+                    self.assertEqual(summary["failure_class"], "transport")
+                    self.assertIsNone(summary["schema_reason"])
+                    self.assertIsNone(summary["http_status"])
+                    self.assertEqual(summary["requests_completed"], 0)
+                    self.assertEqual(state["reads"], 1)
+
+    def test_successful_probe_summary_never_gains_a_schema_reason(self) -> None:
+        transport = FakeTransport(self.responses())
+        exit_code, stdout, stderr = self.run_cli(lambda: transport)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(stderr, "")
+        result = self.cli_diagnostic(stdout)
+        self.assertNotIn("schema_reason", result)
+        self.assertNotIn("schema_reason", stdout)
+        for reason in harness.READ_ONLY_SCHEMA_REASONS:
+            self.assertNotIn(reason, stdout)
 
     def test_fake_token_is_absent_from_every_success_and_failure_output(self) -> None:
         transport = FakeTransport(self.responses())

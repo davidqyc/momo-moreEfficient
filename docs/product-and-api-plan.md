@@ -125,6 +125,54 @@ Issue #13 的第一次真实副账号 GET-only 运行在本地隐藏 Token 与�
 
 Issue #14 的实现、测试与审阅全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。第二次真实 GET-only 运行仍属 Issue #13，需要单独授权。
 
+### 2.5 Issue #16 定位 vocabulary schema 失配（本轮同样为零真实请求）
+
+第二次所有者授权的副账号 GET-only 运行返回的脱敏结果是：`failure_stage = vocabulary`、`failure_class = schema`、`http_status = 200`、`requests_attempted = 1`、`requests_completed = 1`。也就是说，凭证已被接受到足以让第一条 GET 收到**完整的 HTTP 200 响应**，失败发生在本项目自己的 vocabulary 结构校验，且 interpretations 与 phrases 从未发出。
+
+`failure_class` 只能告诉我们“schema 失败”，不能指出违反了哪一条规则。Issue #16 因此增加**一个**可选的项目自有脱敏字段 `schema_reason`，让下一次真实运行直接给出失败的检查点：
+
+```json
+{
+  "mode": "read-only-probe",
+  "status": "failed",
+  "failure_stage": "vocabulary",
+  "failure_class": "schema",
+  "http_status": 200,
+  "schema_reason": "voc-id-local-policy",
+  "requests_attempted": 1,
+  "requests_completed": 1
+}
+```
+
+`schema_reason` 取值只能是 `null` 或下列封闭固定枚举中的成员，且始终按 identity 从模块常量中选取，因此任何服务端 key、字段值、解码器文案或字节片段都不可能成为它：
+
+| `schema_reason` | vocabulary 阶段对应的检查点 |
+| --- | --- |
+| `body-invalid-utf8` | 正文完整接收，但不是合法 UTF-8 |
+| `body-invalid-json` | 正文完整接收且是合法 UTF-8，但不是合法 JSON |
+| `body-not-object` | 完整解码后的 JSON 不是对象；或顶层不是字符串键映射 |
+| `body-too-large` | 正文完整接收但超过已复核的大小上限 |
+| `missing-voc` | 顶层对象没有文档约定的 `voc` 字段 |
+| `voc-not-object` | 存在 `voc`，但它不是对象 |
+| `voc-id-missing-or-not-string` | `voc.id` 缺失或不是字符串 |
+| `voc-id-empty` | `voc.id` 是空字符串 |
+| `voc-id-local-policy` | `voc.id` 是非空字符串，但不满足本项目 `_safe_record_id` 的 `[A-Za-z0-9_-]+` 策略 |
+| `spelling-missing-or-not-string` | `voc.spelling` 缺失或不是字符串 |
+| `spelling-local-policy` | `voc.spelling` 是字符串，但不满足本项目探测词策略（首尾空白、控制字符、超长等） |
+| `spelling-mismatch` | `voc.spelling` 归一化后与请求词不一致 |
+| `top-level-response-policy` | 顶层出现 `authorization`/`cookie`/`token` 类敏感字段名 |
+| `other-reviewed-schema` | 其余已复核的 schema 拒绝（含 interpretations/phrases 阶段的既有校验） |
+
+契约固定并在 `ReadOnlyFailureDiagnostic.__post_init__` 中强制：`schema_reason` 对 `transport`、`http-status`、`safety` 必须为 `null`，对 `schema` 必须非 `null`。PR #15 的 body I/O 修复不受影响——正文读取 I/O 失败仍是 `failure_class = transport`、`http_status = null`、`schema_reason = null`。
+
+失败输出的完整字段集固定为：`mode`、`status`、`failure_stage`、`failure_class`、`http_status`、`schema_reason`、`requests_attempted`、`requests_completed`。账号标签、Token 指纹、voc_id 指纹、服务端 key 名、任何字段值和任何异常文案都不出现。
+
+**当前最可能的假设**：一方文档只把 `voc.id` 定义为 `string`，并未记录本项目额外施加的 path-segment 字符限制。因此一个存在、非空、但含有标点的 ID 会被 `_safe_record_id` 拒绝。本轮**没有**放宽该规则，只是让它在被违反时报出 `voc-id-local-policy`，并且不打印、不持久化、不哈希该原始 ID。等下一次真实运行给出确切 `schema_reason` 之后，再单独决定兼容性修复。
+
+vocabulary 校验只做了“足以定位失败检查点”的拆分：检查顺序和接受集合与此前完全一致，此前被拒绝的响应本轮不会被静默接受。成功路径输出、interpretations/phrases 语义和全部写入行为均未改动。
+
+Issue #16 的实现与测试全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。下一次真实 GET-only 运行仍属 Issue #13，需要单独授权。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
