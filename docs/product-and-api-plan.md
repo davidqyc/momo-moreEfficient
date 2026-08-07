@@ -55,6 +55,30 @@ Issue #9 的最小 harness 将能力分为三层：
 
 进入真实阶段仍需所有者人工完成：准备专用副账号和合法、真实、愿意保留的单词内容；在 App 中确认当前登录的确为副账号；通过独立的本地私有凭证注入方式启动；逐步核对每次预览、输入精确确认，并在 App 内验证跨账号发现、英文高亮、中文位置和来源展示。主账号 Token 永远不是 Issue #2/#9 的输入。
 
+### 2.3 Issue #11 副账号只读探针（实现与测试仍为零真实请求）
+
+Issue #11 在保留 `offline-plan` 默认行为的同时增加显式 `read-only-probe` 子命令。Token 只允许在交互式终端通过 Python 标准库 `getpass` 隐藏输入；不接受 argv、环境变量、stdin 管道、配置文件或 `.env`，不写入钥匙串、journal、日志或磁盘，只在当前进程内存中短暂存在。普通离线命令不会调用 `getpass`。主账号 Token 继续完全不受支持。
+
+命令行解析层本身也是一道凭证边界。argparse 默认会把无法识别的参数原样写进 stderr，因此误输入的 `--token <真实凭证>` 会被回显。本项目改用 `SanitizedArgumentParser`：所有解析失败路径都汇聚到被覆写的 `error()`，丢弃 argparse 生成的文案，只打印静态 usage 和一句固定提示（说明本 CLI 从不接受命令行 Token，只接受隐藏交互输入）。未知选项、未知选项取值、非法 `--mode` 取值、未知子命令和缺失必填项都以退出码 2 fail closed，不回显任何用户提供的参数名或取值；`prog` 固定为常量，不取自 `sys.argv[0]`。项目自有的固定原因经 `fail_closed()` 输出，仍不含用户输入。
+
+探针把副账号标签、Token 的 16 位 SHA-256 非敏感指纹、查询单词、固定 origin `https://open.maimemo.com`、三条允许的 GET 模板及“已人工复核当前费用与条款”声明绑定为一个精确确认摘要。确认完成前不创建 transport；生产 origin 和端点集合发生任何变化都会 fail closed。确认后只按顺序、无并发、无重试地执行：
+
+1. `GET /open/api/v1/vocabulary?spelling=<word>`
+2. `GET /open/api/v1/interpretations?voc_id=<resolved-id>`
+3. `GET /open/api/v1/phrases?voc_id=<resolved-id>`
+
+read-only transport 门禁拒绝 POST、PUT、PATCH 和 DELETE；标准库 HTTPS transport 保留证书校验和有限连接/读取超时，遇到 3xx 在读取响应正文或尝试其他地址前停止，因此不会向跳转地址转发 Authorization。401/其他非 2xx、超时、非对象响应、错误数组、重复或不安全 ID、按 NFKC+casefold 规则不匹配的拼写，以及无法识别的 status/highlight 结构都会立即停止当前序列。
+
+记录级 schema 按端点分别 fail closed。`status` 只接受固定枚举：interpretations 仅 `PUBLISHED`、`UNPUBLISHED`、`DELETED`；phrases 仅 `PUBLISHED`、`DELETED`。缺失、非字符串、大小写或空白不同、跨端点错用（例如 phrases 返回 `UNPUBLISHED`）以及任何枚举外取值都会立即停止；不做规范化、trim、猜测或近似匹配，错误文案固定且不回显服务器返回的原值。安全摘要中的状态名只复用项目内置常量，不复用服务器返回的字符串对象。
+
+例句记录还必须包含非空字符串 `phrase`。该正文只在内存中用于取长度，用来校验每个可识别 highlight 范围满足 `0 <= start < end <= len(phrase)`；对象范围数组和二维整数范围数组使用同一个范围校验器。空数组仍是合法的“本次未返回 highlight”结构观察。负值、`start == end`、`start > end`、超出例句长度、把布尔当整数、结构混用，以及缺失、空或非字符串 `phrase` 都会 fail closed。例句正文和不合法的原始 highlight 值都不会进入普通输出、错误信息或任何持久化状态；本 Issue 的只读探针不保存例句正文。
+
+顶层响应形状同样只用项目自有元数据描述。服务器返回的顶层键名本身可能携带私人内容（例如把整段释义当作 key），因此普通输出不再复制任何原始键名。三条响应各自只报告项目常量化的 `canonical_key`（依次为 `voc`、`interpretations`、`phrases`）、该 canonical key 是否存在，以及未知顶层字段的**数量**。未知字段按 Issue #11 允许的方式忽略，其键名和取值都不进入普通输出、`repr`、`str`、stderr、日志或持久化状态。含 `authorization`、`cookie`、`token` 语义的顶层字段仍然直接 fail closed，且错误文案固定、不回显字段名。
+
+普通输出只包含请求/返回拼写、`voc_id` 指纹、自建释义/例句数量、状态计数、highlight 形状计数、HTTP 状态与上述项目自有的响应形状摘要；不输出原始 ID、原始顶层键名、释义、例句、翻译或未知字段内容，也不默认保存响应。本 Issue 的实现、测试和审阅使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求**；针对独立审阅四项阻断项（端点固定 status 枚举、highlight 越界校验、argv 解析错误回显 Token、原始顶层键名进入普通输出）的两轮修复同样为零真实请求、零真实 Token。
+
+未来第一次实际只读运行仍需单独获得所有者明确授权。届时操作者应先在墨墨 App 人工确认登录的是专用副账号，再重新检查官方平台是否仍无强制按量 API 费用、当前条款是否允许个人测试账号用途；任一项不明确或出现强制收费即停止。随后在本地交互式终端运行显式子命令、隐藏输入副账号 Token、核对脱敏确认绑定并逐字确认。该指纹门禁只能防止过程中换错凭证，不能代替仍然**没有找到**的官方账号身份接口。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass, field
+import getpass
 import hashlib
 import http.client
 import json
@@ -18,15 +19,20 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, NoReturn, Protocol
+import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit
+import warnings
 
 import issue2_smoke
 
 
+PRODUCTION_SCHEME = "https"
 PRODUCTION_HOST = "open.maimemo.com"
+PRODUCTION_BASE_URL = f"{PRODUCTION_SCHEME}://{PRODUCTION_HOST}"
 OPEN_API_PREFIX = issue2_smoke.OPEN_API_PREFIX
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_RESPONSE_BYTES = 1_048_576
@@ -36,6 +42,7 @@ CONFIRMATION_PREFIX = "CONFIRM WRITE STEP"
 REQUIRED_TAGS = tuple(issue2_smoke.REQUIRED_TAGS)
 MAX_ACCOUNT_LABEL_CHARS = 96
 MAX_GATE_CONFIRMATION_CHARS = 256
+MAX_TOKEN_CHARS = 8_192
 FORBIDDEN_ACCOUNT_LABEL_MARKERS = (
     "main",
     "primary",
@@ -54,6 +61,14 @@ REQUIRED_TEST_ACCOUNT_LABEL_MARKERS = (
     "副账号",
     "测试",
 )
+READ_ONLY_ENDPOINT_TEMPLATES = (
+    f"GET {OPEN_API_PREFIX}/vocabulary?spelling=<word>",
+    f"GET {OPEN_API_PREFIX}/interpretations?voc_id=<id>",
+    f"GET {OPEN_API_PREFIX}/phrases?voc_id=<id>",
+)
+READ_ONLY_CONFIRMATION_PREFIX = "CONFIRM READ-ONLY PROBE"
+READ_ONLY_PRICING_TERMS_CLAUSE = "PRICING-TERMS-CHECKED: YES"
+MAX_PROBE_WORD_CHARS = 256
 PRIVATE_HIGHLIGHT_MAX_BYTES = 4_096
 PRIVATE_HIGHLIGHT_MAX_DEPTH = 8
 PRIVATE_HIGHLIGHT_MAX_ITEMS = 128
@@ -84,6 +99,21 @@ class VerificationError(SafetyError):
 
 def _is_finite_positive(value: float) -> bool:
     return math.isfinite(value) and value > 0
+
+
+def _validate_read_only_origin_contract() -> None:
+    expected_endpoints = (
+        "GET /open/api/v1/vocabulary?spelling=<word>",
+        "GET /open/api/v1/interpretations?voc_id=<id>",
+        "GET /open/api/v1/phrases?voc_id=<id>",
+    )
+    if (
+        PRODUCTION_SCHEME != "https"
+        or PRODUCTION_HOST != "open.maimemo.com"
+        or PRODUCTION_BASE_URL != "https://open.maimemo.com"
+        or READ_ONLY_ENDPOINT_TEMPLATES != expected_endpoints
+    ):
+        raise SafetyError("read-only production origin or endpoint set changed")
 
 
 def _validate_api_path(path: str) -> None:
@@ -298,7 +328,13 @@ class TestAccountCredential:
     source_name: str = TEST_ACCOUNT_CREDENTIAL_SOURCE
 
     def __post_init__(self) -> None:
-        if not isinstance(self.token, str) or not self.token:
+        if (
+            not isinstance(self.token, str)
+            or not self.token
+            or self.token != self.token.strip()
+            or len(self.token) > MAX_TOKEN_CHARS
+            or _has_control_characters(self.token)
+        ):
             raise SafetyError("an injected test-account credential is required")
         label = _validate_account_label_shape(self.account_label)
         if self.token in label:
@@ -396,6 +432,7 @@ class ProductionHttpTransport:
         connect_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         read_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
+        _validate_read_only_origin_contract()
         if not _is_finite_positive(connect_timeout_seconds):
             raise SafetyError("connect timeout must be finite and positive")
         if not _is_finite_positive(read_timeout_seconds):
@@ -431,6 +468,8 @@ class ProductionHttpTransport:
             )
             connection.request(request.method, request.path, body=payload, headers=headers)
             response = connection.getresponse()
+            if 300 <= response.status < 400:
+                raise OSError("redirect responses are forbidden")
             raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise OSError("response exceeds safety limit")
@@ -888,7 +927,456 @@ def run_read_only_probe(
         raise SafetyError("read-only request failed; stop") from None
     if not 200 <= response.status < 300:
         raise SafetyError("read-only request returned a non-success status; stop")
-    return {"status": response.status, "response_keys": sorted(response.body)}
+    return {
+        "status": response.status,
+        "response_shape": _read_only_response_shape(response.body, resource),
+    }
+
+
+def _normalize_probe_spelling(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_PROBE_WORD_CHARS
+        or _has_control_characters(value)
+    ):
+        raise SafetyError("probe word does not meet the fixed safety policy")
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    if not normalized:
+        raise SafetyError("probe word does not meet the fixed safety policy")
+    return normalized
+
+
+def _read_only_confirmation_for(
+    account_label: str,
+    credential_fingerprint: str,
+    requested_word: str,
+) -> str:
+    _validate_read_only_origin_contract()
+    binding = {
+        "account_label": _validate_account_label_shape(account_label),
+        "credential_fingerprint": credential_fingerprint,
+        "requested_word": requested_word,
+        "normalized_word": _normalize_probe_spelling(requested_word),
+        "host": PRODUCTION_BASE_URL,
+        "endpoints": list(READ_ONLY_ENDPOINT_TEMPLATES),
+        "pricing_and_terms_checked": True,
+    }
+    canonical = json.dumps(
+        binding,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()[:16]
+    return (
+        f"{READ_ONLY_CONFIRMATION_PREFIX}: {digest} "
+        f"TOKEN-FP: {credential_fingerprint} {READ_ONLY_PRICING_TERMS_CLAUSE}"
+    )
+
+
+@dataclass(frozen=True, repr=False)
+class ReadOnlyProbeGate:
+    """One exact confirmation bound to the complete read-only probe context."""
+
+    account_label: str
+    credential_fingerprint: str
+    requested_word: str
+    confirmation: str
+
+    def __post_init__(self) -> None:
+        _validate_account_label_shape(self.account_label)
+        _normalize_probe_spelling(self.requested_word)
+        if (
+            not isinstance(self.credential_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{16}", self.credential_fingerprint) is None
+        ):
+            raise SafetyError("credential fingerprint does not meet the fixed policy")
+        if (
+            not isinstance(self.confirmation, str)
+            or not self.confirmation
+            or self.confirmation != self.confirmation.strip()
+            or len(self.confirmation) > MAX_GATE_CONFIRMATION_CHARS
+            or _has_control_characters(self.confirmation)
+        ):
+            raise SafetyError("probe confirmation does not meet the fixed policy")
+
+    def __repr__(self) -> str:
+        return (
+            "ReadOnlyProbeGate(account_label=<redacted>, "
+            f"credential_fingerprint={self.credential_fingerprint!r}, "
+            "requested_word=<redacted>, confirmation=<redacted>)"
+        )
+
+    def __str__(self) -> str:
+        return (
+            "<read-only probe gate; account/confirmation redacted; "
+            f"fingerprint={self.credential_fingerprint}>"
+        )
+
+    @property
+    def expected_confirmation(self) -> str:
+        return _read_only_confirmation_for(
+            self.account_label,
+            self.credential_fingerprint,
+            self.requested_word,
+        )
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "mode": "read-only-probe",
+            "account_label": "[REDACTED]",
+            "token_fingerprint": self.credential_fingerprint,
+            "requested_spelling_fingerprint": hashlib.sha256(
+                self.requested_word.encode("utf-8")
+            ).hexdigest()[:16],
+            "host": PRODUCTION_BASE_URL,
+            "allowed_endpoints": list(READ_ONLY_ENDPOINT_TEMPLATES),
+            "required_confirmation": self.expected_confirmation,
+            "manual_gate": (
+                "Confirm current official pricing/terms permit personal test-account "
+                "use and show no mandatory metered API fee."
+            ),
+        }
+
+    def validate(self, credential: TestAccountCredential) -> None:
+        account_gate = ManualAccountGate(
+            allow_network=True,
+            account_label=self.account_label,
+            credential_fingerprint=self.credential_fingerprint,
+            confirmation=(
+                f"CONFIRM SECONDARY TEST ACCOUNT: {self.account_label} "
+                f"TOKEN-FP: {self.credential_fingerprint}"
+            ),
+        )
+        account_gate.validate(credential)
+        if (
+            credential.token in self.confirmation
+            or credential.token in self.requested_word
+        ):
+            raise SafetyError("probe inputs contain forbidden credential material")
+        if self.confirmation != self.expected_confirmation:
+            raise ConfirmationError("read-only probe confirmation does not match exactly")
+
+
+class ReadOnlyTransportGuard:
+    """Prevent a read-only probe from delegating any non-reviewed request."""
+
+    def __init__(self, delegate: Transport) -> None:
+        self._delegate = delegate
+
+    def send(
+        self,
+        request: HttpRequest,
+        credential: TestAccountCredential,
+    ) -> HttpResponse:
+        if not isinstance(request, HttpRequest) or request.method != "GET":
+            raise SafetyError("read-only transport accepts GET requests only")
+        _documented_read_path(request.path)
+        return self._delegate.send(request, credential)
+
+
+READ_ONLY_CANONICAL_KEYS: Mapping[str, str] = {
+    "vocabulary": "voc",
+    "interpretations": "interpretations",
+    "phrases": "phrases",
+}
+
+
+def _validate_read_only_body(body: Any) -> Mapping[str, Any]:
+    """Structurally check a read-only body without copying server key names."""
+    if not isinstance(body, Mapping) or not all(
+        isinstance(key, str) for key in body
+    ):
+        raise SafetyError("read-only response is not a JSON object with string keys")
+    if any(
+        any(term in key.casefold() for term in ("authorization", "cookie", "token"))
+        for key in body
+    ):
+        raise SafetyError("read-only response contains a sensitive top-level field")
+    return body
+
+
+def _read_only_response_shape(body: Any, endpoint: str) -> dict[str, Any]:
+    """Summarize response shape with project-defined metadata only.
+
+    Unknown top-level fields are ignored per Issue #11, and their names are
+    never copied into the summary: a malformed body could otherwise carry
+    private Maimemo content in a key string.
+    """
+    canonical = READ_ONLY_CANONICAL_KEYS.get(endpoint)
+    if canonical is None:
+        raise SafetyError("read-only response shape endpoint is not documented")
+    body = _validate_read_only_body(body)
+    return {
+        "canonical_key": canonical,
+        "canonical_key_present": canonical in body,
+        "unknown_top_level_field_count": sum(1 for key in body if key != canonical),
+    }
+
+
+def _require_read_success(response: Any) -> HttpResponse:
+    if not isinstance(response, HttpResponse) or not isinstance(response.status, int):
+        raise SafetyError("read-only response status is structurally invalid")
+    if 300 <= response.status < 400:
+        raise SafetyError("read-only redirect response was rejected")
+    if not 200 <= response.status < 300:
+        raise SafetyError("read-only request returned a non-success status")
+    _validate_read_only_body(response.body)
+    return response
+
+
+READ_ONLY_STATUS_ENUMS: Mapping[str, tuple[str, ...]] = {
+    "interpretations": ("PUBLISHED", "UNPUBLISHED", "DELETED"),
+    "phrases": ("PUBLISHED", "DELETED"),
+}
+
+
+def _read_only_record_status(record: Mapping[str, Any], response_key: str) -> str:
+    """Return the documented status constant, never a server-provided string."""
+    allowed = READ_ONLY_STATUS_ENUMS.get(response_key)
+    if allowed is None:
+        raise SafetyError("read-only record collection is not a documented endpoint")
+    value = record.get("status")
+    if isinstance(value, str) and not isinstance(value, bool):
+        for documented in allowed:
+            if value == documented:
+                return documented
+    raise SafetyError(
+        "read-only record status is missing or outside the documented endpoint enum"
+    )
+
+
+def _read_only_phrase_length(record: Mapping[str, Any]) -> int:
+    """Measure the phrase in memory only; the body is never printed or persisted."""
+    if "phrase" not in record:
+        raise SafetyError("phrase record is missing the phrase field")
+    phrase = record["phrase"]
+    if not isinstance(phrase, str) or not phrase:
+        raise SafetyError("phrase record body is structurally invalid")
+    return len(phrase)
+
+
+def _read_only_highlight_shape(value: Any, phrase_length: int) -> str:
+    if not isinstance(value, list):
+        raise SafetyError("phrase highlight is not a documented range array")
+    if not value:
+        return "empty-array"
+
+    def valid_range(start: Any, end: Any) -> bool:
+        return (
+            isinstance(start, int)
+            and not isinstance(start, bool)
+            and isinstance(end, int)
+            and not isinstance(end, bool)
+            and 0 <= start < end <= phrase_length
+        )
+
+    if all(
+        isinstance(item, Mapping)
+        and valid_range(item.get("start"), item.get("end"))
+        for item in value
+    ):
+        return "object-range-array"
+    if all(
+        isinstance(item, (list, tuple))
+        and len(item) == 2
+        and valid_range(item[0], item[1])
+        for item in value
+    ):
+        return "integer-pair-array"
+    raise SafetyError("phrase highlight range structure is ambiguous or invalid")
+
+
+def _summarize_read_only_records(
+    response: HttpResponse,
+    response_key: str,
+    *,
+    inspect_highlight: bool,
+) -> tuple[int, dict[str, int], dict[str, int], dict[str, Any]]:
+    response = _require_read_success(response)
+    records = response.body.get(response_key)
+    if not isinstance(records, list):
+        raise SafetyError("read-only record collection is not an array")
+    seen_ids: set[str] = set()
+    statuses: dict[str, int] = {}
+    highlight_shapes: dict[str, int] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise SafetyError("read-only record collection contains a malformed item")
+        record_id = _safe_record_id(record.get("id"), "read-only record id")
+        if record_id in seen_ids:
+            raise SafetyError("read-only record collection contains duplicate ids")
+        seen_ids.add(record_id)
+        status = _read_only_record_status(record, response_key)
+        statuses[status] = statuses.get(status, 0) + 1
+        if inspect_highlight:
+            phrase_length = _read_only_phrase_length(record)
+            if "highlight" not in record:
+                raise SafetyError("phrase record is missing highlight structure")
+            shape = _read_only_highlight_shape(record["highlight"], phrase_length)
+            highlight_shapes[shape] = highlight_shapes.get(shape, 0) + 1
+    return (
+        len(records),
+        statuses,
+        highlight_shapes,
+        _read_only_response_shape(response.body, response_key),
+    )
+
+
+@dataclass(frozen=True, repr=False)
+class ReadOnlyProbeResult:
+    requested_spelling: str
+    returned_spelling: str
+    voc_id_fingerprint: str
+    interpretation_count: int
+    phrase_count: int
+    interpretation_statuses: Mapping[str, int]
+    phrase_statuses: Mapping[str, int]
+    phrase_highlight_shapes: Mapping[str, int]
+    response_statuses: Mapping[str, int]
+    response_shapes: Mapping[str, Mapping[str, Any]]
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "interpretation_statuses",
+            "phrase_statuses",
+            "phrase_highlight_shapes",
+            "response_statuses",
+            "response_shapes",
+        ):
+            object.__setattr__(self, field_name, _freeze_json(getattr(self, field_name)))
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "mode": "read-only-probe",
+            "requested_spelling": self.requested_spelling,
+            "returned_spelling": self.returned_spelling,
+            "voc_id_fingerprint": self.voc_id_fingerprint,
+            "interpretation_count": self.interpretation_count,
+            "phrase_count": self.phrase_count,
+            "interpretation_statuses": _thaw_json(self.interpretation_statuses),
+            "phrase_statuses": _thaw_json(self.phrase_statuses),
+            "phrase_highlight_shapes": _thaw_json(self.phrase_highlight_shapes),
+            "response_statuses": _thaw_json(self.response_statuses),
+            "response_shapes": _thaw_json(self.response_shapes),
+        }
+
+    def __repr__(self) -> str:
+        return f"ReadOnlyProbeResult({self.safe_summary()!r})"
+
+    def __str__(self) -> str:
+        return json.dumps(self.safe_summary(), ensure_ascii=False, sort_keys=True)
+
+
+class ReadOnlyProbeExecutor:
+    """Sequential, no-retry executor for the three reviewed GET requests."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._transport = ReadOnlyTransportGuard(transport)
+
+    def _send(
+        self,
+        request: HttpRequest,
+        credential: TestAccountCredential,
+    ) -> HttpResponse:
+        try:
+            return _require_read_success(self._transport.send(request, credential))
+        except (SafetyError, TransportError):
+            raise SafetyError("read-only probe stopped after one failed request") from None
+        except Exception:
+            raise SafetyError("read-only probe transport failed safely") from None
+
+    def execute(
+        self,
+        credential: TestAccountCredential,
+        gate: ReadOnlyProbeGate,
+    ) -> ReadOnlyProbeResult:
+        _validate_read_only_origin_contract()
+        gate.validate(credential)
+        requested_word = gate.requested_word
+
+        vocabulary_response = self._send(
+            HttpRequest(
+                "GET",
+                build_query_path("vocabulary", {"spelling": requested_word}),
+            ),
+            credential,
+        )
+        vocabulary = vocabulary_response.body.get("voc")
+        if not isinstance(vocabulary, Mapping):
+            raise SafetyError("vocabulary response does not contain exactly one usable voc")
+        vocabulary_id = _safe_record_id(vocabulary.get("id"), "vocabulary id")
+        returned_spelling = vocabulary.get("spelling")
+        if not isinstance(returned_spelling, str) or (
+            _normalize_probe_spelling(returned_spelling)
+            != _normalize_probe_spelling(requested_word)
+        ):
+            raise SafetyError("vocabulary spelling does not match the requested word")
+
+        interpretation_response = self._send(
+            HttpRequest(
+                "GET",
+                build_query_path("interpretations", {"voc_id": vocabulary_id}),
+            ),
+            credential,
+        )
+        (
+            interpretation_count,
+            interpretation_statuses,
+            _unused_interpretation_highlights,
+            interpretation_shape,
+        ) = _summarize_read_only_records(
+            interpretation_response,
+            "interpretations",
+            inspect_highlight=False,
+        )
+        phrase_response = self._send(
+            HttpRequest(
+                "GET",
+                build_query_path("phrases", {"voc_id": vocabulary_id}),
+            ),
+            credential,
+        )
+        (
+            phrase_count,
+            phrase_statuses,
+            phrase_highlight_shapes,
+            phrase_shape,
+        ) = _summarize_read_only_records(
+            phrase_response,
+            "phrases",
+            inspect_highlight=True,
+        )
+
+        result = ReadOnlyProbeResult(
+            requested_spelling=requested_word,
+            returned_spelling=returned_spelling,
+            voc_id_fingerprint=hashlib.sha256(
+                vocabulary_id.encode("utf-8")
+            ).hexdigest()[:16],
+            interpretation_count=interpretation_count,
+            phrase_count=phrase_count,
+            interpretation_statuses=interpretation_statuses,
+            phrase_statuses=phrase_statuses,
+            phrase_highlight_shapes=phrase_highlight_shapes,
+            response_statuses={
+                "vocabulary": vocabulary_response.status,
+                "interpretations": interpretation_response.status,
+                "phrases": phrase_response.status,
+            },
+            response_shapes={
+                "vocabulary": _read_only_response_shape(
+                    vocabulary_response.body, "vocabulary"
+                ),
+                "interpretations": interpretation_shape,
+                "phrases": phrase_shape,
+            },
+        )
+        if _contains_credential_material(result.safe_summary(), credential.token):
+            raise SafetyError("read-only safe result contains credential material")
+        return result
 
 
 def _extract_written_id(step: PreparedStep, response: HttpResponse) -> str | None:
@@ -2076,19 +2564,159 @@ class SingleStepExecutor:
         return result
 
 
+CLI_PROGRAM_NAME = "issue9_live_harness.py"
+SANITIZED_ARGV_ERROR = (
+    "command line arguments were rejected; the rejected argument names and "
+    "values are deliberately not echoed. This CLI never accepts a Token on "
+    "the command line: enter it only at the hidden interactive prompt."
+)
+
+
+class SanitizedArgumentParser(argparse.ArgumentParser):
+    """Argument parser whose failures never echo user-supplied argv values.
+
+    ``argparse`` normally interpolates the offending argument into its error
+    text, so a mistaken ``--token <secret>`` would be written to stderr. Every
+    argparse failure path funnels through :meth:`error`, so discarding the
+    generated message there contains any secret before it can be printed.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        del message  # server- or operator-supplied text is never echoed
+        self.fail_closed(SANITIZED_ARGV_ERROR)
+
+    def fail_closed(self, reason: str) -> NoReturn:
+        """Exit with a fixed, project-owned reason and the static usage text."""
+        self.print_usage(sys.stderr)
+        sys.stderr.write(f"{self.prog}: error: {reason}\n")
+        raise SystemExit(2)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Issue #9 fail-closed smoke harness")
+    parser = SanitizedArgumentParser(
+        prog=CLI_PROGRAM_NAME,
+        description="Issue #9 fail-closed smoke harness",
+    )
     parser.add_argument(
         "--mode",
         choices=("offline-plan", "read-only", "live-step"),
         default="offline-plan",
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_FIXTURE)
-    return parser.parse_args(argv)
+    commands = parser.add_subparsers(dest="command")
+    read_only = commands.add_parser(
+        "read-only-probe",
+        help="run the explicitly confirmed secondary-account GET-only probe",
+    )
+    read_only.add_argument("--word", required=True)
+    read_only.add_argument("--account-label", required=True)
+    read_only.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="explicitly acknowledge that this command may create the locked transport",
+    )
+    args = parser.parse_args(argv)
+    if args.command is not None and args.mode != "offline-plan":
+        parser.fail_closed("subcommands cannot be combined with a legacy network mode")
+    return args
 
 
-def main(argv: list[str] | None = None) -> int:
+def _hidden_prompt(prompt: Callable[[str], str], message: str) -> str:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        return prompt(message)
+
+
+def _run_read_only_probe_cli(
+    args: argparse.Namespace,
+    *,
+    token_prompt: Callable[[str], str],
+    confirmation_prompt: Callable[[str], str],
+    transport_factory: Callable[[], Transport],
+    stdin_isatty: Callable[[], bool],
+) -> int:
+    if not args.allow_network:
+        print("BLOCKED: read-only-probe requires the explicit --allow-network flag.")
+        return 3
+    if args.input != DEFAULT_FIXTURE:
+        print("BLOCKED: read-only-probe does not accept an input or config file.")
+        return 3
+    try:
+        account_label = _validate_account_label_shape(args.account_label)
+        requested_word = args.word
+        _normalize_probe_spelling(requested_word)
+    except SafetyError:
+        print("BLOCKED: read-only-probe account label or word failed validation.")
+        return 3
+    if not stdin_isatty():
+        print("BLOCKED: read-only-probe requires an interactive terminal; pipes are forbidden.")
+        return 3
+
+    try:
+        token = _hidden_prompt(
+            token_prompt,
+            "Secondary/test-account Maimemo Token (hidden): ",
+        )
+        credential = TestAccountCredential(token, account_label)
+        if credential.token in requested_word:
+            raise SafetyError("probe word contains forbidden credential material")
+        expected_confirmation = _read_only_confirmation_for(
+            account_label,
+            credential.fingerprint,
+            requested_word,
+        )
+        preview_gate = ReadOnlyProbeGate(
+            account_label=account_label,
+            credential_fingerprint=credential.fingerprint,
+            requested_word=requested_word,
+            confirmation=expected_confirmation,
+        )
+        print("READ-ONLY PROBE — GET ONLY — NO RESPONSE PERSISTENCE")
+        preview = preview_gate.safe_summary()
+        preview["requested_spelling"] = requested_word
+        print(json.dumps(preview, ensure_ascii=False, indent=2, sort_keys=True))
+        provided_confirmation = _hidden_prompt(
+            confirmation_prompt,
+            "Exact read-only confirmation (hidden): ",
+        )
+        gate = ReadOnlyProbeGate(
+            account_label=account_label,
+            credential_fingerprint=credential.fingerprint,
+            requested_word=requested_word,
+            confirmation=provided_confirmation,
+        )
+        gate.validate(credential)
+    except Exception:
+        print("BLOCKED: hidden credential or exact confirmation was not accepted.")
+        return 3
+
+    try:
+        transport = transport_factory()
+        result = ReadOnlyProbeExecutor(transport).execute(credential, gate)
+    except Exception:
+        print("ERROR: read-only probe stopped safely; no retry was attempted.")
+        return 4
+    print(json.dumps(result.safe_summary(), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    token_prompt: Callable[[str], str] | None = None,
+    confirmation_prompt: Callable[[str], str] | None = None,
+    transport_factory: Callable[[], Transport] | None = None,
+    stdin_isatty: Callable[[], bool] | None = None,
+) -> int:
     args = parse_args(argv)
+    if args.command == "read-only-probe":
+        return _run_read_only_probe_cli(
+            args,
+            token_prompt=token_prompt or getpass.getpass,
+            confirmation_prompt=confirmation_prompt or getpass.getpass,
+            transport_factory=transport_factory or ProductionHttpTransport,
+            stdin_isatty=stdin_isatty or sys.stdin.isatty,
+        )
     if args.mode != "offline-plan":
         print(
             "BLOCKED: network modes require a separately injected secondary "
