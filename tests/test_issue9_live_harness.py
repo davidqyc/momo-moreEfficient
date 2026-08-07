@@ -442,7 +442,15 @@ class Issue9SafetyTests(unittest.TestCase):
             {"voc_id": "INVALID ID/?"},
         )
         self.assertEqual(
-            result, {"status": 200, "response_keys": ["interpretations"]}
+            result,
+            {
+                "status": 200,
+                "response_shape": {
+                    "canonical_key": "interpretations",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 0,
+                },
+            },
         )
         self.assertEqual(len(transport.requests), 1)
         self.assertEqual(transport.requests[0].method, "GET")
@@ -1959,6 +1967,7 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
     VOCABULARY_ID = "INVALID_ISSUE11_VOCABULARY_ID"
     PRIVATE_INTERPRETATION = "PRIVATE OFFLINE INTERPRETATION BODY"
     PRIVATE_PHRASE = "PRIVATE OFFLINE PHRASE BODY"
+    PRIVATE_VOCABULARY_KEY = "PRIVATE OFFLINE VOCABULARY KEY SENTINEL"
 
     def responses(
         self,
@@ -2618,7 +2627,27 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
                 "phrase_statuses",
                 "phrase_highlight_shapes",
                 "response_statuses",
-                "response_keys",
+                "response_shapes",
+            },
+        )
+        self.assertEqual(
+            safe["response_shapes"],
+            {
+                "vocabulary": {
+                    "canonical_key": "voc",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 0,
+                },
+                "interpretations": {
+                    "canonical_key": "interpretations",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 0,
+                },
+                "phrases": {
+                    "canonical_key": "phrases",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 0,
+                },
             },
         )
         self.assertEqual(safe["interpretation_statuses"], {"PUBLISHED": 1})
@@ -2912,6 +2941,204 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
         rendered = stdout.getvalue() + stderr.getvalue()
         for forbidden in (FAKE_TOKEN, self.PRIVATE_PHRASE, "999999"):
             self.assertNotIn(forbidden, rendered)
+
+    def test_argv_parse_failures_never_echo_token_or_argument_values(self) -> None:
+        secret = "PRIVATE_SECRET_TOKEN_c41f0a9e2b7d"
+        sentinel = "PRIVATE_SENTINEL_UNKNOWN_ARGUMENT_VALUE"
+        prompt_calls: list[str] = []
+        factory_calls: list[str] = []
+
+        def prompt(_message: str) -> str:
+            prompt_calls.append("called")
+            return FAKE_TOKEN
+
+        def factory() -> FakeTransport:
+            factory_calls.append("called")
+            return FakeTransport(self.responses())
+
+        cases = (
+            ("separate-token-option", [*self.cli_args(), "--token", secret]),
+            ("joined-token-option", [*self.cli_args(), f"--token={secret}"]),
+            ("unknown-option-value", [*self.cli_args(), "--unexpected-option", sentinel]),
+            ("unknown-mode-value", ["--mode", sentinel]),
+            ("unknown-subcommand", [sentinel]),
+            ("bare-positional", [*self.cli_args(), sentinel]),
+            (
+                "subcommand-with-legacy-mode",
+                ["--mode", "read-only", *self.cli_args()],
+            ),
+        )
+        for name, argv in cases:
+            with self.subTest(case=name):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with mock.patch("sys.stdout", stdout), mock.patch(
+                    "sys.stderr", stderr
+                ), self.assertRaises(SystemExit) as context:
+                    harness.main(
+                        argv,
+                        token_prompt=prompt,
+                        confirmation_prompt=prompt,
+                        transport_factory=factory,
+                        stdin_isatty=lambda: True,
+                    )
+                self.assertEqual(context.exception.code, 2)
+                rendered = (
+                    stdout.getvalue()
+                    + stderr.getvalue()
+                    + str(context.exception)
+                    + repr(context.exception)
+                )
+                for forbidden in (
+                    secret,
+                    sentinel,
+                    "--token",
+                    "--unexpected-option",
+                    FAKE_TOKEN,
+                ):
+                    self.assertNotIn(forbidden, rendered)
+                self.assertIn("usage:", rendered)
+
+        self.assertEqual(prompt_calls, [])
+        self.assertEqual(factory_calls, [])
+
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch(
+            "sys.stderr", stderr
+        ), self.assertRaises(SystemExit):
+            harness.parse_args([*self.cli_args(), "--token", secret])
+        self.assertIn(harness.SANITIZED_ARGV_ERROR, stderr.getvalue())
+        self.assertNotIn(secret, stderr.getvalue())
+
+    def sentinel_key_responses(self) -> list[harness.HttpResponse]:
+        return [
+            harness.HttpResponse(
+                200,
+                {
+                    "voc": {
+                        "id": self.VOCABULARY_ID,
+                        "spelling": self.RETURNED_WORD,
+                    },
+                    self.PRIVATE_VOCABULARY_KEY: {"nested": "PRIVATE NESTED VALUE"},
+                },
+            ),
+            harness.HttpResponse(
+                200,
+                {
+                    "interpretations": [self.interpretation_record()],
+                    self.PRIVATE_INTERPRETATION: {},
+                },
+            ),
+            harness.HttpResponse(
+                200,
+                {
+                    "phrases": [self.phrase_record()],
+                    self.PRIVATE_PHRASE: [],
+                },
+            ),
+        ]
+
+    def test_unknown_top_level_key_names_never_reach_ordinary_output(self) -> None:
+        test_credential = self.probe_credential()
+        result = harness.ReadOnlyProbeExecutor(
+            FakeTransport(self.sentinel_key_responses())
+        ).execute(test_credential, self.probe_gate(test_credential))
+        safe = result.safe_summary()
+        self.assertEqual(
+            safe["response_shapes"],
+            {
+                "vocabulary": {
+                    "canonical_key": "voc",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 1,
+                },
+                "interpretations": {
+                    "canonical_key": "interpretations",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 1,
+                },
+                "phrases": {
+                    "canonical_key": "phrases",
+                    "canonical_key_present": True,
+                    "unknown_top_level_field_count": 1,
+                },
+            },
+        )
+        rendered = json.dumps(safe, ensure_ascii=False) + repr(result) + str(result)
+        for forbidden in (
+            self.PRIVATE_VOCABULARY_KEY,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+            "PRIVATE NESTED VALUE",
+            self.VOCABULARY_ID,
+            FAKE_TOKEN,
+        ):
+            self.assertNotIn(forbidden, rendered)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            exit_code = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: self.probe_gate(
+                    test_credential
+                ).expected_confirmation,
+                transport_factory=lambda: FakeTransport(
+                    self.sentinel_key_responses()
+                ),
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(exit_code, 0)
+        rendered = stdout.getvalue() + stderr.getvalue()
+        for forbidden in (
+            self.PRIVATE_VOCABULARY_KEY,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+            "PRIVATE NESTED VALUE",
+            self.VOCABULARY_ID,
+            FAKE_TOKEN,
+        ):
+            self.assertNotIn(forbidden, rendered)
+
+    def test_rejected_top_level_fields_do_not_echo_the_field_name(self) -> None:
+        test_credential = self.probe_credential()
+        sensitive_key = f"{self.PRIVATE_VOCABULARY_KEY} token"
+        cases = (
+            (
+                "sensitive-unknown-key",
+                [
+                    harness.HttpResponse(
+                        200,
+                        {
+                            "voc": {
+                                "id": self.VOCABULARY_ID,
+                                "spelling": self.RETURNED_WORD,
+                            },
+                            sensitive_key: {},
+                        },
+                    )
+                ],
+                sensitive_key,
+            ),
+            (
+                "non-string-key",
+                [harness.HttpResponse(200, {7: ["PRIVATE NESTED VALUE"]})],
+                "PRIVATE NESTED VALUE",
+            ),
+        )
+        for name, responses, forbidden in cases:
+            with self.subTest(case=name):
+                transport = FakeTransport(responses)
+                with self.assertRaises(harness.SafetyError) as context:
+                    harness.ReadOnlyProbeExecutor(transport).execute(
+                        test_credential,
+                        self.probe_gate(test_credential),
+                    )
+                self.assertEqual(len(transport.requests), 1)
+                rendered = f"{context.exception}{context.exception!r}"
+                self.assertNotIn(forbidden, rendered)
+                self.assertNotIn(FAKE_TOKEN, rendered)
 
 
 if __name__ == "__main__":

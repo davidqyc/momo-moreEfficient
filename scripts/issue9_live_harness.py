@@ -22,7 +22,7 @@ import re
 import sys
 import tempfile
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, NoReturn, Protocol
 import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit
 import warnings
@@ -927,7 +927,10 @@ def run_read_only_probe(
         raise SafetyError("read-only request failed; stop") from None
     if not 200 <= response.status < 300:
         raise SafetyError("read-only request returned a non-success status; stop")
-    return {"status": response.status, "response_keys": sorted(response.body)}
+    return {
+        "status": response.status,
+        "response_shape": _read_only_response_shape(response.body, resource),
+    }
 
 
 def _normalize_probe_spelling(value: Any) -> str:
@@ -1074,7 +1077,15 @@ class ReadOnlyTransportGuard:
         return self._delegate.send(request, credential)
 
 
-def _safe_response_keys(body: Any) -> tuple[str, ...]:
+READ_ONLY_CANONICAL_KEYS: Mapping[str, str] = {
+    "vocabulary": "voc",
+    "interpretations": "interpretations",
+    "phrases": "phrases",
+}
+
+
+def _validate_read_only_body(body: Any) -> Mapping[str, Any]:
+    """Structurally check a read-only body without copying server key names."""
     if not isinstance(body, Mapping) or not all(
         isinstance(key, str) for key in body
     ):
@@ -1084,7 +1095,25 @@ def _safe_response_keys(body: Any) -> tuple[str, ...]:
         for key in body
     ):
         raise SafetyError("read-only response contains a sensitive top-level field")
-    return tuple(sorted(body))
+    return body
+
+
+def _read_only_response_shape(body: Any, endpoint: str) -> dict[str, Any]:
+    """Summarize response shape with project-defined metadata only.
+
+    Unknown top-level fields are ignored per Issue #11, and their names are
+    never copied into the summary: a malformed body could otherwise carry
+    private Maimemo content in a key string.
+    """
+    canonical = READ_ONLY_CANONICAL_KEYS.get(endpoint)
+    if canonical is None:
+        raise SafetyError("read-only response shape endpoint is not documented")
+    body = _validate_read_only_body(body)
+    return {
+        "canonical_key": canonical,
+        "canonical_key_present": canonical in body,
+        "unknown_top_level_field_count": sum(1 for key in body if key != canonical),
+    }
 
 
 def _require_read_success(response: Any) -> HttpResponse:
@@ -1094,7 +1123,7 @@ def _require_read_success(response: Any) -> HttpResponse:
         raise SafetyError("read-only redirect response was rejected")
     if not 200 <= response.status < 300:
         raise SafetyError("read-only request returned a non-success status")
-    _safe_response_keys(response.body)
+    _validate_read_only_body(response.body)
     return response
 
 
@@ -1165,7 +1194,7 @@ def _summarize_read_only_records(
     response_key: str,
     *,
     inspect_highlight: bool,
-) -> tuple[int, dict[str, int], dict[str, int], tuple[str, ...]]:
+) -> tuple[int, dict[str, int], dict[str, int], dict[str, Any]]:
     response = _require_read_success(response)
     records = response.body.get(response_key)
     if not isinstance(records, list):
@@ -1192,7 +1221,7 @@ def _summarize_read_only_records(
         len(records),
         statuses,
         highlight_shapes,
-        _safe_response_keys(response.body),
+        _read_only_response_shape(response.body, response_key),
     )
 
 
@@ -1207,7 +1236,7 @@ class ReadOnlyProbeResult:
     phrase_statuses: Mapping[str, int]
     phrase_highlight_shapes: Mapping[str, int]
     response_statuses: Mapping[str, int]
-    response_keys: Mapping[str, tuple[str, ...]]
+    response_shapes: Mapping[str, Mapping[str, Any]]
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -1215,7 +1244,7 @@ class ReadOnlyProbeResult:
             "phrase_statuses",
             "phrase_highlight_shapes",
             "response_statuses",
-            "response_keys",
+            "response_shapes",
         ):
             object.__setattr__(self, field_name, _freeze_json(getattr(self, field_name)))
 
@@ -1231,7 +1260,7 @@ class ReadOnlyProbeResult:
             "phrase_statuses": _thaw_json(self.phrase_statuses),
             "phrase_highlight_shapes": _thaw_json(self.phrase_highlight_shapes),
             "response_statuses": _thaw_json(self.response_statuses),
-            "response_keys": _thaw_json(self.response_keys),
+            "response_shapes": _thaw_json(self.response_shapes),
         }
 
     def __repr__(self) -> str:
@@ -1297,7 +1326,7 @@ class ReadOnlyProbeExecutor:
             interpretation_count,
             interpretation_statuses,
             _unused_interpretation_highlights,
-            interpretation_keys,
+            interpretation_shape,
         ) = _summarize_read_only_records(
             interpretation_response,
             "interpretations",
@@ -1314,7 +1343,7 @@ class ReadOnlyProbeExecutor:
             phrase_count,
             phrase_statuses,
             phrase_highlight_shapes,
-            phrase_keys,
+            phrase_shape,
         ) = _summarize_read_only_records(
             phrase_response,
             "phrases",
@@ -1337,10 +1366,12 @@ class ReadOnlyProbeExecutor:
                 "interpretations": interpretation_response.status,
                 "phrases": phrase_response.status,
             },
-            response_keys={
-                "vocabulary": _safe_response_keys(vocabulary_response.body),
-                "interpretations": interpretation_keys,
-                "phrases": phrase_keys,
+            response_shapes={
+                "vocabulary": _read_only_response_shape(
+                    vocabulary_response.body, "vocabulary"
+                ),
+                "interpretations": interpretation_shape,
+                "phrases": phrase_shape,
             },
         )
         if _contains_credential_material(result.safe_summary(), credential.token):
@@ -2533,8 +2564,39 @@ class SingleStepExecutor:
         return result
 
 
+CLI_PROGRAM_NAME = "issue9_live_harness.py"
+SANITIZED_ARGV_ERROR = (
+    "command line arguments were rejected; the rejected argument names and "
+    "values are deliberately not echoed. This CLI never accepts a Token on "
+    "the command line: enter it only at the hidden interactive prompt."
+)
+
+
+class SanitizedArgumentParser(argparse.ArgumentParser):
+    """Argument parser whose failures never echo user-supplied argv values.
+
+    ``argparse`` normally interpolates the offending argument into its error
+    text, so a mistaken ``--token <secret>`` would be written to stderr. Every
+    argparse failure path funnels through :meth:`error`, so discarding the
+    generated message there contains any secret before it can be printed.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        del message  # server- or operator-supplied text is never echoed
+        self.fail_closed(SANITIZED_ARGV_ERROR)
+
+    def fail_closed(self, reason: str) -> NoReturn:
+        """Exit with a fixed, project-owned reason and the static usage text."""
+        self.print_usage(sys.stderr)
+        sys.stderr.write(f"{self.prog}: error: {reason}\n")
+        raise SystemExit(2)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Issue #9 fail-closed smoke harness")
+    parser = SanitizedArgumentParser(
+        prog=CLI_PROGRAM_NAME,
+        description="Issue #9 fail-closed smoke harness",
+    )
     parser.add_argument(
         "--mode",
         choices=("offline-plan", "read-only", "live-step"),
@@ -2555,7 +2617,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
     if args.command is not None and args.mode != "offline-plan":
-        parser.error("subcommands cannot be combined with a legacy network mode")
+        parser.fail_closed("subcommands cannot be combined with a legacy network mode")
     return args
 
 
