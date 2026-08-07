@@ -294,6 +294,93 @@ raw vocabulary response
 
 Issue #20 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。下一次真实 GET-only 运行仍属 Issue #13，需要单独授权。
 
+> 后续更新：该修复已在第五次真实运行中验证生效（vocabulary 阶段通过），collection 端点的同口径兼容见 2.8。本节保留为当时的 vocabulary 兼容口径记录。
+
+### 2.8 Issue #22 窄口径接受 collection GET 的 `data` 外层（本轮同样为零真实请求）
+
+#### 已确认事实（第五次所有者授权运行）
+
+合并 `data.voc` 兼容修复后，第五次副账号 GET-only 运行返回的脱敏结果是：
+
+```json
+{
+  "failure_class": "schema",
+  "failure_stage": "interpretations",
+  "http_status": 200,
+  "requests_attempted": 2,
+  "requests_completed": 2,
+  "response_envelope": null,
+  "schema_reason": "other-reviewed-schema",
+  "status": "failed"
+}
+```
+
+这是**事实**，不是推断：
+
+- `data.voc` 兼容在生产环境确实生效；
+- **vocabulary 阶段已经成功通过**（这是本项目第一次越过第一条 GET）；
+- interpretations GET 已发出并完整完成，HTTP 状态 **200**；
+- 失败点现在落在 interpretations 的 collection / schema 解析内部；
+- phrases GET **未被发出**（`requests_attempted = 2`）。
+
+本仓库不记录 Token 指纹，也不记录任何原始响应正文、服务端键名或取值。
+
+#### 一方文档现状
+
+当前一方 MaiMemo 文档仍把两个 collection 端点记为返回顶层键：
+
+- `GET /interpretations?voc_id=...` → `{"interpretations": [Interpretation, ...]}`
+- `GET /phrases?voc_id=...` → `{"phrases": [Phrase, ...]}`
+
+#### 推断（明确标注为推断，不是观测）
+
+- **`data.interpretations` 是推断**：已直接观测到的 `data.voc` 约定，加上 interpretations 现在 HTTP 200 且恰好在 collection/schema 解析处失败，构成很强的兼容性假设。但我们没有、也不会记录该响应的实际结构证据。
+- **`data.phrases` 尚未被生产观测到**：phrases GET 至今一次都没有发出过。对它的兼容支持是**前瞻性**的，目的只是避免再来一轮“实现 → 真实运行 → 再实现”的重复往返。**不得**把 `data.phrases` 记为已观测的生产事实。
+
+#### 每个端点接受的外层恰好两处
+
+| 端点 | 接受位置 | 来源 |
+| --- | --- | --- |
+| interpretations | `{"interpretations": <collection>}` | 一方文档约定 |
+| interpretations | `{"data": {"interpretations": <collection>}}` | 兼容性推断 |
+| phrases | `{"phrases": <collection>}` | 一方文档约定 |
+| phrases | `{"data": {"phrases": <collection>}}` | 前瞻性兼容，未观测 |
+
+**没有任何其他外层变成可接受**：`result.<key>`、`items`、`records`、裸数组、`vocabulary` 包裹、泛化的 `data` 内容以及任何未复核的 wrapper 全部继续 fail-closed。每个端点只查自己的 canonical 键——`data.phrases` 永远不能满足 interpretations GET，反之亦然。
+
+#### 优先级不可颠倒
+
+- 顶层文档键存在时一律走既有顶层路径；
+- **不会**因为顶层文档键的取值畸形（不是数组、记录非法、ID 重复、状态越界等）就回退到 `data.<key>`；
+- 只有顶层 canonical 键缺失时兼容层才考虑 `data.<key>`，且要求 `data` 确实是 Mapping、且确实包含该端点自己的那个 canonical 键。
+
+#### 归一化边界
+
+```text
+raw collection response
+    ↓
+文档顶层 interpretations / phrases，
+或（仅在顶层缺失时）data.interpretations / data.phrases
+    ↓
+项目自有 canonical body：{<canonical key>: <原值>}
+    ↓
+既有严格 collection 校验（完全未变）
+```
+
+该边界与 2.7 的 vocabulary 边界共用同一个只读搬运函数：只**搬运**取值，不修改、不复制、不持久化原始响应，不读取两个允许键名之外的任何键名，不打印、不计数、不哈希、不指纹化任何未知嵌套键。canonical body 只有一个键，键名是模块常量本身（按 identity 选取），取值就是原始那个对象。
+
+#### 内层校验完全未变
+
+collection 必须是 list、每条记录必须是 Mapping、`_safe_record_id`、重复 ID 拒绝、interpretation 状态枚举 `PUBLISHED / UNPUBLISHED / DELETED`、phrase 状态枚举 `PUBLISHED / DELETED`、phrase 必须是非空字符串、highlight 必须是已复核的 range 形状之一、每个 highlight range 必须被 phrase 长度约束——一条都没有放宽。正常输出中不出现任何原始记录内容，credential 含纳、无重试、无持久化同样未变。
+
+Issue #18 的外层分类器**没有**被用作验收校验器：collection 路径既不调用它，也永远不报告 `response_envelope`（collection 阶段的 schema 失败一律 `response_envelope = null`）。
+
+#### 成功输出保持稳定
+
+`response_shapes.interpretations` / `response_shapes.phrases` 仍是项目自有摘要 `{"canonical_key": <key>, "canonical_key_present": true, "unknown_top_level_field_count": 0}`。三条 GET 全部使用 `data` 外层的假流程，其脱敏成功摘要与全部使用文档顶层形状的假流程**逐字段完全相同**——这是下一次真实运行前的关键回归目标。
+
+Issue #22 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。下一次真实 GET-only 运行仍属 Issue #13，需要单独授权。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段

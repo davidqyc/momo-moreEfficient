@@ -3182,6 +3182,13 @@ ENVELOPE_INJECTED_SENTINEL = "PRIVATE-INJECTED-RESPONSE-ENVELOPE-SENTINEL"
 # rather than a silent disclosure.
 COMPAT_UNKNOWN_KEY_SENTINEL = "PRIVATE-ISSUE20-UNKNOWN-WRAPPER-KEY-SENTINEL"
 COMPAT_VALUE_SENTINEL = "PRIVATE ISSUE20 WRAPPER VALUE SENTINEL"
+# Issue #22: the same boundary now descends one wrapper for the two collection
+# GETs. Every sibling key and value it passes on the way is a private sentinel
+# here, so anything that escapes into a diagnostic, stdout, stderr, repr or
+# traceback is a test failure rather than a silent disclosure.
+COLLECTION_UNKNOWN_KEY_SENTINEL = "PRIVATE-ISSUE22-UNKNOWN-COLLECTION-KEY-SENTINEL"
+COLLECTION_VALUE_SENTINEL = "PRIVATE ISSUE22 COLLECTION VALUE SENTINEL"
+COLLECTION_RECORD_ID_SENTINEL = "PRIVATE.ISSUE22/COLLECTION ID+SENTINEL"
 SENTINELS = (
     FAKE_TOKEN,
     SERVER_KEY_SENTINEL,
@@ -3204,6 +3211,9 @@ SENTINELS = (
     ENVELOPE_INJECTED_SENTINEL,
     COMPAT_UNKNOWN_KEY_SENTINEL,
     COMPAT_VALUE_SENTINEL,
+    COLLECTION_UNKNOWN_KEY_SENTINEL,
+    COLLECTION_VALUE_SENTINEL,
+    COLLECTION_RECORD_ID_SENTINEL,
 )
 
 
@@ -6128,38 +6138,851 @@ class Issue20DataVocCompatibilityTests(ReadOnlyProbeFixtures, unittest.TestCase)
     # Untouched neighbours
     # ------------------------------------------------------------------
 
-    def test_interpretations_and_phrases_parsing_is_untouched(self) -> None:
-        """We have production evidence for the vocabulary endpoint only."""
-        documented = self.responses()
-        for name, responses, stage in (
-            (
-                "interpretations-wrapped",
-                [
-                    harness.HttpResponse(200, self.data_voc(self.voc_record())),
-                    harness.HttpResponse(
-                        200, {"data": {"interpretations": [self.interpretation_record()]}}
+    def test_the_vocabulary_boundary_stays_vocabulary_only(self) -> None:
+        """Issue #22 added the collection boundary; this one did not grow.
+
+        The two collection GETs are canonicalized by their *own* endpoint-keyed
+        boundary (see :class:`Issue22DataCollectionCompatibilityTests`). The
+        vocabulary boundary still only knows ``voc``, so a wrapped collection
+        body is handed back untouched by it, and the wrapped vocabulary body is
+        likewise untouched by the collection boundary.
+        """
+        for name, body in (
+            ("data-interpretations", {"data": {"interpretations": []}}),
+            ("data-phrases", {"data": {"phrases": []}}),
+        ):
+            with self.subTest(case=name):
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+        wrapped_vocabulary = self.data_voc(self.voc_record())
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            with self.subTest(response_key=response_key):
+                self.assertIs(
+                    harness._canonical_probe_collection_body(
+                        wrapped_vocabulary, response_key
                     ),
-                ],
-                "interpretations",
+                    wrapped_vocabulary,
+                )
+
+    def test_pr15_body_io_behavior_remains_unchanged(self) -> None:
+        suite = self.issue14_suite()
+        for name, error in suite.io_errors():
+            for status in (200, 401):
+                with self.subTest(error=name, status=status):
+                    failure, state = suite.run_production_probe(
+                        [{"status": status, "body": error}]
+                    )
+                    summary = failure.safe_summary()
+                    self.assertEqual(summary["failure_class"], "transport")
+                    self.assertIsNone(summary["http_status"])
+                    self.assertIsNone(summary["schema_reason"])
+                    self.assertIsNone(summary["response_envelope"])
+                    self.assertEqual(summary["requests_completed"], 0)
+                    self.assertEqual(state["reads"], 1)
+
+    def test_no_maimemo_request_is_possible_under_the_process_guard(self) -> None:
+        self.assertEqual(os.environ.get("MOMO_TEST_NETWORK_DISABLED"), "1")
+        for blocked in (
+            socket.socket,
+            socket.create_connection,
+            urllib.request.urlopen,
+        ):
+            with self.subTest(blocked=getattr(blocked, "__name__", repr(blocked))):
+                with self.assertRaises(RuntimeError):
+                    blocked()
+
+
+class Issue22DataCollectionCompatibilityTests(
+    ReadOnlyProbeFixtures, unittest.TestCase
+):
+    """Issue #22: accept ``data.<key>`` for the two collection GETs — nothing else.
+
+    The fifth owner-authorized secondary-account GET-only run reported::
+
+        {"failure_stage": "interpretations", "failure_class": "schema",
+         "http_status": 200, "schema_reason": "other-reviewed-schema",
+         "requests_attempted": 2, "requests_completed": 2,
+         "response_envelope": null}
+
+    so the merged ``data.voc`` fix works, vocabulary now succeeds, and the
+    interpretations GET completes with HTTP 200 and is then rejected inside
+    collection parsing.
+
+    ``data.interpretations`` is therefore a strong *inference* from the directly
+    observed ``data.voc`` convention. ``data.phrases`` has **not** been observed
+    in production; it is supported proactively so both collection GETs share one
+    narrow contract. Every case below reproduces the shapes offline with fake
+    transports under the process-level no-network guard: no real credential is
+    read and no Maimemo request is ever sent.
+    """
+
+    def probe_suite(self) -> Issue18ResponseEnvelopeTests:
+        """Reuse the Issue #18 probe/CLI/rendering helpers verbatim."""
+        return Issue18ResponseEnvelopeTests()
+
+    def compat_suite(self) -> Issue20DataVocCompatibilityTests:
+        """Reuse the Issue #20 vocabulary-wrapper fixtures verbatim."""
+        return Issue20DataVocCompatibilityTests()
+
+    def issue14_suite(self) -> Issue14ReadOnlyDiagnosticTests:
+        return Issue14ReadOnlyDiagnosticTests()
+
+    # ------------------------------------------------------------------
+    # Fixtures
+    # ------------------------------------------------------------------
+
+    def documented(self, response_key: str, collection: object) -> dict[str, object]:
+        """The first-party documented shape, with private sibling noise."""
+        return {
+            response_key: collection,
+            COLLECTION_UNKNOWN_KEY_SENTINEL: COLLECTION_VALUE_SENTINEL,
+        }
+
+    def data_collection(
+        self,
+        response_key: str,
+        collection: object,
+        **siblings: object,
+    ) -> dict[str, object]:
+        """The compatibility shape, with private sibling noise inside and out."""
+        wrapper: dict[str, object] = {response_key: collection}
+        wrapper.update(siblings)
+        return {
+            "data": wrapper,
+            COLLECTION_UNKNOWN_KEY_SENTINEL: COLLECTION_VALUE_SENTINEL,
+        }
+
+    def interpretation_collection(self) -> list[dict[str, object]]:
+        return [self.interpretation_record()]
+
+    def phrase_collection(self) -> list[dict[str, object]]:
+        return [self.phrase_record()]
+
+    def wrapped_vocabulary(self) -> harness.HttpResponse:
+        compat = self.compat_suite()
+        return harness.HttpResponse(200, compat.data_voc(compat.voc_record()))
+
+    def three_data_wrapper_responses(
+        self,
+        *,
+        interpretations: object | None = None,
+        phrases: object | None = None,
+    ) -> list[object]:
+        """The fake three-GET flow with **every** payload under ``data``."""
+        return [
+            self.wrapped_vocabulary(),
+            harness.HttpResponse(
+                200,
+                self.data_collection(
+                    "interpretations",
+                    self.interpretation_collection()
+                    if interpretations is None
+                    else interpretations,
+                ),
             ),
-            (
-                "phrases-wrapped",
-                [
-                    harness.HttpResponse(200, self.data_voc(self.voc_record())),
-                    documented[1],
-                    harness.HttpResponse(
-                        200, {"data": {"phrases": [self.phrase_record()]}}
+            harness.HttpResponse(
+                200,
+                self.data_collection(
+                    "phrases",
+                    self.phrase_collection() if phrases is None else phrases,
+                ),
+            ),
+        ]
+
+    def run_success(
+        self,
+        responses: list[object],
+    ) -> tuple[harness.ReadOnlyProbeResult, FakeTransport]:
+        return self.compat_suite().run_success(responses)
+
+    def responses_with(
+        self,
+        response_key: str,
+        body: object,
+    ) -> list[object]:
+        """A flow whose ``response_key`` GET returns ``body`` verbatim."""
+        documented = self.responses()
+        if response_key == "interpretations":
+            return [documented[0], harness.HttpResponse(200, body)]
+        return [documented[0], documented[1], harness.HttpResponse(200, body)]
+
+    def collection_failure(
+        self,
+        response_key: str,
+        body: object,
+    ) -> tuple[dict[str, object], FakeTransport]:
+        failure, transport = self.probe_suite().run_failure(
+            self.responses_with(response_key, body)
+        )
+        return failure.safe_summary(), transport
+
+    def assert_collection_schema_failure(
+        self,
+        response_key: str,
+        body: object,
+    ) -> None:
+        """Assert one completed-then-rejected GET with no retry and no leak."""
+        summary, transport = self.collection_failure(response_key, body)
+        expected_requests = 2 if response_key == "interpretations" else 3
+        self.assertEqual(summary["failure_stage"], response_key)
+        self.assertEqual(summary["failure_class"], "schema")
+        self.assertEqual(summary["http_status"], 200)
+        self.assertEqual(summary["schema_reason"], "other-reviewed-schema")
+        # The Issue #18 locating classifier is never consulted for a collection.
+        self.assertIsNone(summary["response_envelope"])
+        self.assertEqual(summary["requests_attempted"], expected_requests)
+        self.assertEqual(summary["requests_completed"], expected_requests)
+        self.assertEqual(len(transport.requests), expected_requests)
+        self.assertEqual(
+            [request.method for request in transport.requests],
+            ["GET"] * expected_requests,
+        )
+
+    def expected_shape(self, response_key: str) -> dict[str, object]:
+        return {
+            "canonical_key": response_key,
+            "canonical_key_present": True,
+            "unknown_top_level_field_count": 0,
+        }
+
+    # ------------------------------------------------------------------
+    # The boundary itself
+    # ------------------------------------------------------------------
+
+    def test_collection_endpoint_keys_stay_closed_and_project_owned(self) -> None:
+        self.assertEqual(
+            harness.READ_ONLY_COLLECTION_KEYS, ("interpretations", "phrases")
+        )
+        # Exactly the endpoints that already own a documented status enum.
+        self.assertEqual(
+            harness.READ_ONLY_COLLECTION_KEYS, tuple(harness.READ_ONLY_STATUS_ENUMS)
+        )
+        # One compatibility container, shared with the vocabulary boundary.
+        self.assertEqual(harness.READ_ONLY_COMPATIBILITY_CONTAINER_KEY, "data")
+        for undocumented in ("vocabulary", "voc", "result", "items", ""):
+            with self.subTest(response_key=undocumented):
+                with self.assertRaises(harness.SafetyError):
+                    harness._canonical_probe_collection_body(
+                        {"data": {undocumented: []}}, undocumented
+                    )
+
+    def test_an_equal_endpoint_string_never_becomes_the_emitted_key(self) -> None:
+        """The canonical key is the module constant, not the caller's string."""
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            with self.subTest(response_key=response_key):
+                caller_owned = "".join(response_key)
+                self.assertIsNot(caller_owned, response_key)
+                canonical = harness._canonical_probe_collection_body(
+                    {"data": {caller_owned: []}}, caller_owned
+                )
+                emitted = next(iter(canonical))
+                self.assertIs(emitted, response_key)
+
+    def test_canonicalization_relocates_without_mutating_or_copying(self) -> None:
+        for response_key, collection in (
+            ("interpretations", self.interpretation_collection()),
+            ("phrases", self.phrase_collection()),
+        ):
+            with self.subTest(response_key=response_key):
+                body = self.data_collection(
+                    response_key,
+                    collection,
+                    **{COLLECTION_UNKNOWN_KEY_SENTINEL: COLLECTION_VALUE_SENTINEL},
+                )
+                before = json.dumps(body, ensure_ascii=False, sort_keys=True)
+                canonical = harness._canonical_probe_collection_body(
+                    body, response_key
+                )
+                # Exactly one project-owned key, holding the very same list.
+                self.assertEqual(set(canonical), {response_key})
+                self.assertIs(canonical[response_key], collection)
+                # The raw body is neither mutated nor handed back.
+                self.assertIsNot(canonical, body)
+                self.assertEqual(
+                    json.dumps(body, ensure_ascii=False, sort_keys=True), before
+                )
+
+    def test_documented_top_level_collection_always_wins_unchanged(self) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            for name, documented in (
+                ("valid", []),
+                ("malformed-not-a-list", COLLECTION_VALUE_SENTINEL),
+                ("malformed-records", [COLLECTION_VALUE_SENTINEL]),
+                ("null", None),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    body = {
+                        response_key: documented,
+                        "data": {response_key: [self.interpretation_record()]},
+                    }
+                    self.assertIs(
+                        harness._canonical_probe_collection_body(body, response_key),
+                        body,
+                    )
+        # A body with no accepted location is likewise handed on untouched.
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            for name, body in (
+                ("no-data", {COLLECTION_UNKNOWN_KEY_SENTINEL: COLLECTION_VALUE_SENTINEL}),
+                ("data-not-mapping", {"data": COLLECTION_VALUE_SENTINEL}),
+                ("data-without-the-key", {"data": {"voc": {}}}),
+                ("result-wrapper", {"result": {response_key: []}}),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    self.assertIs(
+                        harness._canonical_probe_collection_body(body, response_key),
+                        body,
+                    )
+            for name, body in (
+                ("null", None),
+                ("list", [{response_key: []}]),
+                ("string", COLLECTION_VALUE_SENTINEL),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    self.assertIs(
+                        harness._canonical_probe_collection_body(body, response_key),
+                        body,
+                    )
+
+    def test_each_endpoint_accepts_only_its_own_canonical_key(self) -> None:
+        """A cross-endpoint payload never satisfies the other collection GET."""
+        for response_key, other in (
+            ("interpretations", "phrases"),
+            ("phrases", "interpretations"),
+        ):
+            with self.subTest(response_key=response_key):
+                body = {"data": {other: [self.interpretation_record()]}}
+                self.assertIs(
+                    harness._canonical_probe_collection_body(body, response_key), body
+                )
+
+    # ------------------------------------------------------------------
+    # Both accepted forms succeed, per endpoint and end to end
+    # ------------------------------------------------------------------
+
+    def test_documented_collection_forms_still_succeed_unchanged(self) -> None:
+        result, transport = self.run_success(self.responses())
+        summary = result.safe_summary()
+        self.assertEqual(summary["interpretation_count"], 1)
+        self.assertEqual(summary["phrase_count"], 1)
+        self.assertEqual(summary["interpretation_statuses"], {"PUBLISHED": 1})
+        self.assertEqual(summary["phrase_statuses"], {"PUBLISHED": 1})
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            self.assertEqual(
+                summary["response_shapes"][response_key],
+                self.expected_shape(response_key),
+            )
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_data_interpretations_succeeds_and_advances_to_the_phrases_get(
+        self,
+    ) -> None:
+        documented = self.responses()
+        result, transport = self.run_success(
+            [
+                documented[0],
+                harness.HttpResponse(
+                    200,
+                    self.data_collection(
+                        "interpretations", self.interpretation_collection()
                     ),
-                ],
-                "phrases",
+                ),
+                documented[2],
+            ]
+        )
+        summary = result.safe_summary()
+        self.assertEqual(summary["interpretation_count"], 1)
+        self.assertEqual(
+            summary["response_shapes"]["interpretations"],
+            self.expected_shape("interpretations"),
+        )
+        # The third GET really was sent, with the documented voc_id query.
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(
+            transport.requests[2].path,
+            harness.build_query_path("phrases", {"voc_id": self.VOCABULARY_ID}),
+        )
+
+    def test_data_phrases_succeeds_in_the_full_flow(self) -> None:
+        documented = self.responses()
+        result, transport = self.run_success(
+            [
+                documented[0],
+                documented[1],
+                harness.HttpResponse(
+                    200, self.data_collection("phrases", self.phrase_collection())
+                ),
+            ]
+        )
+        summary = result.safe_summary()
+        self.assertEqual(summary["phrase_count"], 1)
+        self.assertEqual(summary["phrase_statuses"], {"PUBLISHED": 1})
+        self.assertEqual(summary["phrase_highlight_shapes"], {"integer-pair-array": 1})
+        self.assertEqual(
+            summary["response_shapes"]["phrases"], self.expected_shape("phrases")
+        )
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_full_three_data_wrapper_success_matches_the_documented_form(self) -> None:
+        """The key regression target before the next owner-authorized run."""
+        documented, documented_transport = self.run_success(self.responses())
+        wrapped, wrapped_transport = self.run_success(
+            self.three_data_wrapper_responses()
+        )
+        # Canonicalization makes the wrapped envelopes indistinguishable in the
+        # project-owned output: no wrapper key, count or value leaks into it.
+        self.assertEqual(wrapped.safe_summary(), documented.safe_summary())
+        expected_paths = [
+            harness.build_query_path("vocabulary", {"spelling": self.WORD}),
+            harness.build_query_path(
+                "interpretations", {"voc_id": self.VOCABULARY_ID}
+            ),
+            harness.build_query_path("phrases", {"voc_id": self.VOCABULARY_ID}),
+        ]
+        for transport in (documented_transport, wrapped_transport):
+            self.assertEqual(
+                [request.path for request in transport.requests], expected_paths
+            )
+
+    # ------------------------------------------------------------------
+    # Precedence: a malformed documented response is never bypassed
+    # ------------------------------------------------------------------
+
+    def test_malformed_top_level_collection_never_falls_back_to_data(self) -> None:
+        valid_by_key = {
+            "interpretations": self.interpretation_collection(),
+            "phrases": self.phrase_collection(),
+        }
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            record = (
+                self.interpretation_record()
+                if response_key == "interpretations"
+                else self.phrase_record()
+            )
+            for name, malformed in (
+                ("not-a-list", COLLECTION_VALUE_SENTINEL),
+                ("mapping", {"0": record}),
+                ("null", None),
+                ("malformed-item", [COLLECTION_VALUE_SENTINEL]),
+                ("unsafe-record-id", [dict(record, id=COLLECTION_RECORD_ID_SENTINEL)]),
+                ("duplicate-ids", [record, dict(record)]),
+                ("cross-endpoint-status", [dict(record, status="ARCHIVED")]),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    body = {
+                        response_key: malformed,
+                        "data": {response_key: valid_by_key[response_key]},
+                    }
+                    # The second candidate is never even considered.
+                    self.assertIs(
+                        harness._canonical_probe_collection_body(body, response_key),
+                        body,
+                    )
+                    self.assert_collection_schema_failure(response_key, body)
+
+    # ------------------------------------------------------------------
+    # Everything else stays fail-closed
+    # ------------------------------------------------------------------
+
+    def test_data_that_is_not_a_mapping_is_fail_closed(self) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            for name, wrapper in (
+                ("string", COLLECTION_VALUE_SENTINEL),
+                ("list", [{response_key: []}]),
+                ("null", None),
+                ("number", 20260808),
+                ("bool", True),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    self.assert_collection_schema_failure(
+                        response_key, {"data": wrapper}
+                    )
+
+    def test_data_without_the_expected_canonical_key_is_fail_closed(self) -> None:
+        for response_key, other in (
+            ("interpretations", "phrases"),
+            ("phrases", "interpretations"),
+        ):
+            for name, wrapper in (
+                ("empty", {}),
+                ("only-unreviewed-keys", {COLLECTION_UNKNOWN_KEY_SENTINEL: []}),
+                ("vocabulary-key", {"voc": {"id": "X", "spelling": "X"}}),
+                ("cross-endpoint-key", {other: [self.interpretation_record()]}),
+                ("nested-again", {"data": {response_key: []}}),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    self.assert_collection_schema_failure(
+                        response_key, {"data": wrapper}
+                    )
+
+    def test_data_canonical_key_with_the_wrong_type_is_fail_closed(self) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            for name, collection in (
+                ("string", COLLECTION_VALUE_SENTINEL),
+                ("mapping", {"0": self.interpretation_record()}),
+                ("null", None),
+                ("number", 20260808),
+                ("bool", False),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    body = self.data_collection(response_key, collection)
+                    # Relocation still happens; acceptance is unchanged and fails.
+                    self.assertEqual(
+                        set(
+                            harness._canonical_probe_collection_body(
+                                body, response_key
+                            )
+                        ),
+                        {response_key},
+                    )
+                    self.assert_collection_schema_failure(response_key, body)
+
+    def test_no_other_collection_wrapper_was_enabled(self) -> None:
+        """Every rejected location carries a fully **valid** collection.
+
+        The only reason these fail is where the payload lives, which proves the
+        fix was not generalized into a wrapper-agnostic unwrapper.
+        """
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            valid = (
+                self.interpretation_collection()
+                if response_key == "interpretations"
+                else self.phrase_collection()
+            )
+            bodies: tuple[tuple[str, object], ...] = (
+                ("result-wrapper", {"result": {response_key: valid}}),
+                ("result-direct", {"result": valid}),
+                ("items-wrapper", {"items": valid}),
+                ("records-wrapper", {"records": valid}),
+                ("vocabulary-wrapper", {"vocabulary": {response_key: valid}}),
+                ("data-list", {"data": valid}),
+                ("data-result", {"data": {"result": valid}}),
+                ("data-items", {"data": {"items": valid}}),
+                ("unknown-wrapper", {COLLECTION_UNKNOWN_KEY_SENTINEL: valid}),
+                ("empty-object", {}),
+            )
+            for name, body in bodies:
+                with self.subTest(response_key=response_key, case=name):
+                    self.assertIs(
+                        harness._canonical_probe_collection_body(body, response_key),
+                        body,
+                    )
+                    self.assert_collection_schema_failure(response_key, body)
+
+    def test_a_bare_array_body_is_still_rejected_before_the_boundary(self) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            valid = (
+                self.interpretation_collection()
+                if response_key == "interpretations"
+                else self.phrase_collection()
+            )
+            with self.subTest(response_key=response_key):
+                summary, _transport = self.collection_failure(response_key, valid)
+                self.assertEqual(summary["failure_stage"], response_key)
+                self.assertEqual(summary["schema_reason"], "body-not-object")
+                self.assertIsNone(summary["response_envelope"])
+
+    def test_top_level_containment_still_guards_the_wrapped_form(self) -> None:
+        """The wrapper does not buy a body past the existing top-level checks."""
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            valid = (
+                self.interpretation_collection()
+                if response_key == "interpretations"
+                else self.phrase_collection()
+            )
+            for name, body, reason in (
+                (
+                    "sensitive-top-level-field",
+                    dict(
+                        self.data_collection(response_key, valid),
+                        **{f"{SERVER_KEY_SENTINEL}-token": SERVER_BODY_SENTINEL},
+                    ),
+                    "top-level-response-policy",
+                ),
+                (
+                    "non-string-top-level-key",
+                    {7: [SERVER_BODY_SENTINEL], "data": {response_key: valid}},
+                    "body-not-object",
+                ),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    summary, _transport = self.collection_failure(response_key, body)
+                    self.assertEqual(summary["failure_stage"], response_key)
+                    self.assertEqual(summary["schema_reason"], reason)
+                    self.assertIsNone(summary["response_envelope"])
+
+    # ------------------------------------------------------------------
+    # Inner record validation is completely unchanged
+    # ------------------------------------------------------------------
+
+    def test_record_id_and_duplicate_rules_are_unchanged_through_the_wrapper(
+        self,
+    ) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            record = (
+                self.interpretation_record()
+                if response_key == "interpretations"
+                else self.phrase_record()
+            )
+            for name, collection in (
+                ("non-mapping-item", [COLLECTION_VALUE_SENTINEL]),
+                ("missing-id", [{key: value for key, value in record.items() if key != "id"}]),
+                ("non-string-id", [dict(record, id=20260808)]),
+                ("empty-id", [dict(record, id="")]),
+                ("punctuated-id", [dict(record, id=COLLECTION_RECORD_ID_SENTINEL)]),
+                ("duplicate-ids", [record, dict(record)]),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    self.assert_collection_schema_failure(
+                        response_key, self.data_collection(response_key, collection)
+                    )
+
+    def test_status_enums_remain_endpoint_specific_through_the_wrapper(self) -> None:
+        documented = self.responses()
+        # `UNPUBLISHED` is documented for interpretations only.
+        result, _transport = self.run_success(
+            [
+                documented[0],
+                harness.HttpResponse(
+                    200,
+                    self.data_collection(
+                        "interpretations",
+                        [
+                            self.interpretation_record(status="PUBLISHED"),
+                            self.interpretation_record(
+                                id="INVALID_ISSUE22_SECOND_ID", status="UNPUBLISHED"
+                            ),
+                            self.interpretation_record(
+                                id="INVALID_ISSUE22_THIRD_ID", status="DELETED"
+                            ),
+                        ],
+                    ),
+                ),
+                documented[2],
+            ]
+        )
+        self.assertEqual(
+            result.safe_summary()["interpretation_statuses"],
+            {"PUBLISHED": 1, "UNPUBLISHED": 1, "DELETED": 1},
+        )
+        for response_key, rejected in (
+            ("interpretations", ("ARCHIVED", "published", "", None, True, 1)),
+            ("phrases", ("UNPUBLISHED", "ARCHIVED", "published", "", None, True, 1)),
+        ):
+            record = (
+                self.interpretation_record()
+                if response_key == "interpretations"
+                else self.phrase_record()
+            )
+            for status in rejected:
+                with self.subTest(response_key=response_key, status=repr(status)):
+                    self.assert_collection_schema_failure(
+                        response_key,
+                        self.data_collection(
+                            response_key, [dict(record, status=status)]
+                        ),
+                    )
+        # `DELETED` remains documented for phrases.
+        result, _transport = self.run_success(
+            [
+                documented[0],
+                documented[1],
+                harness.HttpResponse(
+                    200,
+                    self.data_collection(
+                        "phrases", [self.phrase_record(status="DELETED")]
+                    ),
+                ),
+            ]
+        )
+        self.assertEqual(
+            result.safe_summary()["phrase_statuses"], {"DELETED": 1}
+        )
+
+    def test_phrase_body_and_highlight_rules_are_unchanged_through_the_wrapper(
+        self,
+    ) -> None:
+        documented = self.responses()
+        length = len(self.PRIVATE_PHRASE)
+        for name, highlight, shape in (
+            ("empty-array", [], "empty-array"),
+            ("integer-pair-array", [[0, length]], "integer-pair-array"),
+            (
+                "object-range-array",
+                [{"start": 0, "end": length}],
+                "object-range-array",
             ),
         ):
             with self.subTest(case=name):
-                failure, _transport = self.probe_suite().run_failure(responses)
-                summary = failure.safe_summary()
-                self.assertEqual(summary["failure_stage"], stage)
-                self.assertEqual(summary["failure_class"], "schema")
-                self.assertIsNone(summary["response_envelope"])
+                result, _transport = self.run_success(
+                    [
+                        documented[0],
+                        documented[1],
+                        harness.HttpResponse(
+                            200,
+                            self.data_collection(
+                                "phrases", [self.phrase_record(highlight=highlight)]
+                            ),
+                        ),
+                    ]
+                )
+                self.assertEqual(
+                    result.safe_summary()["phrase_highlight_shapes"], {shape: 1}
+                )
+        rejected: tuple[tuple[str, dict[str, object]], ...] = (
+            ("missing-phrase", {"phrase": None}),
+            ("empty-phrase", {"phrase": ""}),
+            ("non-string-phrase", {"phrase": [self.PRIVATE_PHRASE]}),
+            ("missing-highlight", {"highlight": None}),
+            ("highlight-not-an-array", {"highlight": {"start": 0, "end": 1}}),
+            ("highlight-end-past-phrase", {"highlight": [[0, length + 1]]}),
+            ("highlight-start-past-phrase", {"highlight": [[length, length + 2]]}),
+            ("highlight-inverted", {"highlight": [[2, 1]]}),
+            ("highlight-negative", {"highlight": [[-1, 2]]}),
+            ("highlight-boolean-range", {"highlight": [[True, 2]]}),
+            ("highlight-object-out-of-bounds", {"highlight": [{"start": 0, "end": length + 1}]}),
+            ("highlight-mixed-shapes", {"highlight": [[0, 1], {"start": 0, "end": 1}]}),
+        )
+        for name, override in rejected:
+            with self.subTest(case=name):
+                record = self.phrase_record()
+                for key, value in override.items():
+                    if value is None:
+                        record.pop(key, None)
+                    else:
+                        record[key] = value
+                self.assert_collection_schema_failure(
+                    "phrases", self.data_collection("phrases", [record])
+                )
+
+    def test_the_locating_classifier_never_becomes_the_collection_validator(
+        self,
+    ) -> None:
+        """No envelope classification may accept or reject a collection body."""
+        body = self.data_collection("interpretations", self.interpretation_collection())
+        # The classifier has an opinion about this body...
+        self.assertIn(
+            harness._classify_vocabulary_response_envelope(body),
+            harness.READ_ONLY_RESPONSE_ENVELOPES,
+        )
+        # ...and the collection path neither consults nor reports it.
+        result, _transport = self.run_success(
+            [self.responses()[0], harness.HttpResponse(200, body), self.responses()[2]]
+        )
+        self.assertEqual(result.safe_summary()["interpretation_count"], 1)
+        summary, _transport = self.collection_failure(
+            "interpretations", {"data": {"voc": {"id": "X", "spelling": "X"}}}
+        )
+        self.assertIsNone(summary["response_envelope"])
+
+    # ------------------------------------------------------------------
+    # No retry, and nothing private in the output
+    # ------------------------------------------------------------------
+
+    def test_no_compatibility_path_ever_retries(self) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            valid = (
+                self.interpretation_collection()
+                if response_key == "interpretations"
+                else self.phrase_collection()
+            )
+            for name, body in (
+                ("accepted-but-malformed", self.data_collection(response_key, {})),
+                ("rejected-location", {"result": {response_key: valid}}),
+                (
+                    "no-fallback",
+                    {
+                        response_key: COLLECTION_VALUE_SENTINEL,
+                        "data": {response_key: valid},
+                    },
+                ),
+            ):
+                with self.subTest(response_key=response_key, case=name):
+                    self.assert_collection_schema_failure(response_key, body)
+        _result, transport = self.run_success(self.three_data_wrapper_responses())
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(
+            [request.method for request in transport.requests], ["GET"] * 3
+        )
+
+    def test_successful_wrapped_output_reveals_nothing_private(self) -> None:
+        result, _transport = self.run_success(self.three_data_wrapper_responses())
+        rendered = self.compat_suite().rendered_result(result)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        for secret in (
+            "data",
+            self.VOCABULARY_ID,
+            "INVALID_ISSUE11_INTERPRETATION_ID",
+            "INVALID_ISSUE11_PHRASE_ID",
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+            FAKE_TOKEN,
+            ACCOUNT_LABEL,
+        ):
+            self.assertNotIn(secret, rendered)
+        digest = hashlib.sha256(COLLECTION_VALUE_SENTINEL.encode("utf-8")).hexdigest()
+        self.assertNotIn(digest, rendered)
+        self.assertNotIn(digest[:16], rendered)
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            self.assertEqual(
+                result.safe_summary()["response_shapes"][response_key],
+                self.expected_shape(response_key),
+            )
+
+    def test_wrapped_collection_failures_never_leak(self) -> None:
+        for response_key in harness.READ_ONLY_COLLECTION_KEYS:
+            with self.subTest(response_key=response_key):
+                failure, _transport = self.probe_suite().run_failure(
+                    self.responses_with(
+                        response_key,
+                        self.data_collection(
+                            response_key,
+                            [
+                                {
+                                    "id": COLLECTION_RECORD_ID_SENTINEL,
+                                    "status": SERVER_BODY_SENTINEL,
+                                    "phrase": COLLECTION_VALUE_SENTINEL,
+                                }
+                            ],
+                        ),
+                    )
+                )
+                rendered = self.probe_suite().rendered_failure(failure)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+                self.assertNotIn("Traceback", rendered)
+
+    def test_cli_success_prints_one_sanitized_object_and_exits_zero(self) -> None:
+        transport = FakeTransport(self.three_data_wrapper_responses())
+        exit_code, stdout, stderr = self.probe_suite().run_cli(transport)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(transport.requests), 3)
+        rendered = stdout + stderr
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        for secret in (
+            self.VOCABULARY_ID,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+        ):
+            self.assertNotIn(secret, rendered)
+        self.assertNotIn("Traceback", rendered)
+
+    # ------------------------------------------------------------------
+    # Untouched neighbours
+    # ------------------------------------------------------------------
+
+    def test_vocabulary_stage_parsing_is_untouched(self) -> None:
+        """A wrapped *collection* body never satisfies the vocabulary GET."""
+        for name, body, envelope in (
+            ("data-interpretations", {"data": {"interpretations": []}}, "unknown-object"),
+            ("data-phrases", {"data": {"phrases": []}}, "unknown-object"),
+        ):
+            with self.subTest(case=name):
+                summary, transport = self.compat_suite().failure_summary(body)
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["schema_reason"], "missing-voc")
+                self.assertEqual(summary["response_envelope"], envelope)
+                self.assertEqual(len(transport.requests), 1)
 
     def test_pr15_body_io_behavior_remains_unchanged(self) -> None:
         suite = self.issue14_suite()
