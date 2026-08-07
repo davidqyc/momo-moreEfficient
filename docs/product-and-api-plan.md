@@ -173,6 +173,53 @@ vocabulary 校验只做了“足以定位失败检查点”的拆分：检查顺
 
 Issue #16 的实现与测试全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。下一次真实 GET-only 运行仍属 Issue #13，需要单独授权。
 
+### 2.6 Issue #18 分类 vocabulary 响应外层形状（本轮同样为零真实请求）
+
+第三次所有者授权的副账号 GET-only 运行返回的脱敏结果是：
+
+```json
+{
+  "failure_stage": "vocabulary",
+  "failure_class": "schema",
+  "http_status": 200,
+  "schema_reason": "missing-voc",
+  "requests_attempted": 1,
+  "requests_completed": 1
+}
+```
+
+即：第一条 GET 完成、HTTP 状态 200、正文完整接收并解码为 JSON 对象，失败点精确落在**顶层对象没有文档约定的 `voc` 字段**；interpretations 与 phrases 从未发出。这排除了 Issue #16 记录的 `voc-id-local-policy` 假设。
+
+当前一方文档（`maimemo/memo-skills`）仍把 `GET /vocabulary?spelling=apple` 记为返回 `{"voc": {"id": "...", "spelling": "..."}}`。生产行为与该文档不一致，但**不得**据此假定生产的实际外层结构。
+
+`missing-voc` 只说明“文档形状不在顶层”，没有说明疑似 vocabulary 记录到底在哪一层。Issue #18 因此再增加**一个**项目自有脱敏字段 `response_envelope`，让下一次真实运行凭证据而不是凭猜测做兼容性修复。它的取值只能是 `null` 或下列封闭固定枚举中的成员，且始终按 identity 从模块常量中选取：
+
+| `response_envelope` | 含义（只看结构，不看取值） |
+| --- | --- |
+| `direct-voc-object` | 顶层 `voc` 存在且形似 vocabulary 记录（正常不会与 `missing-voc` 并存，仅为分类完整性保留） |
+| `direct-vocabulary-object` | 顶层对象自身形似 vocabulary 记录 |
+| `data-voc-wrapper` | 顶层 `data` 是对象，且 `data.voc` 形似 vocabulary 记录 |
+| `data-vocabulary-object` | 顶层 `data` 自身形似 vocabulary 记录 |
+| `result-voc-wrapper` | 顶层 `result` 是对象，且 `result.voc` 形似 vocabulary 记录 |
+| `result-vocabulary-object` | 顶层 `result` 自身形似 vocabulary 记录 |
+| `vocabulary-wrapper` | 顶层 `vocabulary` 形似 vocabulary 记录 |
+| `business-error-like` | 没有匹配到任何形似 vocabulary 的结构，但出现了小型固定允许清单中的业务元数据键名 |
+| `unknown-object` | 以上已复核形状都不匹配 |
+
+分类顺序是确定性的，按上表自上而下取**第一个**命中项。因此一个同时包含 `data`（形似 vocabulary 记录）和 `status` 的响应必然分类为 `data-vocabulary-object`，不会是 `business-error-like`；`business-error-like` 永远只是 `unknown-object` 之前的最后兜底。
+
+“形似 vocabulary 记录”只做结构判断：是映射、含允许清单内的 `id` 与 `spelling`、且两者是预期的宽泛类型（`id` 为字符串或普通整数，`spelling` 为字符串）。它**不**调用 `_safe_record_id`、不校验 ID 取值、不归一化或比较 spelling、不返回任何取值。它只回答“疑似 vocabulary 对象在哪一层”，不回答“这条记录是否可以接受”。
+
+分类器在内存中可以查阅的键名是一份完整、显式、封闭的允许清单，共 11 个：`voc`、`id`、`spelling`、`data`、`result`、`vocabulary`、`code`、`message`、`error`、`status`、`success`。除此之外的任何键名都不被读取、不被复制、不被排序、不被计数、不被哈希、不被指纹化，也不进入异常文案或持久化；未复核的键只能通过“不匹配”让整体塌缩为 `unknown-object`。业务元数据键的**取值**同样从不读取或输出。
+
+契约固定并在 `ReadOnlyFailureDiagnostic.__post_init__` 中强制：`response_envelope` 仅在 `failure_stage = vocabulary`、`failure_class = schema` 且 `schema_reason = missing-voc` 时必须非 `null`，其余全部为 `null`——包括 `transport`、`http-status`、`safety`、`body-invalid-utf8`、`body-invalid-json`、`body-not-object`、`body-too-large`，以及 interpretations/phrases 阶段的所有 schema 失败。PR #15 的 body I/O 修复不受影响：正文读取 I/O 失败仍是 `failure_class = transport`、`http_status = null`、`schema_reason = null`、`response_envelope = null`。
+
+失败输出的完整字段集因此固定为：`mode`、`status`、`failure_stage`、`failure_class`、`http_status`、`schema_reason`、`response_envelope`、`requests_attempted`、`requests_completed`。账号标签、Token 指纹、voc_id 指纹、服务端 key 名、任何字段值和任何异常文案都不出现。成功路径输出完全未变，不含这两个诊断字段。
+
+**本 Issue 只做诊断，不改验收**：`direct-vocabulary-object`、`data-voc-wrapper`、`data-vocabulary-object`、`result-voc-wrapper`、`result-vocabulary-object`、`vocabulary-wrapper` 一律**不是**可接受的成功响应，成功合同仍然是文档约定的顶层 `voc`。因此下一次真实运行仍会以 `schema_reason = missing-voc` 安全失败，只是额外给出 `response_envelope`。拿到该观测值后再单独开兼容性修复任务。
+
+Issue #18 的实现与测试全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。下一次真实 GET-only 运行仍属 Issue #13，需要单独授权。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
