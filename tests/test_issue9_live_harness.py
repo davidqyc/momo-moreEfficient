@@ -3176,6 +3176,12 @@ ENVELOPE_CODE_SENTINEL = "PRIVATE-ISSUE18-BUSINESS-CODE-SENTINEL"
 ENVELOPE_MESSAGE_SENTINEL = "PRIVATE ISSUE18 BUSINESS MESSAGE SENTINEL"
 ENVELOPE_STATUS_SENTINEL = "PRIVATE-ISSUE18-BUSINESS-STATUS-SENTINEL"
 ENVELOPE_INJECTED_SENTINEL = "PRIVATE-INJECTED-RESPONSE-ENVELOPE-SENTINEL"
+# Issue #20: the compatibility boundary descends into one wrapper. Every sibling
+# key and value it passes on the way is a private sentinel here, so anything that
+# escapes into a diagnostic, stdout, stderr, repr or traceback is a test failure
+# rather than a silent disclosure.
+COMPAT_UNKNOWN_KEY_SENTINEL = "PRIVATE-ISSUE20-UNKNOWN-WRAPPER-KEY-SENTINEL"
+COMPAT_VALUE_SENTINEL = "PRIVATE ISSUE20 WRAPPER VALUE SENTINEL"
 SENTINELS = (
     FAKE_TOKEN,
     SERVER_KEY_SENTINEL,
@@ -3196,6 +3202,8 @@ SENTINELS = (
     ENVELOPE_MESSAGE_SENTINEL,
     ENVELOPE_STATUS_SENTINEL,
     ENVELOPE_INJECTED_SENTINEL,
+    COMPAT_UNKNOWN_KEY_SENTINEL,
+    COMPAT_VALUE_SENTINEL,
 )
 
 
@@ -3210,27 +3218,28 @@ def envelope_record(**overrides: object) -> dict[str, object]:
     return record
 
 
-def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
+def missing_voc_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
     """Issue #18: ``(name, HTTP 200 body, expected response_envelope)``.
 
     Every body here is a complete, decoded JSON object with **no** documented
     top-level ``voc``, which is exactly the live third-run shape: the probe still
     fails with ``schema_reason = missing-voc``, and the envelope only says where
-    an apparent vocabulary record lives. ``direct-voc-object`` is absent on
-    purpose — a body with a usable top-level ``voc`` never reaches ``missing-voc``
-    — and is covered separately at the classifier level.
+    an apparent vocabulary record lives.
+
+    Two envelope constants are absent on purpose and are covered at the
+    classifier level instead. ``direct-voc-object`` never reaches ``missing-voc``
+    because a body with a usable top-level ``voc`` is validated by the documented
+    path. ``data-voc-wrapper`` no longer reaches it either: after Issue #20 that
+    single observed production location is canonicalized and handed to the
+    unchanged vocabulary validation, so it is covered by
+    :func:`data_voc_compatibility_cases`.
     """
     return (
-        # --- one case per reachable envelope constant -----------------------
+        # --- one case per still-reachable envelope constant ------------------
         (
             "direct-vocabulary-object",
             envelope_record(),
             "direct-vocabulary-object",
-        ),
-        (
-            "data-voc-wrapper",
-            {"data": {"voc": envelope_record()}},
-            "data-voc-wrapper",
         ),
         (
             "data-vocabulary-object",
@@ -3273,24 +3282,6 @@ def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...
         ("unknown-object-empty", {}, "unknown-object"),
         # --- deterministic precedence ---------------------------------------
         (
-            "precedence-direct-record-beats-data-voc-wrapper",
-            dict(envelope_record(), data={"voc": envelope_record()}),
-            "direct-vocabulary-object",
-        ),
-        (
-            "precedence-data-voc-wrapper-beats-data-record",
-            {"data": dict(envelope_record(), voc=envelope_record())},
-            "data-voc-wrapper",
-        ),
-        (
-            "precedence-data-beats-result",
-            {
-                "data": {"voc": envelope_record()},
-                "result": {"voc": envelope_record()},
-            },
-            "data-voc-wrapper",
-        ),
-        (
             "precedence-data-record-beats-result-wrapper",
             {"data": envelope_record(), "result": {"voc": envelope_record()}},
             "data-vocabulary-object",
@@ -3324,6 +3315,66 @@ def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...
         ),
         # --- structural near-misses collapse, never leak --------------------
         (
+            "near-miss-record-with-boolean-id",
+            {"vocabulary": {"id": True, "spelling": ENVELOPE_SPELLING_SENTINEL}},
+            "unknown-object",
+        ),
+        (
+            "near-miss-record-with-non-string-spelling",
+            {"result": {"id": ENVELOPE_ID_SENTINEL, "spelling": [1, 2]}},
+            "unknown-object",
+        ),
+        (
+            "near-miss-container-is-not-an-object",
+            {"data": ENVELOPE_VALUE_SENTINEL, "result": [ENVELOPE_VALUE_SENTINEL]},
+            "unknown-object",
+        ),
+        # --- broad structural id types locate the record without accepting it
+        (
+            "integer-id-still-locates-the-record",
+            {"data": {"id": 20260808, "spelling": ENVELOPE_SPELLING_SENTINEL}},
+            "data-vocabulary-object",
+        ),
+    )
+
+
+def data_voc_compatibility_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
+    """Issue #20: ``(name, HTTP 200 body, unchanged classifier envelope)``.
+
+    Every body here has **no** documented top-level ``voc`` but does carry the
+    one observed production location ``data.voc``, so the canonicalization
+    boundary now relocates that value and the unchanged strict validation
+    decides. None of them can still report ``missing-voc``.
+
+    The third element remains the *classifier's* verdict, which Issue #20 leaves
+    completely untouched: these bodies are still classified exactly as before,
+    they just no longer reach the ``missing-voc`` checkpoint that reports it.
+    """
+    return (
+        (
+            "data-voc-wrapper",
+            {"data": {"voc": envelope_record()}},
+            "data-voc-wrapper",
+        ),
+        (
+            "precedence-direct-record-beats-data-voc-wrapper",
+            dict(envelope_record(), data={"voc": envelope_record()}),
+            "direct-vocabulary-object",
+        ),
+        (
+            "precedence-data-voc-wrapper-beats-data-record",
+            {"data": dict(envelope_record(), voc=envelope_record())},
+            "data-voc-wrapper",
+        ),
+        (
+            "precedence-data-beats-result",
+            {
+                "data": {"voc": envelope_record()},
+                "result": {"voc": envelope_record()},
+            },
+            "data-voc-wrapper",
+        ),
+        (
             "near-miss-record-without-spelling",
             {"data": {"voc": {"id": ENVELOPE_ID_SENTINEL}}},
             "unknown-object",
@@ -3341,21 +3392,6 @@ def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...
             "unknown-object",
         ),
         (
-            "near-miss-record-with-boolean-id",
-            {"vocabulary": {"id": True, "spelling": ENVELOPE_SPELLING_SENTINEL}},
-            "unknown-object",
-        ),
-        (
-            "near-miss-record-with-non-string-spelling",
-            {"result": {"id": ENVELOPE_ID_SENTINEL, "spelling": [1, 2]}},
-            "unknown-object",
-        ),
-        (
-            "near-miss-container-is-not-an-object",
-            {"data": ENVELOPE_VALUE_SENTINEL, "result": [ENVELOPE_VALUE_SENTINEL]},
-            "unknown-object",
-        ),
-        (
             "near-miss-container-with-non-object-voc",
             {"data": {"voc": ENVELOPE_VALUE_SENTINEL}},
             "unknown-object",
@@ -3368,13 +3404,18 @@ def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...
             },
             "business-error-like",
         ),
-        # --- broad structural id types locate the record without accepting it
-        (
-            "integer-id-still-locates-the-record",
-            {"data": {"id": 20260808, "spelling": ENVELOPE_SPELLING_SENTINEL}},
-            "data-vocabulary-object",
-        ),
     )
+
+
+def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
+    """The full classifier corpus: both groups above.
+
+    The Issue #18 classifier is unchanged by Issue #20, so every body still
+    classifies exactly as it did. Only the *end-to-end* consumers split, because
+    the ``data.voc`` group is now accepted into the unchanged validation instead
+    of stopping at ``missing-voc``.
+    """
+    return missing_voc_envelope_cases() + data_voc_compatibility_cases()
 
 
 class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
@@ -3563,10 +3604,12 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
     def vocabulary_response_envelope_cases(
         self,
     ) -> list[tuple[str, list[object], dict[str, object], int]]:
-        """Issue #18: every reachable envelope, as a full probe failure case.
+        """Issue #18: every still-reachable envelope, as a full probe failure case.
 
         Routing these through ``failure_cases()`` means the existing no-retry,
-        sentinel-containment, contract-field and CLI suites cover them too.
+        sentinel-containment, contract-field and CLI suites cover them too. The
+        Issue #20 ``data.voc`` group is excluded because it no longer stops at
+        ``missing-voc``; it has its own end-to-end cases.
         """
         return [
             (
@@ -3577,7 +3620,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                 ),
                 1,
             )
-            for name, body, envelope in vocabulary_envelope_cases()
+            for name, body, envelope in missing_voc_envelope_cases()
         ]
 
     def failure_cases(self) -> list[tuple[str, list[object], dict[str, object], int]]:
@@ -5077,7 +5120,7 @@ class Issue18ResponseEnvelopeTests(ReadOnlyProbeFixtures, unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_every_reachable_envelope_is_reported_exactly(self) -> None:
-        for name, body, envelope in vocabulary_envelope_cases():
+        for name, body, envelope in missing_voc_envelope_cases():
             with self.subTest(case=name):
                 failure, transport = self.run_failure(
                     [harness.HttpResponse(200, body)]
@@ -5127,7 +5170,7 @@ class Issue18ResponseEnvelopeTests(ReadOnlyProbeFixtures, unittest.TestCase):
                     self.assertNotIn(digest[:16], rendered)
 
     def test_cli_prints_the_envelope_and_no_sentinel(self) -> None:
-        for name, body, envelope in vocabulary_envelope_cases():
+        for name, body, envelope in missing_voc_envelope_cases():
             with self.subTest(case=name):
                 transport = FakeTransport([harness.HttpResponse(200, body)])
                 exit_code, stdout, stderr = self.run_cli(transport)
@@ -5509,6 +5552,630 @@ class Issue18ResponseEnvelopeTests(ReadOnlyProbeFixtures, unittest.TestCase):
                         "requests_completed",
                     },
                 )
+
+    def test_no_maimemo_request_is_possible_under_the_process_guard(self) -> None:
+        self.assertEqual(os.environ.get("MOMO_TEST_NETWORK_DISABLED"), "1")
+        for blocked in (
+            socket.socket,
+            socket.create_connection,
+            urllib.request.urlopen,
+        ):
+            with self.subTest(blocked=getattr(blocked, "__name__", repr(blocked))):
+                with self.assertRaises(RuntimeError):
+                    blocked()
+
+
+class Issue20DataVocCompatibilityTests(ReadOnlyProbeFixtures, unittest.TestCase):
+    """Issue #20: accept the observed ``data.voc`` envelope — and nothing else.
+
+    The fourth owner-authorized run reported ``missing-voc`` together with
+    ``response_envelope = data-voc-wrapper``, so production structurally answers
+    ``{"data": {"voc": {...}}}`` while the first-party documentation still
+    records the top-level ``{"voc": {...}}``. Every case below reproduces that
+    shape offline with fake transports under the process-level no-network guard:
+    no real credential is read and no Maimemo request is ever sent.
+    """
+
+    def probe_suite(self) -> Issue18ResponseEnvelopeTests:
+        """Reuse the Issue #18 probe/CLI/rendering helpers verbatim."""
+        return Issue18ResponseEnvelopeTests()
+
+    def issue14_suite(self) -> Issue14ReadOnlyDiagnosticTests:
+        return Issue14ReadOnlyDiagnosticTests()
+
+    def voc_record(self, **overrides: object) -> dict[str, object]:
+        """An acceptable vocabulary record carrying private sentinel noise."""
+        record: dict[str, object] = {
+            "id": self.VOCABULARY_ID,
+            "spelling": self.RETURNED_WORD,
+            COMPAT_UNKNOWN_KEY_SENTINEL: COMPAT_VALUE_SENTINEL,
+        }
+        record.update(overrides)
+        return record
+
+    def data_voc(self, voc: object, **siblings: object) -> dict[str, object]:
+        """The observed production envelope, with private sibling noise."""
+        wrapper: dict[str, object] = {"voc": voc}
+        wrapper.update(siblings)
+        return {
+            "data": wrapper,
+            COMPAT_UNKNOWN_KEY_SENTINEL: COMPAT_VALUE_SENTINEL,
+        }
+
+    def data_voc_responses(self, voc: object | None = None) -> list[object]:
+        """The fake three-GET flow with only the vocabulary response wrapped."""
+        documented = self.responses()
+        return [
+            harness.HttpResponse(
+                200, self.data_voc(self.voc_record() if voc is None else voc)
+            ),
+            documented[1],
+            documented[2],
+        ]
+
+    def run_success(
+        self,
+        responses: list[object],
+    ) -> tuple[harness.ReadOnlyProbeResult, FakeTransport]:
+        test_credential = self.probe_credential()
+        transport = FakeTransport(list(responses))
+        result = harness.ReadOnlyProbeExecutor(transport).execute(
+            test_credential,
+            self.probe_gate(test_credential),
+        )
+        return result, transport
+
+    def rendered_result(self, result: harness.ReadOnlyProbeResult) -> str:
+        return "".join(
+            (
+                json.dumps(result.safe_summary(), ensure_ascii=False, sort_keys=True),
+                str(result),
+                repr(result),
+            )
+        )
+
+    def failure_summary(self, body: object) -> tuple[dict[str, object], FakeTransport]:
+        failure, transport = self.probe_suite().run_failure(
+            [harness.HttpResponse(200, body)]
+        )
+        return failure.safe_summary(), transport
+
+    # ------------------------------------------------------------------
+    # The boundary itself
+    # ------------------------------------------------------------------
+
+    def test_only_one_compatibility_container_key_exists(self) -> None:
+        self.assertEqual(harness.READ_ONLY_COMPATIBILITY_CONTAINER_KEY, "data")
+        self.assertEqual(harness.RESPONSE_ENVELOPE_VOC_KEY, "voc")
+
+    def test_top_level_containment_still_guards_the_wrapped_form(self) -> None:
+        """The wrapper does not buy a body past the existing top-level checks."""
+        for name, body in (
+            (
+                "sensitive-top-level-field",
+                dict(
+                    self.data_voc(self.voc_record()),
+                    **{f"{SERVER_KEY_SENTINEL}-token": SERVER_BODY_SENTINEL},
+                ),
+            ),
+            (
+                "non-string-top-level-key",
+                {7: [SERVER_BODY_SENTINEL], "data": {"voc": self.voc_record()}},
+            ),
+        ):
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary(body)
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertIn(
+                    summary["schema_reason"],
+                    ("top-level-response-policy", "body-not-object"),
+                )
+                self.assertIsNone(summary["response_envelope"])
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_a_hostile_body_never_reaches_the_boundary_and_never_leaks(self) -> None:
+        failure, transport = self.probe_suite().run_failure(
+            [harness.HttpResponse(200, HostileMapping())]
+        )
+        summary = failure.safe_summary()
+        self.assertEqual(summary["failure_stage"], "vocabulary")
+        self.assertEqual(summary["failure_class"], "schema")
+        self.assertIsNone(summary["response_envelope"])
+        self.assertEqual(len(transport.requests), 1)
+        rendered = self.probe_suite().rendered_failure(failure)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        self.assertNotIn("Traceback", rendered)
+
+    def test_canonicalization_relocates_without_mutating_or_copying(self) -> None:
+        nested = self.voc_record()
+        body = self.data_voc(nested, **{"extra": COMPAT_VALUE_SENTINEL})
+        before = json.dumps(body, ensure_ascii=False, sort_keys=True)
+        canonical = harness._canonical_probe_vocabulary_body(body)
+        # Exactly one project-owned key, holding the very same nested value.
+        self.assertEqual(set(canonical), {"voc"})
+        self.assertIs(canonical["voc"], nested)
+        # The raw body is neither mutated nor handed back.
+        self.assertIsNot(canonical, body)
+        self.assertEqual(json.dumps(body, ensure_ascii=False, sort_keys=True), before)
+
+    def test_documented_top_level_voc_always_wins_and_is_returned_unchanged(
+        self,
+    ) -> None:
+        for name, documented in (
+            ("valid", self.voc_record()),
+            ("malformed-not-object", SERVER_BODY_SENTINEL),
+            ("malformed-record", {"id": ""}),
+        ):
+            with self.subTest(case=name):
+                body = {"voc": documented, "data": {"voc": self.voc_record()}}
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+        # A body with no accepted location is likewise handed on untouched, so
+        # the existing `missing-voc` rejection and its envelope are unaffected.
+        for name, body in (
+            ("no-data", {SERVER_KEY_SENTINEL: SERVER_BODY_SENTINEL}),
+            ("data-not-mapping", {"data": COMPAT_VALUE_SENTINEL}),
+            ("data-without-voc", {"data": self.voc_record()}),
+            ("result-voc", {"result": {"voc": self.voc_record()}}),
+        ):
+            with self.subTest(case=name):
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+        for name, body in (
+            ("null", None),
+            ("list", [{"voc": self.voc_record()}]),
+            ("string", COMPAT_VALUE_SENTINEL),
+        ):
+            with self.subTest(case=name):
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+
+    # ------------------------------------------------------------------
+    # Both accepted envelopes succeed
+    # ------------------------------------------------------------------
+
+    def test_documented_top_level_voc_still_succeeds_unchanged(self) -> None:
+        result, transport = self.run_success(self.responses())
+        summary = result.safe_summary()
+        self.assertEqual(summary["requested_spelling"], self.WORD)
+        self.assertEqual(summary["returned_spelling"], self.RETURNED_WORD)
+        self.assertEqual(
+            summary["response_shapes"]["vocabulary"],
+            {
+                "canonical_key": "voc",
+                "canonical_key_present": True,
+                "unknown_top_level_field_count": 0,
+            },
+        )
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_observed_data_voc_body_passes_the_vocabulary_stage(self) -> None:
+        result, _transport = self.run_success(self.data_voc_responses())
+        summary = result.safe_summary()
+        self.assertEqual(summary["returned_spelling"], self.RETURNED_WORD)
+        self.assertEqual(
+            summary["voc_id_fingerprint"],
+            hashlib.sha256(self.VOCABULARY_ID.encode("utf-8")).hexdigest()[:16],
+        )
+
+    def test_observed_data_voc_reaches_the_interpretations_get(self) -> None:
+        failure, transport = self.probe_suite().run_failure(
+            [
+                harness.HttpResponse(200, self.data_voc(self.voc_record())),
+                harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL),
+            ]
+        )
+        summary = failure.safe_summary()
+        # The vocabulary stage is behind us: the failure is the *second* GET.
+        self.assertEqual(summary["failure_stage"], "interpretations")
+        self.assertEqual(summary["failure_class"], "transport")
+        self.assertEqual(summary["requests_attempted"], 2)
+        self.assertEqual(summary["requests_completed"], 1)
+        self.assertIsNone(summary["schema_reason"])
+        self.assertIsNone(summary["response_envelope"])
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(
+            transport.requests[1].path,
+            harness.build_query_path(
+                "interpretations", {"voc_id": self.VOCABULARY_ID}
+            ),
+        )
+        for sentinel in SENTINELS:
+            self.assertNotIn(
+                sentinel, self.probe_suite().rendered_failure(failure)
+            )
+
+    def test_full_three_get_success_matches_the_documented_form_exactly(self) -> None:
+        documented, documented_transport = self.run_success(self.responses())
+        wrapped, wrapped_transport = self.run_success(self.data_voc_responses())
+        # Canonicalization makes the observed envelope indistinguishable in the
+        # project-owned output: no wrapper key, count or value leaks into it.
+        self.assertEqual(wrapped.safe_summary(), documented.safe_summary())
+        for transport in (documented_transport, wrapped_transport):
+            self.assertEqual(
+                [request.path for request in transport.requests],
+                [
+                    harness.build_query_path("vocabulary", {"spelling": self.WORD}),
+                    harness.build_query_path(
+                        "interpretations", {"voc_id": self.VOCABULARY_ID}
+                    ),
+                    harness.build_query_path(
+                        "phrases", {"voc_id": self.VOCABULARY_ID}
+                    ),
+                ],
+            )
+
+    # ------------------------------------------------------------------
+    # Precedence: a malformed documented response is never bypassed
+    # ------------------------------------------------------------------
+
+    def test_malformed_top_level_voc_never_falls_back_to_data_voc(self) -> None:
+        cases: tuple[tuple[str, object, str], ...] = (
+            ("voc-not-object", SERVER_BODY_SENTINEL, "voc-not-object"),
+            (
+                "voc-id-missing",
+                {"spelling": self.RETURNED_WORD},
+                "voc-id-missing-or-not-string",
+            ),
+            (
+                "voc-id-not-string",
+                {"id": 20260808, "spelling": self.RETURNED_WORD},
+                "voc-id-missing-or-not-string",
+            ),
+            ("voc-id-empty", {"id": "", "spelling": self.RETURNED_WORD}, "voc-id-empty"),
+            (
+                "voc-id-local-policy",
+                {"id": VOC_ID_PUNCTUATION_SENTINEL, "spelling": self.RETURNED_WORD},
+                "voc-id-local-policy",
+            ),
+            (
+                "spelling-missing",
+                {"id": self.VOCABULARY_ID},
+                "spelling-missing-or-not-string",
+            ),
+            (
+                "spelling-local-policy",
+                {"id": self.VOCABULARY_ID, "spelling": f" {self.RETURNED_WORD} "},
+                "spelling-local-policy",
+            ),
+            (
+                "spelling-mismatch",
+                {"id": self.VOCABULARY_ID, "spelling": SPELLING_SENTINEL},
+                "spelling-mismatch",
+            ),
+        )
+        for name, malformed, reason in cases:
+            with self.subTest(case=name):
+                body = {"voc": malformed, "data": {"voc": self.voc_record()}}
+                # The second candidate is never even considered.
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+                summary, transport = self.failure_summary(body)
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertEqual(summary["http_status"], 200)
+                self.assertEqual(summary["schema_reason"], reason)
+                self.assertIsNone(summary["response_envelope"])
+                # One GET, and never the interpretations follow-up.
+                self.assertEqual(len(transport.requests), 1)
+
+    # ------------------------------------------------------------------
+    # Everything else stays fail-closed
+    # ------------------------------------------------------------------
+
+    def test_missing_top_level_voc_with_non_mapping_data_is_fail_closed(self) -> None:
+        for name, wrapper in (
+            ("string", COMPAT_VALUE_SENTINEL),
+            ("list", [{"voc": self.voc_record()}]),
+            ("null", None),
+            ("number", 20260808),
+            ("bool", True),
+        ):
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary({"data": wrapper})
+                self.assertEqual(summary["schema_reason"], "missing-voc")
+                self.assertEqual(summary["response_envelope"], "unknown-object")
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_data_mapping_without_voc_is_fail_closed(self) -> None:
+        for name, body, envelope in (
+            ("empty-wrapper", {"data": {}}, "unknown-object"),
+            (
+                "record-directly-under-data",
+                {"data": self.voc_record()},
+                "data-vocabulary-object",
+            ),
+            (
+                "only-unreviewed-keys",
+                {"data": {COMPAT_UNKNOWN_KEY_SENTINEL: COMPAT_VALUE_SENTINEL}},
+                "unknown-object",
+            ),
+        ):
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary(body)
+                self.assertEqual(summary["schema_reason"], "missing-voc")
+                self.assertEqual(summary["response_envelope"], envelope)
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_data_voc_that_is_not_a_mapping_uses_the_existing_schema_reason(
+        self,
+    ) -> None:
+        for name, nested in (
+            ("string", COMPAT_VALUE_SENTINEL),
+            ("list", [self.voc_record()]),
+            ("null", None),
+            ("number", 20260808),
+            ("bool", False),
+        ):
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary(self.data_voc(nested))
+                self.assertEqual(summary["schema_reason"], "voc-not-object")
+                self.assertIsNone(summary["response_envelope"])
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_data_voc_id_failures_use_the_existing_exact_schema_reasons(self) -> None:
+        cases: tuple[tuple[str, dict[str, object], str], ...] = (
+            (
+                "missing",
+                {"spelling": self.RETURNED_WORD},
+                "voc-id-missing-or-not-string",
+            ),
+            (
+                "not-a-string",
+                {"id": 20260808, "spelling": self.RETURNED_WORD},
+                "voc-id-missing-or-not-string",
+            ),
+            (
+                "boolean",
+                {"id": True, "spelling": self.RETURNED_WORD},
+                "voc-id-missing-or-not-string",
+            ),
+            ("empty", {"id": "", "spelling": self.RETURNED_WORD}, "voc-id-empty"),
+            (
+                "punctuated",
+                {"id": VOC_ID_PUNCTUATION_SENTINEL, "spelling": self.RETURNED_WORD},
+                "voc-id-local-policy",
+            ),
+        )
+        for name, nested, reason in cases:
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary(self.data_voc(nested))
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["schema_reason"], reason)
+                self.assertIsNone(summary["response_envelope"])
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_data_voc_spelling_failures_use_the_existing_exact_schema_reasons(
+        self,
+    ) -> None:
+        cases: tuple[tuple[str, dict[str, object], str], ...] = (
+            (
+                "missing",
+                {"id": self.VOCABULARY_ID},
+                "spelling-missing-or-not-string",
+            ),
+            (
+                "not-a-string",
+                {"id": self.VOCABULARY_ID, "spelling": [self.RETURNED_WORD]},
+                "spelling-missing-or-not-string",
+            ),
+            (
+                "padded",
+                {"id": self.VOCABULARY_ID, "spelling": f" {self.RETURNED_WORD} "},
+                "spelling-local-policy",
+            ),
+            (
+                "mismatch",
+                {"id": self.VOCABULARY_ID, "spelling": SPELLING_SENTINEL},
+                "spelling-mismatch",
+            ),
+        )
+        for name, nested, reason in cases:
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary(self.data_voc(nested))
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["schema_reason"], reason)
+                self.assertIsNone(summary["response_envelope"])
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_no_other_envelope_was_enabled(self) -> None:
+        """Every reviewed non-``data.voc`` location stays fail-closed.
+
+        The records here are fully *acceptable* ones, so the only reason these
+        are rejected is their location — proving the fix was not generalized.
+        """
+        for name, body, envelope in (
+            ("direct-vocabulary-object", self.voc_record(), "direct-vocabulary-object"),
+            (
+                "data-vocabulary-object",
+                {"data": self.voc_record()},
+                "data-vocabulary-object",
+            ),
+            (
+                "result-voc-wrapper",
+                {"result": {"voc": self.voc_record()}},
+                "result-voc-wrapper",
+            ),
+            (
+                "result-vocabulary-object",
+                {"result": self.voc_record()},
+                "result-vocabulary-object",
+            ),
+            (
+                "vocabulary-wrapper",
+                {"vocabulary": self.voc_record()},
+                "vocabulary-wrapper",
+            ),
+            (
+                "business-error-like",
+                {"code": ENVELOPE_CODE_SENTINEL, "message": ENVELOPE_MESSAGE_SENTINEL},
+                "business-error-like",
+            ),
+            (
+                "unknown-object",
+                {COMPAT_UNKNOWN_KEY_SENTINEL: COMPAT_VALUE_SENTINEL},
+                "unknown-object",
+            ),
+        ):
+            with self.subTest(case=name):
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+                summary, transport = self.failure_summary(body)
+                self.assertEqual(summary["schema_reason"], "missing-voc")
+                self.assertEqual(summary["response_envelope"], envelope)
+                self.assertEqual(len(transport.requests), 1)
+        # The whole Issue #18 corpus that still reaches `missing-voc` is
+        # likewise handed on untouched by the boundary.
+        for name, body, envelope in missing_voc_envelope_cases():
+            with self.subTest(corpus_case=name):
+                self.assertIs(harness._canonical_probe_vocabulary_body(body), body)
+
+    def test_inner_vocabulary_validation_is_completely_unchanged(self) -> None:
+        """The Issue #18 locating classifier must not become the validator."""
+        for located_id in (VOC_ID_PUNCTUATION_SENTINEL, 20260808, True):
+            with self.subTest(located_id=repr(located_id)):
+                nested = {"id": located_id, "spelling": self.RETURNED_WORD}
+                # The classifier still locates it under the accepted location...
+                self.assertIn(
+                    harness._classify_vocabulary_response_envelope(
+                        {"data": {"voc": nested}}
+                    ),
+                    harness.READ_ONLY_RESPONSE_ENVELOPES,
+                )
+                # ...and the unchanged acceptance rules still reject it.
+                with self.assertRaises(harness.SchemaReasonError):
+                    harness._probe_vocabulary_record_id(located_id)
+                with self.assertRaises(harness.SchemaReasonError):
+                    harness._validate_probe_vocabulary(
+                        harness._canonical_probe_vocabulary_body(
+                            self.data_voc(nested)
+                        ),
+                        self.WORD,
+                    )
+        # `_validate_probe_vocabulary` itself never learned about `data`: the
+        # relocation happens strictly outside it.
+        with self.assertRaises(harness.SchemaReasonError) as context:
+            harness._validate_probe_vocabulary(
+                self.data_voc(self.voc_record()), self.WORD
+            )
+        self.assertIs(
+            context.exception.schema_reason, harness.SCHEMA_REASON_MISSING_VOC
+        )
+
+    # ------------------------------------------------------------------
+    # No retry, and nothing private in the output
+    # ------------------------------------------------------------------
+
+    def test_no_compatibility_path_ever_retries(self) -> None:
+        for name, body in (
+            ("accepted-but-malformed", self.data_voc({"id": ""})),
+            ("rejected-location", {"result": {"voc": self.voc_record()}}),
+            ("no-fallback", {"voc": SERVER_BODY_SENTINEL, "data": {"voc": self.voc_record()}}),
+        ):
+            with self.subTest(case=name):
+                summary, transport = self.failure_summary(body)
+                self.assertEqual(summary["requests_attempted"], 1)
+                self.assertEqual(summary["requests_completed"], 1)
+                self.assertEqual(len(transport.requests), 1)
+                self.assertEqual(transport.requests[0].method, "GET")
+        _result, transport = self.run_success(self.data_voc_responses())
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(
+            [request.method for request in transport.requests], ["GET"] * 3
+        )
+
+    def test_successful_data_voc_output_reveals_nothing_private(self) -> None:
+        result, _transport = self.run_success(self.data_voc_responses())
+        rendered = self.rendered_result(result)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        for secret in (
+            "data",
+            self.VOCABULARY_ID,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+            FAKE_TOKEN,
+            ACCOUNT_LABEL,
+        ):
+            self.assertNotIn(secret, rendered)
+        digest = hashlib.sha256(COMPAT_VALUE_SENTINEL.encode("utf-8")).hexdigest()
+        self.assertNotIn(digest, rendered)
+        self.assertNotIn(digest[:16], rendered)
+        # The project-owned shape summary stays exactly what it was.
+        self.assertEqual(
+            result.safe_summary()["response_shapes"]["vocabulary"],
+            {
+                "canonical_key": "voc",
+                "canonical_key_present": True,
+                "unknown_top_level_field_count": 0,
+            },
+        )
+
+    def test_cli_success_prints_one_sanitized_object_and_exits_zero(self) -> None:
+        transport = FakeTransport(self.data_voc_responses())
+        exit_code, stdout, stderr = self.probe_suite().run_cli(transport)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(transport.requests), 3)
+        rendered = stdout + stderr
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        for secret in (
+            self.VOCABULARY_ID,
+            self.PRIVATE_INTERPRETATION,
+            self.PRIVATE_PHRASE,
+        ):
+            self.assertNotIn(secret, rendered)
+        self.assertNotIn("Traceback", rendered)
+
+    # ------------------------------------------------------------------
+    # Untouched neighbours
+    # ------------------------------------------------------------------
+
+    def test_interpretations_and_phrases_parsing_is_untouched(self) -> None:
+        """We have production evidence for the vocabulary endpoint only."""
+        documented = self.responses()
+        for name, responses, stage in (
+            (
+                "interpretations-wrapped",
+                [
+                    harness.HttpResponse(200, self.data_voc(self.voc_record())),
+                    harness.HttpResponse(
+                        200, {"data": {"interpretations": [self.interpretation_record()]}}
+                    ),
+                ],
+                "interpretations",
+            ),
+            (
+                "phrases-wrapped",
+                [
+                    harness.HttpResponse(200, self.data_voc(self.voc_record())),
+                    documented[1],
+                    harness.HttpResponse(
+                        200, {"data": {"phrases": [self.phrase_record()]}}
+                    ),
+                ],
+                "phrases",
+            ),
+        ):
+            with self.subTest(case=name):
+                failure, _transport = self.probe_suite().run_failure(responses)
+                summary = failure.safe_summary()
+                self.assertEqual(summary["failure_stage"], stage)
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertIsNone(summary["response_envelope"])
+
+    def test_pr15_body_io_behavior_remains_unchanged(self) -> None:
+        suite = self.issue14_suite()
+        for name, error in suite.io_errors():
+            for status in (200, 401):
+                with self.subTest(error=name, status=status):
+                    failure, state = suite.run_production_probe(
+                        [{"status": status, "body": error}]
+                    )
+                    summary = failure.safe_summary()
+                    self.assertEqual(summary["failure_class"], "transport")
+                    self.assertIsNone(summary["http_status"])
+                    self.assertIsNone(summary["schema_reason"])
+                    self.assertIsNone(summary["response_envelope"])
+                    self.assertEqual(summary["requests_completed"], 0)
+                    self.assertEqual(state["reads"], 1)
 
     def test_no_maimemo_request_is_possible_under_the_process_guard(self) -> None:
         self.assertEqual(os.environ.get("MOMO_TEST_NETWORK_DISABLED"), "1")
