@@ -76,6 +76,43 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "issue2-smoke-input.example.json"
 PRIVATE_STATE_ROOT = ROOT / "artifacts" / "private"
 
+# Issue #16: the closed, project-owned vocabulary/schema reason enum.
+#
+# Each constant names one reviewed checkpoint of *our own* validation. No server
+# key, server value, decoder message or byte fragment ever becomes one of these
+# strings: a reason is always selected by identity from this tuple, so a
+# diagnostic can only ever emit a literal defined in this file.
+SCHEMA_REASON_BODY_INVALID_UTF8 = "body-invalid-utf8"
+SCHEMA_REASON_BODY_INVALID_JSON = "body-invalid-json"
+SCHEMA_REASON_BODY_NOT_OBJECT = "body-not-object"
+SCHEMA_REASON_BODY_TOO_LARGE = "body-too-large"
+SCHEMA_REASON_MISSING_VOC = "missing-voc"
+SCHEMA_REASON_VOC_NOT_OBJECT = "voc-not-object"
+SCHEMA_REASON_VOC_ID_MISSING_OR_NOT_STRING = "voc-id-missing-or-not-string"
+SCHEMA_REASON_VOC_ID_EMPTY = "voc-id-empty"
+SCHEMA_REASON_VOC_ID_LOCAL_POLICY = "voc-id-local-policy"
+SCHEMA_REASON_SPELLING_MISSING_OR_NOT_STRING = "spelling-missing-or-not-string"
+SCHEMA_REASON_SPELLING_LOCAL_POLICY = "spelling-local-policy"
+SCHEMA_REASON_SPELLING_MISMATCH = "spelling-mismatch"
+SCHEMA_REASON_TOP_LEVEL_RESPONSE_POLICY = "top-level-response-policy"
+SCHEMA_REASON_OTHER = "other-reviewed-schema"
+READ_ONLY_SCHEMA_REASONS: tuple[str, ...] = (
+    SCHEMA_REASON_BODY_INVALID_UTF8,
+    SCHEMA_REASON_BODY_INVALID_JSON,
+    SCHEMA_REASON_BODY_NOT_OBJECT,
+    SCHEMA_REASON_BODY_TOO_LARGE,
+    SCHEMA_REASON_MISSING_VOC,
+    SCHEMA_REASON_VOC_NOT_OBJECT,
+    SCHEMA_REASON_VOC_ID_MISSING_OR_NOT_STRING,
+    SCHEMA_REASON_VOC_ID_EMPTY,
+    SCHEMA_REASON_VOC_ID_LOCAL_POLICY,
+    SCHEMA_REASON_SPELLING_MISSING_OR_NOT_STRING,
+    SCHEMA_REASON_SPELLING_LOCAL_POLICY,
+    SCHEMA_REASON_SPELLING_MISMATCH,
+    SCHEMA_REASON_TOP_LEVEL_RESPONSE_POLICY,
+    SCHEMA_REASON_OTHER,
+)
+
 
 class SafetyError(RuntimeError):
     """A fail-closed safety check rejected the requested action."""
@@ -92,22 +129,43 @@ class TransportError(RuntimeError):
 class TransportResponseError(TransportError):
     """A completely received response was rejected on its content.
 
-    It carries only the numeric HTTP status, so the Issue #14 read-only
-    diagnostic can still report that a response existed when the body was
-    oversized, invalid UTF-8, invalid JSON or not a JSON object, and for a
-    redirect whose body is deliberately never read.
+    It carries only the numeric HTTP status and one project-owned
+    ``schema_reason`` constant, so the Issue #14/#16 read-only diagnostic can
+    still report that a response existed, and why its content was unusable, when
+    the body was oversized, invalid UTF-8, invalid JSON or not a JSON object, and
+    for a redirect whose body is deliberately never read.
 
     It is deliberately **not** used for transport I/O failures. A body read that
     times out, resets or ends early never crossed the transport completion
-    boundary, so it stays a plain :class:`TransportError` with no status at all.
+    boundary, so it stays a plain :class:`TransportError` with no status and no
+    reason at all.
 
     Every write-path handler catches ``TransportError`` and therefore treats this
     narrower subclass identically.
     """
 
-    def __init__(self, http_status: Any) -> None:
+    def __init__(self, http_status: Any, schema_reason: Any = None) -> None:
         super().__init__("response was rejected before use; outcome may be unknown")
         self.http_status = _plain_http_status(http_status)
+        self.schema_reason = _pinned_schema_reason(schema_reason)
+
+
+class SchemaReasonError(SafetyError):
+    """A reviewed schema checkpoint rejected a response, naming the checkpoint.
+
+    The attached ``schema_reason`` is always one of the module constants in
+    :data:`READ_ONLY_SCHEMA_REASONS`, pinned by identity, and the message never
+    interpolates a server-provided value. It subclasses :class:`SafetyError`, so
+    every existing caller that expects a fail-closed ``SafetyError`` from the
+    read-only validators keeps its current behavior.
+    """
+
+    def __init__(self, schema_reason: Any, message: str) -> None:
+        super().__init__(message)
+        pinned = _pinned_schema_reason(schema_reason)
+        if pinned is None:
+            raise SafetyError("schema reason is outside the fixed project enum")
+        self.schema_reason = pinned
 
 
 class UnknownOutcomeError(SafetyError):
@@ -130,6 +188,30 @@ def _plain_http_status(value: Any) -> int | None:
     if not 100 <= status <= 599:
         return None
     return status
+
+
+def _pinned_schema_reason(value: Any) -> str | None:
+    """Return the module-owned constant equal to ``value``, else ``None``.
+
+    Returning the constant *object* rather than the caller's string is what keeps
+    the enum project-owned: an injected transport, a subclassed exception or a
+    hostile response can never smuggle its own text through a reason field, even
+    when that text happens to compare equal to a documented reason.
+    """
+    if not isinstance(value, str):
+        return None
+    return next((item for item in READ_ONLY_SCHEMA_REASONS if item == value), None)
+
+
+def _schema_reason_of(error: BaseException) -> str:
+    """Name the reviewed checkpoint an already-rejected response failed.
+
+    Anything that is not a recognized project-owned reason — including an
+    external exception that merely happens to carry a ``schema_reason``
+    attribute — collapses to the closed fallback constant.
+    """
+    pinned = _pinned_schema_reason(getattr(error, "schema_reason", None))
+    return SCHEMA_REASON_OTHER if pinned is None else pinned
 
 
 def _validate_read_only_origin_contract() -> None:
@@ -520,22 +602,39 @@ class ProductionHttpTransport:
 
             # Past this point the response body has been completely received (or
             # deliberately not read, for a redirect), so only content rejections
-            # remain and they may keep the numeric status.
+            # remain and they may keep the numeric status. Each rejection also
+            # names one project-owned reason constant (Issue #16); no decoder
+            # message, byte fragment, length or body content is carried.
             decoded: Any = None
-            rejected = (
-                is_redirect
-                or not isinstance(raw, (bytes, bytearray))
-                or len(raw) > MAX_RESPONSE_BYTES
-            )
-            if not rejected:
+            rejected = True
+            # A redirect is reported by status number alone, so it carries no
+            # schema reason: it never becomes a schema failure.
+            reason: str | None = None
+            if is_redirect:
+                pass
+            elif not isinstance(raw, (bytes, bytearray)):
+                reason = SCHEMA_REASON_OTHER
+            elif len(raw) > MAX_RESPONSE_BYTES:
+                reason = SCHEMA_REASON_BODY_TOO_LARGE
+            else:
                 try:
-                    decoded = json.loads(bytes(raw).decode("utf-8")) if raw else {}
+                    text = bytes(raw).decode("utf-8") if raw else ""
+                except UnicodeDecodeError:
+                    reason = SCHEMA_REASON_BODY_INVALID_UTF8
                 except Exception:
-                    rejected = True
+                    reason = SCHEMA_REASON_OTHER
                 else:
-                    rejected = not isinstance(decoded, dict)
+                    try:
+                        decoded = json.loads(text) if text else {}
+                    except Exception:
+                        reason = SCHEMA_REASON_BODY_INVALID_JSON
+                    else:
+                        if isinstance(decoded, dict):
+                            rejected = False
+                        else:
+                            reason = SCHEMA_REASON_BODY_NOT_OBJECT
             if rejected:
-                raise TransportResponseError(status)
+                raise TransportResponseError(status, reason)
             return HttpResponse(status=response.status, body=decoded)
         finally:
             connection.close()
@@ -1147,12 +1246,18 @@ def _validate_read_only_body(body: Any) -> Mapping[str, Any]:
     if not isinstance(body, Mapping) or not all(
         isinstance(key, str) for key in body
     ):
-        raise SafetyError("read-only response is not a JSON object with string keys")
+        raise SchemaReasonError(
+            SCHEMA_REASON_BODY_NOT_OBJECT,
+            "read-only response is not a JSON object with string keys",
+        )
     if any(
         any(term in key.casefold() for term in ("authorization", "cookie", "token"))
         for key in body
     ):
-        raise SafetyError("read-only response contains a sensitive top-level field")
+        raise SchemaReasonError(
+            SCHEMA_REASON_TOP_LEVEL_RESPONSE_POLICY,
+            "read-only response contains a sensitive top-level field",
+        )
     return body
 
 
@@ -1183,6 +1288,77 @@ def _require_read_success(response: Any) -> HttpResponse:
         raise SafetyError("read-only request returned a non-success status")
     _validate_read_only_body(response.body)
     return response
+
+
+def _probe_vocabulary_record_id(value: Any) -> str:
+    """Classify the documented ``voc.id`` against the unchanged local policy.
+
+    Issue #16 deliberately does **not** relax :func:`_safe_record_id`. This only
+    splits the single existing rejection into the three checkpoints that let the
+    next owner-authorized run say which one a live response violates. The
+    accepted set is exactly what it was: a string fully matching
+    ``[A-Za-z0-9_-]+``. The rejected value itself is never placed in the message,
+    the reason or any other output.
+    """
+    if not isinstance(value, str):
+        raise SchemaReasonError(
+            SCHEMA_REASON_VOC_ID_MISSING_OR_NOT_STRING,
+            "vocabulary id is missing or is not a string",
+        )
+    if not value:
+        raise SchemaReasonError(
+            SCHEMA_REASON_VOC_ID_EMPTY,
+            "vocabulary id is an empty string",
+        )
+    try:
+        return _safe_record_id(value, "vocabulary id")
+    except SafetyError:
+        raise SchemaReasonError(
+            SCHEMA_REASON_VOC_ID_LOCAL_POLICY,
+            "vocabulary id does not meet the local safe path-segment policy",
+        ) from None
+
+
+def _validate_probe_vocabulary(
+    body: Mapping[str, Any],
+    requested_word: str,
+) -> tuple[str, str]:
+    """Return ``(voc id, returned spelling)`` or name the failed checkpoint.
+
+    The checkpoint order and the accepted set are identical to the previous
+    inline validation; only the rejection is now attributable.
+    """
+    if "voc" not in body:
+        raise SchemaReasonError(
+            SCHEMA_REASON_MISSING_VOC,
+            "vocabulary response does not contain the documented voc field",
+        )
+    vocabulary = body["voc"]
+    if not isinstance(vocabulary, Mapping):
+        raise SchemaReasonError(
+            SCHEMA_REASON_VOC_NOT_OBJECT,
+            "vocabulary response does not contain exactly one usable voc",
+        )
+    vocabulary_id = _probe_vocabulary_record_id(vocabulary.get("id"))
+    returned_spelling = vocabulary.get("spelling")
+    if not isinstance(returned_spelling, str):
+        raise SchemaReasonError(
+            SCHEMA_REASON_SPELLING_MISSING_OR_NOT_STRING,
+            "vocabulary spelling is missing or is not a string",
+        )
+    try:
+        normalized_returned = _normalize_probe_spelling(returned_spelling)
+    except SafetyError:
+        raise SchemaReasonError(
+            SCHEMA_REASON_SPELLING_LOCAL_POLICY,
+            "vocabulary spelling does not meet the local probe-word policy",
+        ) from None
+    if normalized_returned != _normalize_probe_spelling(requested_word):
+        raise SchemaReasonError(
+            SCHEMA_REASON_SPELLING_MISMATCH,
+            "vocabulary spelling does not match the requested word",
+        )
+    return vocabulary_id, returned_spelling
 
 
 READ_ONLY_STATUS_ENUMS: Mapping[str, tuple[str, ...]] = {
@@ -1381,6 +1557,13 @@ class ReadOnlyFailureDiagnostic:
     ``http_status`` is reported exactly for ``http-status`` and ``schema``, which
     are the two classes that by construction follow a received response; it is
     always ``None`` for ``transport`` and ``safety``.
+
+    ``schema_reason`` (Issue #16) names the single reviewed checkpoint a ``schema``
+    failure violated. It is a constant selected by identity from
+    :data:`READ_ONLY_SCHEMA_REASONS`, so it is non-``None`` exactly for ``schema``
+    and always ``None`` for ``transport``, ``http-status`` and ``safety``. It
+    describes *our* rule, never the value that broke it: no server field value,
+    key name, decoder text or body fragment can travel through it.
     """
 
     failure_stage: str
@@ -1388,6 +1571,7 @@ class ReadOnlyFailureDiagnostic:
     http_status: int | None
     requests_attempted: int
     requests_completed: int
+    schema_reason: str | None = None
 
     def __post_init__(self) -> None:
         # Store the module-level constants themselves, so the emitted values can
@@ -1432,6 +1616,17 @@ class ReadOnlyFailureDiagnostic:
             raise SafetyError("a reported HTTP status requires a completed request")
         else:
             object.__setattr__(self, "http_status", _plain_http_status(status))
+        # Store the module-level constant itself, so an emitted reason can never
+        # be a caller-supplied string that merely compares equal.
+        reason = _pinned_schema_reason(self.schema_reason)
+        if self.failure_class == "schema":
+            if reason is None:
+                raise SafetyError(
+                    "a schema failure must name one reviewed project-owned reason"
+                )
+        elif self.schema_reason is not None:
+            raise SafetyError("only a schema failure may report a schema reason")
+        object.__setattr__(self, "schema_reason", reason)
 
     def safe_summary(self) -> dict[str, Any]:
         return {
@@ -1440,6 +1635,7 @@ class ReadOnlyFailureDiagnostic:
             "failure_stage": self.failure_stage,
             "failure_class": self.failure_class,
             "http_status": self.http_status,
+            "schema_reason": self.schema_reason,
             "requests_attempted": self.requests_attempted,
             "requests_completed": self.requests_completed,
         }
@@ -1513,6 +1709,7 @@ class _ReadOnlyProbeProgress:
         self,
         failure_class: str,
         http_status: int | None = None,
+        schema_reason: str | None = None,
     ) -> ReadOnlyProbeFailure:
         return ReadOnlyProbeFailure(
             ReadOnlyFailureDiagnostic(
@@ -1521,8 +1718,17 @@ class _ReadOnlyProbeProgress:
                 http_status=http_status,
                 requests_attempted=self.requests_attempted,
                 requests_completed=self.requests_completed,
+                schema_reason=schema_reason,
             )
         )
+
+    def schema_failure(
+        self,
+        http_status: int,
+        error: BaseException,
+    ) -> ReadOnlyProbeFailure:
+        """Report a schema failure, naming the reviewed checkpoint it violated."""
+        return self.failure("schema", http_status, _schema_reason_of(error))
 
 
 def _read_only_response_status(response: Any) -> int | None:
@@ -1555,7 +1761,7 @@ class ReadOnlyProbeExecutor:
                 raise progress.failure("transport") from None
             progress.responded()
             if 200 <= rejected_status < 300:
-                raise progress.failure("schema", rejected_status) from None
+                raise progress.schema_failure(rejected_status, rejected) from None
             raise progress.failure("http-status", rejected_status) from None
         except SafetyError:
             raise progress.failure("safety") from None
@@ -1569,8 +1775,8 @@ class ReadOnlyProbeExecutor:
             raise progress.failure("http-status", status) from None
         try:
             _require_read_success(response)
-        except Exception:
-            raise progress.failure("schema", status) from None
+        except Exception as rejected_body:
+            raise progress.schema_failure(status, rejected_body) from None
         return response, status
 
     def execute(
@@ -1613,23 +1819,16 @@ class ReadOnlyProbeExecutor:
             credential,
         )
         try:
-            vocabulary = vocabulary_response.body.get("voc")
-            if not isinstance(vocabulary, Mapping):
-                raise SafetyError(
-                    "vocabulary response does not contain exactly one usable voc"
-                )
-            vocabulary_id = _safe_record_id(vocabulary.get("id"), "vocabulary id")
-            returned_spelling = vocabulary.get("spelling")
-            if not isinstance(returned_spelling, str) or (
-                _normalize_probe_spelling(returned_spelling)
-                != _normalize_probe_spelling(requested_word)
-            ):
-                raise SafetyError("vocabulary spelling does not match the requested word")
+            vocabulary_id, returned_spelling = _validate_probe_vocabulary(
+                vocabulary_response.body, requested_word
+            )
             vocabulary_shape = _read_only_response_shape(
                 vocabulary_response.body, "vocabulary"
             )
-        except Exception:
-            raise progress.failure("schema", vocabulary_status) from None
+        except Exception as rejected_vocabulary:
+            raise progress.schema_failure(
+                vocabulary_status, rejected_vocabulary
+            ) from None
 
         try:
             interpretation_request = HttpRequest(
@@ -1656,8 +1855,10 @@ class ReadOnlyProbeExecutor:
                 "interpretations",
                 inspect_highlight=False,
             )
-        except Exception:
-            raise progress.failure("schema", interpretation_status) from None
+        except Exception as rejected_interpretations:
+            raise progress.schema_failure(
+                interpretation_status, rejected_interpretations
+            ) from None
 
         try:
             phrase_request = HttpRequest(
@@ -1706,8 +1907,8 @@ class ReadOnlyProbeExecutor:
                     "phrases": phrase_shape,
                 },
             )
-        except Exception:
-            raise progress.failure("schema", phrase_status) from None
+        except Exception as rejected_phrases:
+            raise progress.schema_failure(phrase_status, rejected_phrases) from None
         if _contains_credential_material(result.safe_summary(), credential.token):
             raise progress.failure("safety") from None
         return result
