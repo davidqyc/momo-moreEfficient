@@ -79,6 +79,52 @@ read-only transport 门禁拒绝 POST、PUT、PATCH 和 DELETE；标准库 HTTPS
 
 未来第一次实际只读运行仍需单独获得所有者明确授权。届时操作者应先在墨墨 App 人工确认登录的是专用副账号，再重新检查官方平台是否仍无强制按量 API 费用、当前条款是否允许个人测试账号用途；任一项不明确或出现强制收费即停止。随后在本地交互式终端运行显式子命令、隐藏输入副账号 Token、核对脱敏确认绑定并逐字确认。该指纹门禁只能防止过程中换错凭证，不能代替仍然**没有找到**的官方账号身份接口。
 
+### 2.4 Issue #14 只读失败的脱敏诊断（本轮同样为零真实请求）
+
+Issue #13 的第一次真实副账号 GET-only 运行在本地隐藏 Token 与逐字确认之后失败，但当时 CLI 把所有确认后失败都压成一句 `ERROR: read-only probe stopped safely; no retry was attempted.`，无法区分是 transport 初始化、三条 GET 中的哪一条、HTTP 状态校验还是 schema 校验。Issue #14 用一个项目自有的窄诊断替换该文案，使第二次运行有证据依据，而不是盲目重试。
+
+失败时普通输出只打印一个脱敏 JSON 对象，然后以非零退出码结束：
+
+```json
+{
+  "mode": "read-only-probe",
+  "status": "failed",
+  "failure_stage": "vocabulary",
+  "failure_class": "http-status",
+  "http_status": 403,
+  "requests_attempted": 1,
+  "requests_completed": 1
+}
+```
+
+`failure_stage` 只取项目自有固定枚举 `transport-init`、`vocabulary`、`interpretations`、`phrases`。`transport-init` 表示第一条已复核 GET 尚未派发（transport 构造失败，或 origin/门禁等本地前置校验失败）。
+
+`failure_class` 只取项目自有固定枚举，映射规则固定且可测：
+
+- `transport`：没有拿到可用响应——transport 构造失败、transport 抛出、或返回的对象不是带纯数字状态的结构合法响应；
+- `http-status`：收到了响应但数字状态不在 2xx。3xx 也归入此类，只报状态数字，绝不读取或输出跳转目标；
+- `schema`：收到 2xx，但既有的结构校验拒绝了它（对象形状、记录数组、记录 ID、端点固定 status 枚举、拼写匹配、例句/highlight 结构、正文无法解析为 JSON 对象）；
+- `safety`：本地不变量拒绝了本次运行——origin/门禁/逐字确认校验、read-only 门禁拒绝派发的请求，或最终凭证残留自检。
+
+绝不把 `http.client`、socket、SSL、JSON decoder 或其他库的异常类型名当作 `failure_class`。
+
+`http_status` 只在 `http-status` 和 `schema` 两类出现，因为按构造它们必然发生在收到响应之后；`transport` 和 `safety` 一律为 `null`。输出只含数字状态码，不含 reason phrase、响应正文、正文片段、JSON 错误、响应头、`Location`、服务器字符串或服务器自定义错误码。
+
+计数器语义固定：`requests_attempted` 在把一条已复核 GET 交给受门禁 transport 之前立即加一；`requests_completed` 只在该 transport 返回带纯数字状态的响应之后加一，即 transport 层完成边界，早于 status 与 schema 校验。典型取值：transport 初始化失败为 0/0；vocabulary 连接失败为 1/0；vocabulary 返回 403 或 2xx 后 schema 失败均为 1/1；vocabulary 成功后 interpretations 连接失败为 2/1；三条 GET 都返回后 phrases schema 失败为 3/3。任何失败都立即停止，不自动重试以“补齐”计数。
+
+为了让真实运行也能区分“响应存在”与“连不上”，标准库 transport 在 `getresponse()` 之后只记住数字状态。这里有一条关键分界线（PR #15 独立审阅提出的阻断项）：
+
+**transport I/O 未完成 ≠ 完整响应但内容非法。**
+
+- `connect()`、`request()`、`getresponse()` 和响应正文读取阶段的 I/O 失败——超时、连接重置、SSL 失败、`http.client.IncompleteRead`、远端断开——一律保持普通 `TransportError`，**即使状态行已经到达**。这类请求没有跨过既定的 transport 完成边界，因此诊断为 `failure_class = transport`、`http_status = null`，且当前这条请求**不计入** `requests_completed`（例如 vocabulary 为 1/0）。
+- 只有在正文已经完整取得（或按规定根本不读取）之后，响应才可能带着数字状态被拒绝：抛出只携带该数字的项目自有 `TransportResponseError`。适用情形为 3xx 跳转（不读正文）、非 2xx、完整读取后超长、非法 UTF-8、非法 JSON、解码结果不是对象。2xx + 完整正文但内容不合约映射为 `schema` + 数字 2xx；非 2xx 映射为 `http-status` + 数字状态码。
+
+`TransportResponseError` 是 `TransportError` 的子类，写入路径的所有 `except TransportError` 处理保持原样，写入安全语义本轮未改动。两类异常的原始文案都不外泄。
+
+原始外部错误信息全程不外泄：诊断对象只包含固定枚举常量和本地计数的小整数；异常文案是固定的项目自有句子；所有内部转换使用 `raise ... from None`，并在离开 executor 前显式断开 `__cause__`/`__context__`，使被拒绝的库异常对象无法再从诊断异常上取回。诊断不写入 `artifacts/private/`，不落盘，不新增任何打印原始网络数据的 debug 模式。成功路径输出保持不变。
+
+Issue #14 的实现、测试与审阅全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。第二次真实 GET-only 运行仍属 Issue #13，需要单独授权。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段

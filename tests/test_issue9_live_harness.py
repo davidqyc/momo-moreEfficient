@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
+import ssl
 from dataclasses import replace
 from pathlib import Path
 import shutil
@@ -10,6 +12,7 @@ import socket
 import stat
 import sys
 import tempfile
+import traceback
 import unittest
 from unittest import mock
 
@@ -1961,7 +1964,9 @@ class Issue9SafetyTests(unittest.TestCase):
         self.assertEqual(list(collision_root.iterdir()), [])
 
 
-class Issue11ReadOnlyProbeTests(unittest.TestCase):
+class ReadOnlyProbeFixtures:
+    """Shared read-only probe fixtures for the Issue #11 and #14 suites."""
+
     WORD = "sampleword"
     RETURNED_WORD = "SampleWord"
     VOCABULARY_ID = "INVALID_ISSUE11_VOCABULARY_ID"
@@ -2063,6 +2068,7 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
             "--allow-network",
         ]
 
+class Issue11ReadOnlyProbeTests(ReadOnlyProbeFixtures, unittest.TestCase):
     def test_offline_modes_never_call_getpass_or_transport(self) -> None:
         def forbidden_prompt(_message: str) -> str:
             raise AssertionError("offline mode called a hidden prompt")
@@ -3139,6 +3145,989 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
                 rendered = f"{context.exception}{context.exception!r}"
                 self.assertNotIn(forbidden, rendered)
                 self.assertNotIn(FAKE_TOKEN, rendered)
+
+
+SERVER_KEY_SENTINEL = "PRIVATE-SERVER-KEY-SENTINEL"
+SERVER_BODY_SENTINEL = "PRIVATE SERVER BODY SENTINEL"
+SERVER_MESSAGE_SENTINEL = "PRIVATE SERVER ERROR MESSAGE SENTINEL"
+REDIRECT_LOCATION_SENTINEL = "https://redirect-target.invalid/private-sentinel-path"
+TRANSPORT_EXCEPTION_SENTINEL = "PRIVATE TRANSPORT EXCEPTION SENTINEL"
+PRODUCTION_IO_SENTINEL = "PRIVATE-PRODUCTION-IO-SENTINEL"
+SENTINELS = (
+    FAKE_TOKEN,
+    SERVER_KEY_SENTINEL,
+    SERVER_BODY_SENTINEL,
+    SERVER_MESSAGE_SENTINEL,
+    REDIRECT_LOCATION_SENTINEL,
+    TRANSPORT_EXCEPTION_SENTINEL,
+    PRODUCTION_IO_SENTINEL,
+)
+
+
+class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
+    """Issue #14: sanitized stage/class/status/counter diagnostics.
+
+    Every case uses the fake transport plus the process-level no-network guard;
+    no real credential is read and no Maimemo request is ever sent.
+    """
+
+    def hostile_body(self) -> dict[str, object]:
+        """A server body carrying every sentinel the diagnostic must suppress."""
+        return {
+            SERVER_KEY_SENTINEL: SERVER_BODY_SENTINEL,
+            "error": FAKE_TOKEN,
+            "message": SERVER_MESSAGE_SENTINEL,
+            "location": REDIRECT_LOCATION_SENTINEL,
+        }
+
+    def expected(
+        self,
+        stage: str,
+        failure_class: str,
+        http_status: int | None,
+        attempted: int,
+        completed: int,
+    ) -> dict[str, object]:
+        return {
+            "mode": "read-only-probe",
+            "status": "failed",
+            "failure_stage": stage,
+            "failure_class": failure_class,
+            "http_status": http_status,
+            "requests_attempted": attempted,
+            "requests_completed": completed,
+        }
+
+    def failure_cases(self) -> list[tuple[str, list[object], dict[str, object], int]]:
+        """(name, queued transport results, expected diagnostic, request count)."""
+        valid = self.responses()
+        cases: list[tuple[str, list[object], dict[str, object], int]] = [
+            (
+                "vocabulary-transport",
+                [harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL)],
+                self.expected("vocabulary", "transport", None, 1, 0),
+                1,
+            ),
+            (
+                "vocabulary-transport-oserror",
+                [OSError(TRANSPORT_EXCEPTION_SENTINEL)],
+                self.expected("vocabulary", "transport", None, 1, 0),
+                1,
+            ),
+            (
+                "vocabulary-transport-safety",
+                [harness.SafetyError(TRANSPORT_EXCEPTION_SENTINEL)],
+                self.expected("vocabulary", "safety", None, 1, 0),
+                1,
+            ),
+            (
+                "vocabulary-non-response-object",
+                [{"status": 200, SERVER_KEY_SENTINEL: SERVER_BODY_SENTINEL}],
+                self.expected("vocabulary", "transport", None, 1, 0),
+                1,
+            ),
+            (
+                "vocabulary-out-of-range-status",
+                [harness.HttpResponse(999, self.hostile_body())],
+                self.expected("vocabulary", "transport", None, 1, 0),
+                1,
+            ),
+            (
+                "vocabulary-redirect",
+                [harness.HttpResponse(302, self.hostile_body())],
+                self.expected("vocabulary", "http-status", 302, 1, 1),
+                1,
+            ),
+            (
+                "vocabulary-schema-missing-voc",
+                [harness.HttpResponse(200, self.hostile_body())],
+                self.expected("vocabulary", "schema", 200, 1, 1),
+                1,
+            ),
+            (
+                "vocabulary-schema-spelling-mismatch",
+                self.responses(
+                    vocabulary={"id": self.VOCABULARY_ID, "spelling": "otherword"}
+                ),
+                self.expected("vocabulary", "schema", 200, 1, 1),
+                1,
+            ),
+            (
+                "vocabulary-response-rejected-401",
+                [harness.TransportResponseError(401)],
+                self.expected("vocabulary", "http-status", 401, 1, 1),
+                1,
+            ),
+            (
+                "vocabulary-response-rejected-without-status",
+                [harness.TransportResponseError(None)],
+                self.expected("vocabulary", "transport", None, 1, 0),
+                1,
+            ),
+            (
+                "interpretations-transport",
+                [valid[0], harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL)],
+                self.expected("interpretations", "transport", None, 2, 1),
+                2,
+            ),
+            (
+                "interpretations-response-rejected-redirect",
+                [valid[0], harness.TransportResponseError(302)],
+                self.expected("interpretations", "http-status", 302, 2, 2),
+                2,
+            ),
+            (
+                "phrases-response-rejected-undecodable-success",
+                [valid[0], valid[1], harness.TransportResponseError(200)],
+                self.expected("phrases", "schema", 200, 3, 3),
+                3,
+            ),
+            (
+                "interpretations-schema-not-an-array",
+                self.responses(interpretations={"nested": SERVER_BODY_SENTINEL}),
+                self.expected("interpretations", "schema", 200, 2, 2),
+                2,
+            ),
+            (
+                "interpretations-schema-unknown-status",
+                self.responses(
+                    interpretations=[
+                        self.interpretation_record(status=SERVER_BODY_SENTINEL)
+                    ]
+                ),
+                self.expected("interpretations", "schema", 200, 2, 2),
+                2,
+            ),
+            (
+                "phrases-transport",
+                [
+                    valid[0],
+                    valid[1],
+                    harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL),
+                ],
+                self.expected("phrases", "transport", None, 3, 2),
+                3,
+            ),
+            (
+                "phrases-schema-missing-highlight",
+                self.responses(
+                    phrases=[
+                        {
+                            "id": "INVALID_ISSUE14_PHRASE_ID",
+                            "status": "PUBLISHED",
+                            "phrase": SERVER_BODY_SENTINEL,
+                        }
+                    ]
+                ),
+                self.expected("phrases", "schema", 200, 3, 3),
+                3,
+            ),
+            (
+                "phrases-schema-unsafe-id",
+                self.responses(
+                    phrases=[
+                        {
+                            "id": "../unsafe",
+                            "status": "PUBLISHED",
+                            "phrase": SERVER_BODY_SENTINEL,
+                            "highlight": [],
+                        }
+                    ]
+                ),
+                self.expected("phrases", "schema", 200, 3, 3),
+                3,
+            ),
+        ]
+        for status in (401, 403, 404, 429, 500, 503):
+            cases.append(
+                (
+                    f"vocabulary-http-{status}",
+                    [harness.HttpResponse(status, self.hostile_body())],
+                    self.expected("vocabulary", "http-status", status, 1, 1),
+                    1,
+                )
+            )
+        for status in (401, 403, 429, 503):
+            cases.append(
+                (
+                    f"interpretations-http-{status}",
+                    [valid[0], harness.HttpResponse(status, self.hostile_body())],
+                    self.expected("interpretations", "http-status", status, 2, 2),
+                    2,
+                )
+            )
+            cases.append(
+                (
+                    f"phrases-http-{status}",
+                    [
+                        valid[0],
+                        valid[1],
+                        harness.HttpResponse(status, self.hostile_body()),
+                    ],
+                    self.expected("phrases", "http-status", status, 3, 3),
+                    3,
+                )
+            )
+        return cases
+
+    def run_failure(
+        self,
+        responses: list[object],
+    ) -> tuple[harness.ReadOnlyProbeFailure, FakeTransport]:
+        test_credential = self.probe_credential()
+        transport = FakeTransport(list(responses))
+        with self.assertRaises(harness.ReadOnlyProbeFailure) as context:
+            harness.ReadOnlyProbeExecutor(transport).execute(
+                test_credential,
+                self.probe_gate(test_credential),
+            )
+        return context.exception, transport
+
+    def rendered_failure(self, failure: harness.ReadOnlyProbeFailure) -> str:
+        return "".join(
+            (
+                json.dumps(failure.safe_summary(), ensure_ascii=False),
+                str(failure),
+                repr(failure),
+                str(failure.diagnostic),
+                repr(failure.diagnostic),
+                "".join(
+                    traceback.format_exception(
+                        type(failure), failure, failure.__traceback__
+                    )
+                ),
+            )
+        )
+
+    def test_every_failure_point_reports_its_stage_class_status_and_counters(
+        self,
+    ) -> None:
+        for name, responses, expected, request_count in self.failure_cases():
+            with self.subTest(case=name):
+                failure, transport = self.run_failure(responses)
+                self.assertEqual(failure.safe_summary(), expected)
+                self.assertEqual(len(transport.requests), request_count)
+
+    def test_no_failure_point_retries_the_failed_get(self) -> None:
+        for name, responses, expected, request_count in self.failure_cases():
+            with self.subTest(case=name):
+                failure, transport = self.run_failure(responses)
+                methods = [request.method for request in transport.requests]
+                paths = [request.path for request in transport.requests]
+                self.assertEqual(methods, ["GET"] * request_count)
+                self.assertEqual(len(set(paths)), len(paths))
+                self.assertEqual(
+                    failure.safe_summary()["requests_attempted"],
+                    request_count,
+                )
+                self.assertEqual(expected["requests_attempted"], request_count)
+
+    def test_no_sentinel_reaches_any_failure_representation(self) -> None:
+        for name, responses, _expected, _count in self.failure_cases():
+            with self.subTest(case=name):
+                failure, _transport = self.run_failure(responses)
+                rendered = self.rendered_failure(failure)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+                self.assertNotIn(ACCOUNT_LABEL, rendered)
+                self.assertNotIn(self.VOCABULARY_ID, rendered)
+                self.assertNotIn(self.PRIVATE_INTERPRETATION, rendered)
+                self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+                self.assertIsNone(failure.__cause__)
+                self.assertIsNone(failure.__context__)
+
+    def run_cli(
+        self,
+        transport_factory: object,
+    ) -> tuple[int, str, str]:
+        test_credential = self.probe_credential()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            exit_code = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: self.probe_gate(
+                    test_credential
+                ).expected_confirmation,
+                transport_factory=transport_factory,
+                stdin_isatty=lambda: True,
+            )
+        return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def cli_diagnostic(self, stdout: str) -> dict[str, object]:
+        """Parse the single sanitized JSON object printed after the preview."""
+        decoder = json.JSONDecoder()
+        index = stdout.index("{", stdout.index("}") + 1)
+        diagnostic, _end = decoder.raw_decode(stdout[index:])
+        return diagnostic
+
+    def test_transport_construction_failure_is_transport_init_with_zero_requests(
+        self,
+    ) -> None:
+        def failing_factory() -> harness.Transport:
+            raise RuntimeError(TRANSPORT_EXCEPTION_SENTINEL)
+
+        exit_code, stdout, stderr = self.run_cli(failing_factory)
+        self.assertEqual(exit_code, 4)
+        self.assertEqual(
+            self.cli_diagnostic(stdout),
+            self.expected("transport-init", "transport", None, 0, 0),
+        )
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, stdout + stderr)
+
+    def test_cli_prints_one_sanitized_object_for_every_failure_point(self) -> None:
+        for name, responses, expected, request_count in self.failure_cases():
+            with self.subTest(case=name):
+                transport = FakeTransport(list(responses))
+                exit_code, stdout, stderr = self.run_cli(lambda: transport)
+                self.assertEqual(exit_code, 4)
+                self.assertEqual(len(transport.requests), request_count)
+                self.assertEqual(self.cli_diagnostic(stdout), expected)
+                rendered = stdout + stderr
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+                self.assertNotIn(self.VOCABULARY_ID, rendered)
+                self.assertNotIn(self.PRIVATE_INTERPRETATION, rendered)
+                self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+                self.assertNotIn("Traceback", rendered)
+                self.assertNotIn("Error", stderr)
+
+    def test_redirect_reports_the_status_number_without_the_location(self) -> None:
+        responses = [harness.HttpResponse(302, {"location": REDIRECT_LOCATION_SENTINEL})]
+        failure, transport = self.run_failure(responses)
+        self.assertEqual(
+            failure.safe_summary(),
+            self.expected("vocabulary", "http-status", 302, 1, 1),
+        )
+        self.assertEqual(len(transport.requests), 1)
+        self.assertNotIn(REDIRECT_LOCATION_SENTINEL, self.rendered_failure(failure))
+
+        transport = FakeTransport(
+            [harness.HttpResponse(302, {"location": REDIRECT_LOCATION_SENTINEL})]
+        )
+        exit_code, stdout, stderr = self.run_cli(lambda: transport)
+        self.assertEqual(exit_code, 4)
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(
+            self.cli_diagnostic(stdout),
+            self.expected("vocabulary", "http-status", 302, 1, 1),
+        )
+        self.assertNotIn(REDIRECT_LOCATION_SENTINEL, stdout + stderr)
+        self.assertNotIn("redirect-target", stdout + stderr)
+
+    def test_unknown_server_json_key_never_reaches_a_diagnostic(self) -> None:
+        responses = [
+            harness.HttpResponse(
+                200,
+                {
+                    "voc": {"id": self.VOCABULARY_ID, "spelling": self.RETURNED_WORD},
+                    SERVER_KEY_SENTINEL: {"nested": SERVER_BODY_SENTINEL},
+                },
+            ),
+            harness.HttpResponse(
+                200,
+                {"interpretations": "not-an-array", SERVER_KEY_SENTINEL: {}},
+            ),
+        ]
+        failure, transport = self.run_failure(responses)
+        self.assertEqual(
+            failure.safe_summary(),
+            self.expected("interpretations", "schema", 200, 2, 2),
+        )
+        self.assertEqual(len(transport.requests), 2)
+        rendered = self.rendered_failure(failure)
+        self.assertNotIn(SERVER_KEY_SENTINEL, rendered)
+        self.assertNotIn(SERVER_BODY_SENTINEL, rendered)
+
+    def test_local_gate_rejection_is_a_safety_failure_with_no_request(self) -> None:
+        test_credential = self.probe_credential()
+        wrong_confirmation = harness._read_only_confirmation_for(
+            ACCOUNT_LABEL,
+            test_credential.fingerprint,
+            "differentword",
+        )
+        transport = FakeTransport(self.responses())
+        with self.assertRaises(harness.ReadOnlyProbeFailure) as context:
+            harness.ReadOnlyProbeExecutor(transport).execute(
+                test_credential,
+                self.probe_gate(test_credential, confirmation=wrong_confirmation),
+            )
+        self.assertEqual(
+            context.exception.safe_summary(),
+            self.expected("transport-init", "safety", None, 0, 0),
+        )
+        self.assertEqual(transport.requests, [])
+
+    def production_connection(
+        self,
+        status: object,
+        *,
+        body: bytes | None = None,
+    ) -> type:
+        """A fake http.client connection; the real socket layer is never used."""
+        sentinel_body = body
+
+        class FakeSocket:
+            def settimeout(self, _timeout: float) -> None:
+                return None
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.status = status
+                self.reads = 0
+
+            def read(self, _limit: int) -> bytes:
+                self.reads += 1
+                if sentinel_body is None:
+                    raise AssertionError("this response body must not be read")
+                return sentinel_body
+
+        class FakeConnection:
+            instances: list["FakeConnection"] = []
+
+            def __init__(self, host: str, *, timeout: float) -> None:
+                self.host = host
+                self.timeout = timeout
+                self.sock: FakeSocket | None = None
+                self.response = FakeResponse()
+                self.closed = False
+                self.__class__.instances.append(self)
+
+            def connect(self) -> None:
+                self.sock = FakeSocket()
+
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def getresponse(self) -> FakeResponse:
+                return self.response
+
+            def close(self) -> None:
+                self.closed = True
+
+        return FakeConnection
+
+    def test_production_transport_keeps_only_the_numeric_rejected_status(self) -> None:
+        request = harness.HttpRequest(
+            "GET",
+            "/open/api/v1/vocabulary?spelling=sampleword",
+        )
+        test_credential = self.probe_credential()
+        html_error = (
+            f"<html><body>{SERVER_BODY_SENTINEL} {SERVER_MESSAGE_SENTINEL}"
+            "</body></html>"
+        ).encode("utf-8")
+        cases = (
+            ("undecodable-401", 401, html_error, 401),
+            ("undecodable-503", 503, html_error, 503),
+            ("undecodable-success", 200, html_error, 200),
+            ("redirect", 302, None, 302),
+            ("non-numeric-status", "401 Unauthorized", None, None),
+        )
+        for name, status, body, expected_status in cases:
+            with self.subTest(case=name):
+                connection = self.production_connection(status, body=body)
+                with mock.patch.object(
+                    harness.http.client, "HTTPSConnection", connection
+                ), self.assertRaises(harness.TransportError) as context:
+                    harness.ProductionHttpTransport().send(request, test_credential)
+                rejected = context.exception
+                if expected_status is None:
+                    self.assertNotIsInstance(rejected, harness.TransportResponseError)
+                else:
+                    self.assertIsInstance(rejected, harness.TransportResponseError)
+                    self.assertEqual(rejected.http_status, expected_status)
+                self.assertTrue(connection.instances[-1].closed)
+                rendered = f"{rejected}{rejected!r}"
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+
+    def test_rejected_response_subclass_leaves_the_write_path_contract(self) -> None:
+        self.assertTrue(
+            issubclass(harness.TransportResponseError, harness.TransportError)
+        )
+        rejected = harness.TransportResponseError(403)
+        self.assertIsInstance(rejected, harness.TransportError)
+        self.assertEqual(rejected.http_status, 403)
+        for unusable in (None, True, "403", 42, 1000, -1):
+            with self.subTest(status=unusable):
+                self.assertIsNone(harness.TransportResponseError(unusable).http_status)
+
+    def production_connection_factory(
+        self,
+        behaviors: list[dict[str, object]],
+    ) -> tuple[type, dict[str, object]]:
+        """Fake `http.client` connection factory; no real socket is ever used.
+
+        Each behavior describes one sequential request. ``connect_error``,
+        ``request_error`` and ``getresponse_error`` raise at that phase; otherwise
+        ``status`` and ``body`` drive the response. A ``body`` that is an
+        exception raises during the body read, and a ``body`` of ``None`` asserts
+        that this response body must never be read at all.
+        """
+        state: dict[str, object] = {
+            "connections": 0,
+            "requests": 0,
+            "reads": 0,
+            "closed": 0,
+            "header_names": [],
+            "paths": [],
+        }
+
+        class FakeSocket:
+            def settimeout(self, _timeout: float) -> None:
+                return None
+
+        class FakeResponse:
+            def __init__(self, behavior: dict[str, object]) -> None:
+                self.status = behavior.get("status", 200)
+                self._body = behavior.get("body", b"{}")
+
+            def read(self, _limit: int) -> bytes:
+                state["reads"] += 1  # type: ignore[operator]
+                if isinstance(self._body, BaseException):
+                    raise self._body
+                if self._body is None:
+                    raise AssertionError("this response body must not be read")
+                return self._body
+
+        class FakeConnection:
+            def __init__(self, host: str, *, timeout: float) -> None:
+                index = state["connections"]
+                state["connections"] += 1  # type: ignore[operator]
+                if index >= len(behaviors):  # type: ignore[operator]
+                    raise AssertionError("the transport opened an extra connection")
+                self.host = host
+                self.timeout = timeout
+                self.sock: FakeSocket | None = None
+                self.behavior = behaviors[index]  # type: ignore[index]
+                self.closed = False
+
+            def connect(self) -> None:
+                error = self.behavior.get("connect_error")
+                if isinstance(error, BaseException):
+                    raise error
+                self.sock = FakeSocket()
+
+            def request(
+                self,
+                method: str,
+                path: str,
+                body: object = None,
+                headers: dict[str, str] | None = None,
+            ) -> None:
+                state["requests"] += 1  # type: ignore[operator]
+                state["paths"].append((method, path))  # type: ignore[union-attr]
+                # Header names only: a header value would hold the credential.
+                state["header_names"].append(  # type: ignore[union-attr]
+                    tuple(sorted(headers or {}))
+                )
+                error = self.behavior.get("request_error")
+                if isinstance(error, BaseException):
+                    raise error
+
+            def getresponse(self) -> FakeResponse:
+                error = self.behavior.get("getresponse_error")
+                if isinstance(error, BaseException):
+                    raise error
+                return FakeResponse(self.behavior)
+
+            def close(self) -> None:
+                self.closed = True
+                state["closed"] += 1  # type: ignore[operator]
+
+        return FakeConnection, state
+
+    def production_body(self, payload: dict[str, object]) -> bytes:
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def production_vocabulary_body(self) -> bytes:
+        return self.production_body(
+            {"voc": {"id": self.VOCABULARY_ID, "spelling": self.RETURNED_WORD}}
+        )
+
+    def production_interpretations_body(self) -> bytes:
+        return self.production_body(
+            {"interpretations": [self.interpretation_record()]}
+        )
+
+    def run_production_probe(
+        self,
+        behaviors: list[dict[str, object]],
+    ) -> tuple[harness.ReadOnlyProbeFailure, dict[str, object]]:
+        test_credential = self.probe_credential()
+        connection, state = self.production_connection_factory(behaviors)
+        with mock.patch.object(
+            harness.http.client, "HTTPSConnection", connection
+        ), self.assertRaises(harness.ReadOnlyProbeFailure) as context:
+            harness.ReadOnlyProbeExecutor(harness.ProductionHttpTransport()).execute(
+                test_credential,
+                self.probe_gate(test_credential),
+            )
+        return context.exception, state
+
+    def io_errors(self) -> tuple[tuple[str, BaseException], ...]:
+        """Transport-style body-read failures, each with a private sentinel."""
+        return (
+            ("timeout", TimeoutError(f"{PRODUCTION_IO_SENTINEL}-timeout")),
+            ("socket-timeout", socket.timeout(f"{PRODUCTION_IO_SENTINEL}-socket")),
+            (
+                "incomplete-read",
+                http.client.IncompleteRead(
+                    f"{PRODUCTION_IO_SENTINEL}-partial".encode("utf-8"), 4096
+                ),
+            ),
+            (
+                "connection-reset",
+                ConnectionResetError(f"{PRODUCTION_IO_SENTINEL}-reset"),
+            ),
+            ("ssl-failure", ssl.SSLError(f"{PRODUCTION_IO_SENTINEL}-ssl")),
+            ("remote-disconnect", OSError(f"{PRODUCTION_IO_SENTINEL}-disconnect")),
+        )
+
+    def test_body_read_io_failure_after_status_stays_transport(self) -> None:
+        """Issue #14 review blocker: a body-read failure is never `schema`."""
+        for name, error in self.io_errors():
+            for status in (200, 401):
+                with self.subTest(error=name, status=status):
+                    failure, state = self.run_production_probe(
+                        [{"status": status, "body": error}]
+                    )
+                    self.assertEqual(
+                        failure.safe_summary(),
+                        self.expected("vocabulary", "transport", None, 1, 0),
+                    )
+                    # Exactly one connection, one request, one read: no retry.
+                    self.assertEqual(state["connections"], 1)
+                    self.assertEqual(state["requests"], 1)
+                    self.assertEqual(state["reads"], 1)
+                    self.assertEqual(state["closed"], 1)
+                    self.assertEqual(
+                        state["paths"],
+                        [("GET", "/open/api/v1/vocabulary?spelling=sampleword")],
+                    )
+                    self.assertEqual(
+                        state["header_names"], [("Accept", "Authorization")]
+                    )
+                    rendered = self.rendered_failure(failure)
+                    for sentinel in SENTINELS:
+                        self.assertNotIn(sentinel, rendered)
+                    self.assertIsNone(failure.__cause__)
+                    self.assertIsNone(failure.__context__)
+
+    def test_connect_request_and_getresponse_failures_stay_transport(self) -> None:
+        cases = (
+            ("connect", "connect_error", 0, 0),
+            ("request", "request_error", 1, 0),
+            ("getresponse", "getresponse_error", 1, 0),
+        )
+        for name, key, expected_requests, expected_reads in cases:
+            with self.subTest(phase=name):
+                failure, state = self.run_production_probe(
+                    [
+                        {
+                            "status": 200,
+                            "body": self.production_vocabulary_body(),
+                            key: OSError(f"{PRODUCTION_IO_SENTINEL}-{name}"),
+                        }
+                    ]
+                )
+                self.assertEqual(
+                    failure.safe_summary(),
+                    self.expected("vocabulary", "transport", None, 1, 0),
+                )
+                self.assertEqual(state["connections"], 1)
+                self.assertEqual(state["requests"], expected_requests)
+                self.assertEqual(state["reads"], expected_reads)
+                self.assertEqual(state["closed"], 1)
+                rendered = self.rendered_failure(failure)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+
+    def test_completely_received_body_rejections_keep_the_numeric_status(self) -> None:
+        oversized = b'{"voc":"' + b"P" * (harness.MAX_RESPONSE_BYTES + 16) + b'"}'
+        hostile_json = self.production_body(
+            {
+                SERVER_KEY_SENTINEL: SERVER_BODY_SENTINEL,
+                "message": SERVER_MESSAGE_SENTINEL,
+            }
+        )
+        cases = (
+            (
+                "success-invalid-json",
+                200,
+                f"<html>{SERVER_BODY_SENTINEL}</html>".encode("utf-8"),
+                self.expected("vocabulary", "schema", 200, 1, 1),
+            ),
+            (
+                "success-not-an-object",
+                200,
+                self.production_body([SERVER_BODY_SENTINEL]),  # type: ignore[arg-type]
+                self.expected("vocabulary", "schema", 200, 1, 1),
+            ),
+            (
+                "success-invalid-utf8",
+                200,
+                b"\xff\xfe" + SERVER_BODY_SENTINEL.encode("utf-16"),
+                self.expected("vocabulary", "schema", 200, 1, 1),
+            ),
+            (
+                "success-oversized",
+                200,
+                oversized,
+                self.expected("vocabulary", "schema", 200, 1, 1),
+            ),
+            (
+                "unauthorized-invalid-json",
+                401,
+                f"<html>{SERVER_BODY_SENTINEL}</html>".encode("utf-8"),
+                self.expected("vocabulary", "http-status", 401, 1, 1),
+            ),
+            (
+                "unauthorized-valid-json",
+                401,
+                hostile_json,
+                self.expected("vocabulary", "http-status", 401, 1, 1),
+            ),
+            (
+                "unavailable-valid-json",
+                503,
+                hostile_json,
+                self.expected("vocabulary", "http-status", 503, 1, 1),
+            ),
+        )
+        for name, status, body, expected in cases:
+            with self.subTest(case=name):
+                failure, state = self.run_production_probe(
+                    [{"status": status, "body": body}]
+                )
+                self.assertEqual(failure.safe_summary(), expected)
+                self.assertEqual(state["connections"], 1)
+                self.assertEqual(state["reads"], 1)
+                rendered = self.rendered_failure(failure)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+
+    def test_production_redirect_keeps_the_status_and_never_reads_the_body(
+        self,
+    ) -> None:
+        for status in (301, 302, 307):
+            with self.subTest(status=status):
+                # body=None makes any read attempt fail the test outright.
+                failure, state = self.run_production_probe(
+                    [{"status": status, "body": None}]
+                )
+                self.assertEqual(
+                    failure.safe_summary(),
+                    self.expected("vocabulary", "http-status", status, 1, 1),
+                )
+                self.assertEqual(state["reads"], 0)
+                self.assertEqual(state["connections"], 1)
+                rendered = self.rendered_failure(failure)
+                self.assertNotIn(REDIRECT_LOCATION_SENTINEL, rendered)
+                self.assertNotIn("redirect-target", rendered)
+
+    def test_body_io_failure_on_a_later_get_keeps_the_earlier_counters(self) -> None:
+        read_error = TimeoutError(f"{PRODUCTION_IO_SENTINEL}-late")
+        interpretations_failure, state = self.run_production_probe(
+            [
+                {"status": 200, "body": self.production_vocabulary_body()},
+                {"status": 200, "body": read_error},
+            ]
+        )
+        self.assertEqual(
+            interpretations_failure.safe_summary(),
+            self.expected("interpretations", "transport", None, 2, 1),
+        )
+        self.assertEqual(state["connections"], 2)
+        self.assertEqual(state["reads"], 2)
+
+        phrases_failure, state = self.run_production_probe(
+            [
+                {"status": 200, "body": self.production_vocabulary_body()},
+                {"status": 200, "body": self.production_interpretations_body()},
+                {"status": 200, "body": ConnectionResetError(read_error.args[0])},
+            ]
+        )
+        self.assertEqual(
+            phrases_failure.safe_summary(),
+            self.expected("phrases", "transport", None, 3, 2),
+        )
+        self.assertEqual(state["connections"], 3)
+        self.assertEqual(state["reads"], 3)
+        for failure in (interpretations_failure, phrases_failure):
+            rendered = self.rendered_failure(failure)
+            for sentinel in SENTINELS:
+                self.assertNotIn(sentinel, rendered)
+
+    def test_production_body_io_failure_stays_contained_through_the_cli(self) -> None:
+        connection, state = self.production_connection_factory(
+            [
+                {
+                    "status": 200,
+                    "body": TimeoutError(f"{PRODUCTION_IO_SENTINEL}-cli"),
+                }
+            ]
+        )
+        with mock.patch.object(harness.http.client, "HTTPSConnection", connection):
+            exit_code, stdout, stderr = self.run_cli(harness.ProductionHttpTransport)
+        self.assertEqual(exit_code, 4)
+        self.assertEqual(
+            self.cli_diagnostic(stdout),
+            self.expected("vocabulary", "transport", None, 1, 0),
+        )
+        self.assertEqual(state["connections"], 1)
+        self.assertEqual(state["reads"], 1)
+        rendered = stdout + stderr
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        self.assertNotIn("Traceback", rendered)
+        self.assertEqual(stderr, "")
+
+    def test_unclassified_internal_failure_still_stays_contained(self) -> None:
+        test_credential = self.probe_credential()
+        transport = FakeTransport(self.responses())
+        with mock.patch.object(
+            harness.ReadOnlyProbeExecutor,
+            "_execute",
+            side_effect=RuntimeError(TRANSPORT_EXCEPTION_SENTINEL),
+        ), self.assertRaises(harness.ReadOnlyProbeFailure) as context:
+            harness.ReadOnlyProbeExecutor(transport).execute(
+                test_credential,
+                self.probe_gate(test_credential),
+            )
+        failure = context.exception
+        self.assertEqual(
+            failure.safe_summary(),
+            self.expected("transport-init", "safety", None, 0, 0),
+        )
+        self.assertEqual(transport.requests, [])
+        self.assertIsNone(failure.__cause__)
+        self.assertIsNone(failure.__context__)
+        self.assertNotIn(
+            TRANSPORT_EXCEPTION_SENTINEL, self.rendered_failure(failure)
+        )
+
+        transport = FakeTransport(self.responses())
+        with mock.patch.object(
+            harness.ReadOnlyProbeExecutor,
+            "_execute",
+            side_effect=RuntimeError(TRANSPORT_EXCEPTION_SENTINEL),
+        ):
+            exit_code, stdout, stderr = self.run_cli(lambda: transport)
+        self.assertEqual(exit_code, 4)
+        self.assertEqual(
+            self.cli_diagnostic(stdout),
+            self.expected("transport-init", "safety", None, 0, 0),
+        )
+        self.assertNotIn(TRANSPORT_EXCEPTION_SENTINEL, stdout + stderr)
+
+    def test_diagnostic_rejects_every_out_of_contract_combination(self) -> None:
+        valid = dict(
+            failure_stage="vocabulary",
+            failure_class="http-status",
+            http_status=403,
+            requests_attempted=1,
+            requests_completed=1,
+        )
+        self.assertEqual(
+            harness.ReadOnlyFailureDiagnostic(**valid).safe_summary()["http_status"],
+            403,
+        )
+        rejected = (
+            {"failure_stage": "vocabulary-get"},
+            {"failure_stage": "TypeError"},
+            {"failure_class": "ssl-error"},
+            {"failure_class": "http.client.RemoteDisconnected"},
+            {"failure_class": "transport", "http_status": 403},
+            {"failure_class": "safety", "http_status": 200},
+            {"failure_class": "schema", "http_status": 403},
+            {"http_status": 200},
+            {"http_status": None},
+            {"http_status": 4030},
+            {"http_status": True},
+            {"http_status": "403"},
+            {"requests_attempted": 4, "requests_completed": 4},
+            {"requests_attempted": -1, "requests_completed": -1},
+            {"requests_attempted": 1, "requests_completed": 2},
+            {"requests_attempted": True, "requests_completed": True},
+            {"failure_stage": "transport-init"},
+            {"requests_completed": 0},
+        )
+        for override in rejected:
+            with self.subTest(override=tuple(override)):
+                with self.assertRaises(harness.SafetyError):
+                    harness.ReadOnlyFailureDiagnostic(**{**valid, **override})
+        with self.assertRaises(harness.SafetyError):
+            harness.ReadOnlyProbeFailure("vocabulary")  # type: ignore[arg-type]
+
+    def test_stage_and_class_enums_stay_project_owned_and_finite(self) -> None:
+        self.assertEqual(
+            harness.READ_ONLY_FAILURE_STAGES,
+            ("transport-init", "vocabulary", "interpretations", "phrases"),
+        )
+        self.assertEqual(
+            harness.READ_ONLY_FAILURE_CLASSES,
+            ("transport", "http-status", "schema", "safety"),
+        )
+        observed_stages = set()
+        observed_classes = set()
+        for _name, responses, expected, _count in self.failure_cases():
+            observed_stages.add(expected["failure_stage"])
+            observed_classes.add(expected["failure_class"])
+            failure, _transport = self.run_failure(responses)
+            self.assertIn(
+                failure.safe_summary()["failure_stage"],
+                harness.READ_ONLY_FAILURE_STAGES,
+            )
+            self.assertIn(
+                failure.safe_summary()["failure_class"],
+                harness.READ_ONLY_FAILURE_CLASSES,
+            )
+        self.assertEqual(
+            observed_stages, {"vocabulary", "interpretations", "phrases"}
+        )
+        self.assertEqual(
+            observed_classes, {"transport", "http-status", "schema", "safety"}
+        )
+
+    def test_successful_probe_output_is_unchanged_by_the_diagnostic_patch(self) -> None:
+        transport = FakeTransport(self.responses())
+        exit_code, stdout, stderr = self.run_cli(lambda: transport)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(stderr, "")
+        result = self.cli_diagnostic(stdout)
+        self.assertEqual(result["mode"], "read-only-probe")
+        self.assertEqual(result["interpretation_count"], 1)
+        self.assertEqual(result["phrase_count"], 1)
+        self.assertEqual(
+            result["response_statuses"],
+            {"vocabulary": 200, "interpretations": 200, "phrases": 200},
+        )
+        for absent in ("status", "failure_stage", "failure_class", "http_status"):
+            self.assertNotIn(absent, result)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, stdout + stderr)
+
+    def test_fake_token_is_absent_from_every_success_and_failure_output(self) -> None:
+        transport = FakeTransport(self.responses())
+        _exit_code, stdout, stderr = self.run_cli(lambda: transport)
+        self.assertNotIn(FAKE_TOKEN, stdout + stderr)
+        for name, responses, _expected, _count in self.failure_cases():
+            with self.subTest(case=name):
+                _code, failure_stdout, failure_stderr = self.run_cli(
+                    lambda responses=responses: FakeTransport(list(responses))
+                )
+                self.assertNotIn(FAKE_TOKEN, failure_stdout + failure_stderr)
+
+        def failing_factory() -> harness.Transport:
+            raise RuntimeError(FAKE_TOKEN)
+
+        _code, init_stdout, init_stderr = self.run_cli(failing_factory)
+        self.assertNotIn(FAKE_TOKEN, init_stdout + init_stderr)
 
 
 if __name__ == "__main__":
