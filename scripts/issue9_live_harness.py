@@ -89,6 +89,20 @@ class TransportError(RuntimeError):
     """A transport failed without exposing credentials or response content."""
 
 
+class TransportResponseError(TransportError):
+    """A response arrived but was rejected before its body could be used.
+
+    It carries only the numeric HTTP status, so the Issue #14 read-only
+    diagnostic can still report that a response existed even when the body was a
+    redirect, oversized, or not decodable JSON. Every write-path handler catches
+    ``TransportError`` and therefore treats this narrower subclass identically.
+    """
+
+    def __init__(self, http_status: Any) -> None:
+        super().__init__("response was rejected before use; outcome may be unknown")
+        self.http_status = _plain_http_status(http_status)
+
+
 class UnknownOutcomeError(SafetyError):
     """A write outcome is unknown; the caller must stop and inspect manually."""
 
@@ -99,6 +113,16 @@ class VerificationError(SafetyError):
 
 def _is_finite_positive(value: float) -> bool:
     return math.isfinite(value) and value > 0
+
+
+def _plain_http_status(value: Any) -> int | None:
+    """Return a plain in-range status code, or None when none is available."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    status = int(value)
+    if not 100 <= status <= 599:
+        return None
+    return status
 
 
 def _validate_read_only_origin_contract() -> None:
@@ -459,6 +483,7 @@ class ProductionHttpTransport:
             ).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
+        status: int | None = None
         try:
             connection.connect()
             if connection.sock is None:
@@ -468,6 +493,9 @@ class ProductionHttpTransport:
             )
             connection.request(request.method, request.path, body=payload, headers=headers)
             response = connection.getresponse()
+            # Remember only the numeric status, so a rejected response can still
+            # be reported as "a response existed" without touching its body.
+            status = _plain_http_status(response.status)
             if 300 <= response.status < 400:
                 raise OSError("redirect responses are forbidden")
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -478,6 +506,8 @@ class ProductionHttpTransport:
                 raise OSError("response is not an object")
             return HttpResponse(status=response.status, body=decoded)
         except Exception:
+            if status is not None:
+                raise TransportResponseError(status) from None
             raise TransportError("request failed; outcome may be unknown") from None
         finally:
             connection.close()
@@ -1270,6 +1300,205 @@ class ReadOnlyProbeResult:
         return json.dumps(self.safe_summary(), ensure_ascii=False, sort_keys=True)
 
 
+READ_ONLY_FAILURE_STAGES: tuple[str, ...] = (
+    "transport-init",
+    "vocabulary",
+    "interpretations",
+    "phrases",
+)
+READ_ONLY_FAILURE_CLASSES: tuple[str, ...] = (
+    "transport",
+    "http-status",
+    "schema",
+    "safety",
+)
+READ_ONLY_FAILURE_MESSAGE = (
+    "read-only probe stopped safely; only project-owned sanitized diagnostic "
+    "fields are available"
+)
+MAX_READ_ONLY_REQUESTS = len(READ_ONLY_ENDPOINT_TEMPLATES)
+
+
+@dataclass(frozen=True, repr=False)
+class ReadOnlyFailureDiagnostic:
+    """Fixed project-owned metadata describing one failed read-only probe.
+
+    Every field is either a constant chosen from a closed project enum or a
+    small integer counted locally, so no server text, response body, header,
+    redirect target or external exception message can travel through it.
+
+    Fixed class mapping (Issue #14):
+
+    ``transport``
+        No usable HTTP response was obtained: transport construction failed, the
+        transport raised, or it returned something that is not a structurally
+        valid response with a plain numeric status.
+    ``http-status``
+        A response arrived and its numeric status was outside 2xx. Redirect (3xx)
+        responses are reported here by status number only; the target is never read.
+    ``schema``
+        A 2xx response arrived but the already-reviewed structural validation
+        rejected it (object shape, record arrays, record ids, documented status
+        enum, spelling match, phrase/highlight structure).
+    ``safety``
+        A local project invariant rejected the run without a response being
+        classified: origin/gate/confirmation validation, a request the read-only
+        guard refused to dispatch, or a final credential-containment check.
+
+    ``http_status`` is reported exactly for ``http-status`` and ``schema``, which
+    are the two classes that by construction follow a received response; it is
+    always ``None`` for ``transport`` and ``safety``.
+    """
+
+    failure_stage: str
+    failure_class: str
+    http_status: int | None
+    requests_attempted: int
+    requests_completed: int
+
+    def __post_init__(self) -> None:
+        # Store the module-level constants themselves, so the emitted values can
+        # never be a caller-supplied string that merely compares equal.
+        stage = next(
+            (item for item in READ_ONLY_FAILURE_STAGES if item == self.failure_stage),
+            None,
+        )
+        if stage is None:
+            raise SafetyError("read-only failure stage is outside the fixed enum")
+        object.__setattr__(self, "failure_stage", stage)
+        failure_class = next(
+            (item for item in READ_ONLY_FAILURE_CLASSES if item == self.failure_class),
+            None,
+        )
+        if failure_class is None:
+            raise SafetyError("read-only failure class is outside the fixed enum")
+        object.__setattr__(self, "failure_class", failure_class)
+        for name in ("requests_attempted", "requests_completed"):
+            counter = getattr(self, name)
+            if (
+                not isinstance(counter, int)
+                or isinstance(counter, bool)
+                or not 0 <= counter <= MAX_READ_ONLY_REQUESTS
+            ):
+                raise SafetyError("read-only request counter is outside the fixed range")
+        if self.requests_completed > self.requests_attempted:
+            raise SafetyError("read-only completed count cannot exceed attempted count")
+        if self.failure_stage == "transport-init" and self.requests_attempted:
+            raise SafetyError("transport-init cannot follow a dispatched request")
+        status = self.http_status
+        if self.failure_class in ("transport", "safety"):
+            if status is not None:
+                raise SafetyError("no HTTP status may be reported without a response")
+        elif _plain_http_status(status) is None:
+            raise SafetyError("reported HTTP status is not a plain numeric status code")
+        elif self.failure_class == "http-status" and 200 <= status < 300:
+            raise SafetyError("a success status cannot be an http-status failure")
+        elif self.failure_class == "schema" and not 200 <= status < 300:
+            raise SafetyError("a schema failure must follow a success status")
+        elif not self.requests_completed:
+            raise SafetyError("a reported HTTP status requires a completed request")
+        else:
+            object.__setattr__(self, "http_status", _plain_http_status(status))
+
+    def safe_summary(self) -> dict[str, Any]:
+        return {
+            "mode": "read-only-probe",
+            "status": "failed",
+            "failure_stage": self.failure_stage,
+            "failure_class": self.failure_class,
+            "http_status": self.http_status,
+            "requests_attempted": self.requests_attempted,
+            "requests_completed": self.requests_completed,
+        }
+
+    def __repr__(self) -> str:
+        return f"ReadOnlyFailureDiagnostic({self.safe_summary()!r})"
+
+    def __str__(self) -> str:
+        return json.dumps(self.safe_summary(), ensure_ascii=False, sort_keys=True)
+
+
+class ReadOnlyProbeFailure(SafetyError):
+    """A read-only failure that carries sanitized project-owned fields only."""
+
+    def __init__(self, diagnostic: ReadOnlyFailureDiagnostic) -> None:
+        if not isinstance(diagnostic, ReadOnlyFailureDiagnostic):
+            raise SafetyError("read-only failure requires a project-owned diagnostic")
+        super().__init__(READ_ONLY_FAILURE_MESSAGE)
+        self.diagnostic = diagnostic
+
+    def safe_summary(self) -> dict[str, Any]:
+        return self.diagnostic.safe_summary()
+
+    def detach_external_context(self) -> "ReadOnlyProbeFailure":
+        """Drop any external exception object still attached to this failure.
+
+        ``raise ... from None`` only suppresses the implicit context when a
+        traceback is formatted; the original library exception stays reachable
+        through ``__context__``. Detaching it keeps a socket, SSL, ``http.client``
+        or JSON decoder message from being recovered from this object at all.
+        """
+        self.__cause__ = None
+        self.__context__ = None
+        self.__suppress_context__ = True
+        return self
+
+    def __repr__(self) -> str:
+        return f"ReadOnlyProbeFailure({self.diagnostic!r})"
+
+    def __str__(self) -> str:
+        return READ_ONLY_FAILURE_MESSAGE
+
+
+class _ReadOnlyProbeProgress:
+    """Track the current stage and the two documented request counters.
+
+    ``requests_attempted`` increments immediately before a reviewed GET is handed
+    to the guarded transport. ``requests_completed`` increments only after that
+    transport returned a structurally valid response with a plain numeric status,
+    which is the transport-level completion boundary and happens before any
+    status or schema validation.
+    """
+
+    def __init__(self) -> None:
+        self.stage = "transport-init"
+        self.requests_attempted = 0
+        self.requests_completed = 0
+
+    def enter(self, stage: str) -> None:
+        if stage == "transport-init" or stage not in READ_ONLY_FAILURE_STAGES:
+            raise SafetyError("read-only request stage is outside the fixed enum")
+        self.stage = stage
+
+    def dispatched(self) -> None:
+        self.requests_attempted += 1
+
+    def responded(self) -> None:
+        self.requests_completed += 1
+
+    def failure(
+        self,
+        failure_class: str,
+        http_status: int | None = None,
+    ) -> ReadOnlyProbeFailure:
+        return ReadOnlyProbeFailure(
+            ReadOnlyFailureDiagnostic(
+                failure_stage=self.stage,
+                failure_class=failure_class,
+                http_status=http_status,
+                requests_attempted=self.requests_attempted,
+                requests_completed=self.requests_completed,
+            )
+        )
+
+
+def _read_only_response_status(response: Any) -> int | None:
+    """Return a plain numeric status only when a usable response was returned."""
+    if not isinstance(response, HttpResponse):
+        return None
+    return _plain_http_status(response.status)
+
+
 class ReadOnlyProbeExecutor:
     """Sequential, no-retry executor for the three reviewed GET requests."""
 
@@ -1278,104 +1507,176 @@ class ReadOnlyProbeExecutor:
 
     def _send(
         self,
+        progress: _ReadOnlyProbeProgress,
+        stage: str,
         request: HttpRequest,
         credential: TestAccountCredential,
-    ) -> HttpResponse:
+    ) -> tuple[HttpResponse, int]:
+        progress.enter(stage)
+        progress.dispatched()
         try:
-            return _require_read_success(self._transport.send(request, credential))
-        except (SafetyError, TransportError):
-            raise SafetyError("read-only probe stopped after one failed request") from None
+            response = self._transport.send(request, credential)
+        except TransportResponseError as rejected:
+            rejected_status = rejected.http_status
+            if rejected_status is None:
+                raise progress.failure("transport") from None
+            progress.responded()
+            if 200 <= rejected_status < 300:
+                raise progress.failure("schema", rejected_status) from None
+            raise progress.failure("http-status", rejected_status) from None
+        except SafetyError:
+            raise progress.failure("safety") from None
         except Exception:
-            raise SafetyError("read-only probe transport failed safely") from None
+            raise progress.failure("transport") from None
+        status = _read_only_response_status(response)
+        if status is None:
+            raise progress.failure("transport") from None
+        progress.responded()
+        if not 200 <= status < 300:
+            raise progress.failure("http-status", status) from None
+        try:
+            _require_read_success(response)
+        except Exception:
+            raise progress.failure("schema", status) from None
+        return response, status
 
     def execute(
         self,
         credential: TestAccountCredential,
         gate: ReadOnlyProbeGate,
     ) -> ReadOnlyProbeResult:
-        _validate_read_only_origin_contract()
-        gate.validate(credential)
-        requested_word = gate.requested_word
+        progress = _ReadOnlyProbeProgress()
+        try:
+            return self._execute(progress, credential, gate)
+        except ReadOnlyProbeFailure as failure:
+            raise failure.detach_external_context() from None
+        except Exception:
+            unclassified = progress.failure("safety")
+        # Raised outside the handler so the rejected external exception is not
+        # re-attached as this failure's context by the raise statement itself.
+        raise unclassified.detach_external_context() from None
 
-        vocabulary_response = self._send(
-            HttpRequest(
+    def _execute(
+        self,
+        progress: _ReadOnlyProbeProgress,
+        credential: TestAccountCredential,
+        gate: ReadOnlyProbeGate,
+    ) -> ReadOnlyProbeResult:
+        try:
+            _validate_read_only_origin_contract()
+            gate.validate(credential)
+            requested_word = gate.requested_word
+            vocabulary_request = HttpRequest(
                 "GET",
                 build_query_path("vocabulary", {"spelling": requested_word}),
-            ),
+            )
+        except Exception:
+            raise progress.failure("safety") from None
+
+        vocabulary_response, vocabulary_status = self._send(
+            progress,
+            "vocabulary",
+            vocabulary_request,
             credential,
         )
-        vocabulary = vocabulary_response.body.get("voc")
-        if not isinstance(vocabulary, Mapping):
-            raise SafetyError("vocabulary response does not contain exactly one usable voc")
-        vocabulary_id = _safe_record_id(vocabulary.get("id"), "vocabulary id")
-        returned_spelling = vocabulary.get("spelling")
-        if not isinstance(returned_spelling, str) or (
-            _normalize_probe_spelling(returned_spelling)
-            != _normalize_probe_spelling(requested_word)
-        ):
-            raise SafetyError("vocabulary spelling does not match the requested word")
+        try:
+            vocabulary = vocabulary_response.body.get("voc")
+            if not isinstance(vocabulary, Mapping):
+                raise SafetyError(
+                    "vocabulary response does not contain exactly one usable voc"
+                )
+            vocabulary_id = _safe_record_id(vocabulary.get("id"), "vocabulary id")
+            returned_spelling = vocabulary.get("spelling")
+            if not isinstance(returned_spelling, str) or (
+                _normalize_probe_spelling(returned_spelling)
+                != _normalize_probe_spelling(requested_word)
+            ):
+                raise SafetyError("vocabulary spelling does not match the requested word")
+            vocabulary_shape = _read_only_response_shape(
+                vocabulary_response.body, "vocabulary"
+            )
+        except Exception:
+            raise progress.failure("schema", vocabulary_status) from None
 
-        interpretation_response = self._send(
-            HttpRequest(
+        try:
+            interpretation_request = HttpRequest(
                 "GET",
                 build_query_path("interpretations", {"voc_id": vocabulary_id}),
-            ),
+            )
+        except Exception:
+            progress.enter("interpretations")
+            raise progress.failure("safety") from None
+        interpretation_response, interpretation_status = self._send(
+            progress,
+            "interpretations",
+            interpretation_request,
             credential,
         )
-        (
-            interpretation_count,
-            interpretation_statuses,
-            _unused_interpretation_highlights,
-            interpretation_shape,
-        ) = _summarize_read_only_records(
-            interpretation_response,
-            "interpretations",
-            inspect_highlight=False,
-        )
-        phrase_response = self._send(
-            HttpRequest(
+        try:
+            (
+                interpretation_count,
+                interpretation_statuses,
+                _unused_interpretation_highlights,
+                interpretation_shape,
+            ) = _summarize_read_only_records(
+                interpretation_response,
+                "interpretations",
+                inspect_highlight=False,
+            )
+        except Exception:
+            raise progress.failure("schema", interpretation_status) from None
+
+        try:
+            phrase_request = HttpRequest(
                 "GET",
                 build_query_path("phrases", {"voc_id": vocabulary_id}),
-            ),
+            )
+        except Exception:
+            progress.enter("phrases")
+            raise progress.failure("safety") from None
+        phrase_response, phrase_status = self._send(
+            progress,
+            "phrases",
+            phrase_request,
             credential,
         )
-        (
-            phrase_count,
-            phrase_statuses,
-            phrase_highlight_shapes,
-            phrase_shape,
-        ) = _summarize_read_only_records(
-            phrase_response,
-            "phrases",
-            inspect_highlight=True,
-        )
-
-        result = ReadOnlyProbeResult(
-            requested_spelling=requested_word,
-            returned_spelling=returned_spelling,
-            voc_id_fingerprint=hashlib.sha256(
-                vocabulary_id.encode("utf-8")
-            ).hexdigest()[:16],
-            interpretation_count=interpretation_count,
-            phrase_count=phrase_count,
-            interpretation_statuses=interpretation_statuses,
-            phrase_statuses=phrase_statuses,
-            phrase_highlight_shapes=phrase_highlight_shapes,
-            response_statuses={
-                "vocabulary": vocabulary_response.status,
-                "interpretations": interpretation_response.status,
-                "phrases": phrase_response.status,
-            },
-            response_shapes={
-                "vocabulary": _read_only_response_shape(
-                    vocabulary_response.body, "vocabulary"
-                ),
-                "interpretations": interpretation_shape,
-                "phrases": phrase_shape,
-            },
-        )
+        try:
+            (
+                phrase_count,
+                phrase_statuses,
+                phrase_highlight_shapes,
+                phrase_shape,
+            ) = _summarize_read_only_records(
+                phrase_response,
+                "phrases",
+                inspect_highlight=True,
+            )
+            result = ReadOnlyProbeResult(
+                requested_spelling=requested_word,
+                returned_spelling=returned_spelling,
+                voc_id_fingerprint=hashlib.sha256(
+                    vocabulary_id.encode("utf-8")
+                ).hexdigest()[:16],
+                interpretation_count=interpretation_count,
+                phrase_count=phrase_count,
+                interpretation_statuses=interpretation_statuses,
+                phrase_statuses=phrase_statuses,
+                phrase_highlight_shapes=phrase_highlight_shapes,
+                response_statuses={
+                    "vocabulary": vocabulary_status,
+                    "interpretations": interpretation_status,
+                    "phrases": phrase_status,
+                },
+                response_shapes={
+                    "vocabulary": vocabulary_shape,
+                    "interpretations": interpretation_shape,
+                    "phrases": phrase_shape,
+                },
+            )
+        except Exception:
+            raise progress.failure("schema", phrase_status) from None
         if _contains_credential_material(result.safe_summary(), credential.token):
-            raise SafetyError("read-only safe result contains credential material")
+            raise progress.failure("safety") from None
         return result
 
 
@@ -2627,6 +2928,29 @@ def _hidden_prompt(prompt: Callable[[str], str], message: str) -> str:
         return prompt(message)
 
 
+UNCLASSIFIED_READ_ONLY_FAILURE = ReadOnlyFailureDiagnostic(
+    failure_stage="transport-init",
+    failure_class="safety",
+    http_status=None,
+    requests_attempted=0,
+    requests_completed=0,
+)
+
+
+def _print_read_only_failure(diagnostic: ReadOnlyFailureDiagnostic) -> None:
+    """Print exactly one sanitized diagnostic object and nothing else."""
+    if not isinstance(diagnostic, ReadOnlyFailureDiagnostic):
+        diagnostic = UNCLASSIFIED_READ_ONLY_FAILURE
+    print(
+        json.dumps(
+            diagnostic.safe_summary(),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def _run_read_only_probe_cli(
     args: argparse.Namespace,
     *,
@@ -2691,10 +3015,27 @@ def _run_read_only_probe_cli(
         return 3
 
     try:
-        transport = transport_factory()
-        result = ReadOnlyProbeExecutor(transport).execute(credential, gate)
+        executor = ReadOnlyProbeExecutor(transport_factory())
     except Exception:
-        print("ERROR: read-only probe stopped safely; no retry was attempted.")
+        _print_read_only_failure(
+            ReadOnlyFailureDiagnostic(
+                failure_stage="transport-init",
+                failure_class="transport",
+                http_status=None,
+                requests_attempted=0,
+                requests_completed=0,
+            )
+        )
+        return 4
+    try:
+        result = executor.execute(credential, gate)
+    except ReadOnlyProbeFailure as failure:
+        _print_read_only_failure(failure.diagnostic)
+        return 4
+    except Exception:
+        # Defensive only: the executor converts every failure into a
+        # ReadOnlyProbeFailure, so nothing unclassified should reach this path.
+        _print_read_only_failure(UNCLASSIFIED_READ_ONLY_FAILURE)
         return 4
     print(json.dumps(result.safe_summary(), ensure_ascii=False, indent=2, sort_keys=True))
     return 0
