@@ -90,12 +90,19 @@ class TransportError(RuntimeError):
 
 
 class TransportResponseError(TransportError):
-    """A response arrived but was rejected before its body could be used.
+    """A completely received response was rejected on its content.
 
     It carries only the numeric HTTP status, so the Issue #14 read-only
-    diagnostic can still report that a response existed even when the body was a
-    redirect, oversized, or not decodable JSON. Every write-path handler catches
-    ``TransportError`` and therefore treats this narrower subclass identically.
+    diagnostic can still report that a response existed when the body was
+    oversized, invalid UTF-8, invalid JSON or not a JSON object, and for a
+    redirect whose body is deliberately never read.
+
+    It is deliberately **not** used for transport I/O failures. A body read that
+    times out, resets or ends early never crossed the transport completion
+    boundary, so it stays a plain :class:`TransportError` with no status at all.
+
+    Every write-path handler catches ``TransportError`` and therefore treats this
+    narrower subclass identically.
     """
 
     def __init__(self, http_status: Any) -> None:
@@ -483,32 +490,53 @@ class ProductionHttpTransport:
             ).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        status: int | None = None
         try:
-            connection.connect()
-            if connection.sock is None:
-                raise OSError("connection socket unavailable")
-            connection.sock.settimeout(
-                min(request.timeout_seconds, self.read_timeout_seconds)
+            try:
+                connection.connect()
+                if connection.sock is None:
+                    raise OSError("connection socket unavailable")
+                connection.sock.settimeout(
+                    min(request.timeout_seconds, self.read_timeout_seconds)
+                )
+                connection.request(
+                    request.method, request.path, body=payload, headers=headers
+                )
+                response = connection.getresponse()
+                # Remember only the numeric status, so a response that is later
+                # rejected on content can still be reported as "a response
+                # existed" without touching its body.
+                status = _plain_http_status(response.status)
+                is_redirect = 300 <= response.status < 400
+                # A redirect body is never read, so no redirect content is
+                # touched and the Authorization header is never forwarded.
+                raw = None if is_redirect else response.read(MAX_RESPONSE_BYTES + 1)
+            except Exception:
+                # Connect, request, getresponse and response-body I/O failures
+                # stay plain transport failures even when the status line has
+                # already arrived: a timeout, reset, SSL failure or incomplete
+                # read means this request never crossed the transport completion
+                # boundary, so no status may be reported for it.
+                raise TransportError("request failed; outcome may be unknown") from None
+
+            # Past this point the response body has been completely received (or
+            # deliberately not read, for a redirect), so only content rejections
+            # remain and they may keep the numeric status.
+            decoded: Any = None
+            rejected = (
+                is_redirect
+                or not isinstance(raw, (bytes, bytearray))
+                or len(raw) > MAX_RESPONSE_BYTES
             )
-            connection.request(request.method, request.path, body=payload, headers=headers)
-            response = connection.getresponse()
-            # Remember only the numeric status, so a rejected response can still
-            # be reported as "a response existed" without touching its body.
-            status = _plain_http_status(response.status)
-            if 300 <= response.status < 400:
-                raise OSError("redirect responses are forbidden")
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
-                raise OSError("response exceeds safety limit")
-            decoded = json.loads(raw.decode("utf-8")) if raw else {}
-            if not isinstance(decoded, dict):
-                raise OSError("response is not an object")
+            if not rejected:
+                try:
+                    decoded = json.loads(bytes(raw).decode("utf-8")) if raw else {}
+                except Exception:
+                    rejected = True
+                else:
+                    rejected = not isinstance(decoded, dict)
+            if rejected:
+                raise TransportResponseError(status)
             return HttpResponse(status=response.status, body=decoded)
-        except Exception:
-            if status is not None:
-                raise TransportResponseError(status) from None
-            raise TransportError("request failed; outcome may be unknown") from None
         finally:
             connection.close()
 
@@ -1332,14 +1360,19 @@ class ReadOnlyFailureDiagnostic:
     ``transport``
         No usable HTTP response was obtained: transport construction failed, the
         transport raised, or it returned something that is not a structurally
-        valid response with a plain numeric status.
+        valid response with a plain numeric status. This includes every response
+        body I/O failure — timeout, connection reset, SSL failure, incomplete
+        read — even when the status line had already arrived, because such a
+        request never crossed the transport completion boundary.
     ``http-status``
         A response arrived and its numeric status was outside 2xx. Redirect (3xx)
         responses are reported here by status number only; the target is never read.
     ``schema``
-        A 2xx response arrived but the already-reviewed structural validation
-        rejected it (object shape, record arrays, record ids, documented status
-        enum, spelling match, phrase/highlight structure).
+        A 2xx response whose body was completely received but rejected: the
+        already-reviewed structural validation (object shape, record arrays,
+        record ids, documented status enum, spelling match, phrase/highlight
+        structure) or the transport-level content contract (oversized body,
+        invalid UTF-8, invalid JSON, decoded value that is not an object).
     ``safety``
         A local project invariant rejected the run without a response being
         classified: origin/gate/confirmation validation, a request the read-only
