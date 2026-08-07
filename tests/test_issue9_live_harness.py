@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 import hashlib
 import http.client
 import io
@@ -16,6 +17,7 @@ import tempfile
 import traceback
 import unittest
 from unittest import mock
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -3161,6 +3163,19 @@ PRODUCTION_IO_SENTINEL = "PRIVATE-PRODUCTION-IO-SENTINEL"
 VOC_ID_PUNCTUATION_SENTINEL = "PRIVATE.ISSUE16/VOC ID+SENTINEL"
 SPELLING_SENTINEL = "PRIVATEISSUE16SPELLINGSENTINEL"
 INJECTED_REASON_SENTINEL = "PRIVATE-INJECTED-SCHEMA-REASON-SENTINEL"
+# Issue #18: the envelope classifier reads an in-memory production body. Every
+# key name and value it could conceivably touch is a private sentinel here, so
+# any leak into a diagnostic, stdout, stderr, repr or traceback is a test
+# failure rather than a silent disclosure.
+ENVELOPE_UNKNOWN_KEY_SENTINEL = "PRIVATE-ISSUE18-UNKNOWN-SERVER-KEY-SENTINEL"
+ENVELOPE_OTHER_KEY_SENTINEL = "PRIVATE-ISSUE18-SECOND-UNKNOWN-SERVER-KEY-SENTINEL"
+ENVELOPE_VALUE_SENTINEL = "PRIVATE ISSUE18 SERVER VALUE SENTINEL"
+ENVELOPE_ID_SENTINEL = "PRIVATE-ISSUE18-VOC-ID-SENTINEL"
+ENVELOPE_SPELLING_SENTINEL = "PRIVATEISSUE18SPELLINGSENTINEL"
+ENVELOPE_CODE_SENTINEL = "PRIVATE-ISSUE18-BUSINESS-CODE-SENTINEL"
+ENVELOPE_MESSAGE_SENTINEL = "PRIVATE ISSUE18 BUSINESS MESSAGE SENTINEL"
+ENVELOPE_STATUS_SENTINEL = "PRIVATE-ISSUE18-BUSINESS-STATUS-SENTINEL"
+ENVELOPE_INJECTED_SENTINEL = "PRIVATE-INJECTED-RESPONSE-ENVELOPE-SENTINEL"
 SENTINELS = (
     FAKE_TOKEN,
     SERVER_KEY_SENTINEL,
@@ -3172,7 +3187,194 @@ SENTINELS = (
     VOC_ID_PUNCTUATION_SENTINEL,
     SPELLING_SENTINEL,
     INJECTED_REASON_SENTINEL,
+    ENVELOPE_UNKNOWN_KEY_SENTINEL,
+    ENVELOPE_OTHER_KEY_SENTINEL,
+    ENVELOPE_VALUE_SENTINEL,
+    ENVELOPE_ID_SENTINEL,
+    ENVELOPE_SPELLING_SENTINEL,
+    ENVELOPE_CODE_SENTINEL,
+    ENVELOPE_MESSAGE_SENTINEL,
+    ENVELOPE_STATUS_SENTINEL,
+    ENVELOPE_INJECTED_SENTINEL,
 )
+
+
+def envelope_record(**overrides: object) -> dict[str, object]:
+    """A vocabulary-shaped record built only from private sentinel values."""
+    record: dict[str, object] = {
+        "id": ENVELOPE_ID_SENTINEL,
+        "spelling": ENVELOPE_SPELLING_SENTINEL,
+        ENVELOPE_UNKNOWN_KEY_SENTINEL: ENVELOPE_VALUE_SENTINEL,
+    }
+    record.update(overrides)
+    return record
+
+
+def vocabulary_envelope_cases() -> tuple[tuple[str, dict[str, object], str], ...]:
+    """Issue #18: ``(name, HTTP 200 body, expected response_envelope)``.
+
+    Every body here is a complete, decoded JSON object with **no** documented
+    top-level ``voc``, which is exactly the live third-run shape: the probe still
+    fails with ``schema_reason = missing-voc``, and the envelope only says where
+    an apparent vocabulary record lives. ``direct-voc-object`` is absent on
+    purpose — a body with a usable top-level ``voc`` never reaches ``missing-voc``
+    — and is covered separately at the classifier level.
+    """
+    return (
+        # --- one case per reachable envelope constant -----------------------
+        (
+            "direct-vocabulary-object",
+            envelope_record(),
+            "direct-vocabulary-object",
+        ),
+        (
+            "data-voc-wrapper",
+            {"data": {"voc": envelope_record()}},
+            "data-voc-wrapper",
+        ),
+        (
+            "data-vocabulary-object",
+            {"data": envelope_record()},
+            "data-vocabulary-object",
+        ),
+        (
+            "result-voc-wrapper",
+            {"result": {"voc": envelope_record()}},
+            "result-voc-wrapper",
+        ),
+        (
+            "result-vocabulary-object",
+            {"result": envelope_record()},
+            "result-vocabulary-object",
+        ),
+        (
+            "vocabulary-wrapper",
+            {"vocabulary": envelope_record()},
+            "vocabulary-wrapper",
+        ),
+        (
+            "business-error-like",
+            {
+                "code": ENVELOPE_CODE_SENTINEL,
+                "message": ENVELOPE_MESSAGE_SENTINEL,
+                "success": False,
+                ENVELOPE_UNKNOWN_KEY_SENTINEL: ENVELOPE_VALUE_SENTINEL,
+            },
+            "business-error-like",
+        ),
+        (
+            "unknown-object-only-unreviewed-keys",
+            {
+                ENVELOPE_UNKNOWN_KEY_SENTINEL: ENVELOPE_VALUE_SENTINEL,
+                ENVELOPE_OTHER_KEY_SENTINEL: [ENVELOPE_VALUE_SENTINEL],
+            },
+            "unknown-object",
+        ),
+        ("unknown-object-empty", {}, "unknown-object"),
+        # --- deterministic precedence ---------------------------------------
+        (
+            "precedence-direct-record-beats-data-voc-wrapper",
+            dict(envelope_record(), data={"voc": envelope_record()}),
+            "direct-vocabulary-object",
+        ),
+        (
+            "precedence-data-voc-wrapper-beats-data-record",
+            {"data": dict(envelope_record(), voc=envelope_record())},
+            "data-voc-wrapper",
+        ),
+        (
+            "precedence-data-beats-result",
+            {
+                "data": {"voc": envelope_record()},
+                "result": {"voc": envelope_record()},
+            },
+            "data-voc-wrapper",
+        ),
+        (
+            "precedence-data-record-beats-result-wrapper",
+            {"data": envelope_record(), "result": {"voc": envelope_record()}},
+            "data-vocabulary-object",
+        ),
+        (
+            "precedence-result-wrapper-beats-vocabulary-wrapper",
+            {
+                "result": {"voc": envelope_record()},
+                "vocabulary": envelope_record(),
+            },
+            "result-voc-wrapper",
+        ),
+        (
+            "precedence-vocabulary-shape-beats-business-metadata",
+            {
+                "data": envelope_record(),
+                "status": ENVELOPE_STATUS_SENTINEL,
+                "code": ENVELOPE_CODE_SENTINEL,
+                "message": ENVELOPE_MESSAGE_SENTINEL,
+            },
+            "data-vocabulary-object",
+        ),
+        (
+            "precedence-vocabulary-wrapper-beats-business-metadata",
+            {
+                "vocabulary": envelope_record(),
+                "error": ENVELOPE_MESSAGE_SENTINEL,
+                "success": True,
+            },
+            "vocabulary-wrapper",
+        ),
+        # --- structural near-misses collapse, never leak --------------------
+        (
+            "near-miss-record-without-spelling",
+            {"data": {"voc": {"id": ENVELOPE_ID_SENTINEL}}},
+            "unknown-object",
+        ),
+        (
+            "near-miss-record-with-object-id",
+            {
+                "data": {
+                    "voc": {
+                        "id": {ENVELOPE_UNKNOWN_KEY_SENTINEL: ENVELOPE_VALUE_SENTINEL},
+                        "spelling": ENVELOPE_SPELLING_SENTINEL,
+                    }
+                }
+            },
+            "unknown-object",
+        ),
+        (
+            "near-miss-record-with-boolean-id",
+            {"vocabulary": {"id": True, "spelling": ENVELOPE_SPELLING_SENTINEL}},
+            "unknown-object",
+        ),
+        (
+            "near-miss-record-with-non-string-spelling",
+            {"result": {"id": ENVELOPE_ID_SENTINEL, "spelling": [1, 2]}},
+            "unknown-object",
+        ),
+        (
+            "near-miss-container-is-not-an-object",
+            {"data": ENVELOPE_VALUE_SENTINEL, "result": [ENVELOPE_VALUE_SENTINEL]},
+            "unknown-object",
+        ),
+        (
+            "near-miss-container-with-non-object-voc",
+            {"data": {"voc": ENVELOPE_VALUE_SENTINEL}},
+            "unknown-object",
+        ),
+        (
+            "near-miss-collapses-to-business-metadata",
+            {
+                "data": {"voc": {"id": ENVELOPE_ID_SENTINEL}},
+                "code": ENVELOPE_CODE_SENTINEL,
+            },
+            "business-error-like",
+        ),
+        # --- broad structural id types locate the record without accepting it
+        (
+            "integer-id-still-locates-the-record",
+            {"data": {"id": 20260808, "spelling": ENVELOPE_SPELLING_SENTINEL}},
+            "data-vocabulary-object",
+        ),
+    )
 
 
 class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
@@ -3199,6 +3401,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
         attempted: int,
         completed: int,
         schema_reason: str | None = None,
+        response_envelope: str | None = None,
     ) -> dict[str, object]:
         return {
             "mode": "read-only-probe",
@@ -3207,6 +3410,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             "failure_class": failure_class,
             "http_status": http_status,
             "schema_reason": schema_reason,
+            "response_envelope": response_envelope,
             "requests_attempted": attempted,
             "requests_completed": completed,
         }
@@ -3225,11 +3429,20 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             name: str,
             body: object,
             schema_reason: str,
+            response_envelope: str | None = None,
         ) -> tuple[str, list[object], dict[str, object], int]:
             return (
                 name,
                 [harness.HttpResponse(200, body)],
-                self.expected("vocabulary", "schema", 200, 1, 1, schema_reason),
+                self.expected(
+                    "vocabulary",
+                    "schema",
+                    200,
+                    1,
+                    1,
+                    schema_reason,
+                    response_envelope,
+                ),
                 1,
             )
 
@@ -3288,6 +3501,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                 "vocabulary-missing-voc-field",
                 {SERVER_KEY_SENTINEL: SERVER_BODY_SENTINEL},
                 "missing-voc",
+                "unknown-object",
             ),
             voc_case(
                 "vocabulary-voc-not-object",
@@ -3346,6 +3560,26 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             ),
         ]
 
+    def vocabulary_response_envelope_cases(
+        self,
+    ) -> list[tuple[str, list[object], dict[str, object], int]]:
+        """Issue #18: every reachable envelope, as a full probe failure case.
+
+        Routing these through ``failure_cases()`` means the existing no-retry,
+        sentinel-containment, contract-field and CLI suites cover them too.
+        """
+        return [
+            (
+                f"vocabulary-envelope-{name}",
+                [harness.HttpResponse(200, body)],
+                self.expected(
+                    "vocabulary", "schema", 200, 1, 1, "missing-voc", envelope
+                ),
+                1,
+            )
+            for name, body, envelope in vocabulary_envelope_cases()
+        ]
+
     def failure_cases(self) -> list[tuple[str, list[object], dict[str, object], int]]:
         """(name, queued transport results, expected diagnostic, request count)."""
         valid = self.responses()
@@ -3389,7 +3623,18 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             (
                 "vocabulary-schema-missing-voc",
                 [harness.HttpResponse(200, self.hostile_body())],
-                self.expected("vocabulary", "schema", 200, 1, 1, "missing-voc"),
+                # The hostile body carries allowlisted ``error``/``message``
+                # keys, so it classifies as business metadata; the sentinel
+                # values behind them are never read or emitted.
+                self.expected(
+                    "vocabulary",
+                    "schema",
+                    200,
+                    1,
+                    1,
+                    "missing-voc",
+                    "business-error-like",
+                ),
                 1,
             ),
             (
@@ -3497,6 +3742,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             ),
         ]
         cases.extend(self.vocabulary_schema_reason_cases())
+        cases.extend(self.vocabulary_response_envelope_cases())
         for status in (401, 403, 404, 429, 500, 503):
             cases.append(
                 (
@@ -4451,6 +4697,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
             requests_attempted=1,
             requests_completed=1,
             schema_reason=equal_copy,
+            response_envelope="unknown-object",
         ).schema_reason
         self.assertIs(emitted, harness.SCHEMA_REASON_MISSING_VOC)
 
@@ -4482,6 +4729,7 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
                         "failure_class",
                         "http_status",
                         "schema_reason",
+                        "response_envelope",
                         "requests_attempted",
                         "requests_completed",
                     },
@@ -4562,6 +4810,716 @@ class Issue14ReadOnlyDiagnosticTests(ReadOnlyProbeFixtures, unittest.TestCase):
 
         _code, init_stdout, init_stderr = self.run_cli(failing_factory)
         self.assertNotIn(FAKE_TOKEN, init_stdout + init_stderr)
+
+
+class RecordingMapping(Mapping):
+    """A mapping that records every key lookup and every full enumeration.
+
+    It proves the Issue #18 classifier reads only the allowlisted key names and
+    never walks the server's own key set.
+    """
+
+    def __init__(self, data: Mapping, log: list[object]) -> None:
+        self._data = dict(data)
+        self._log = log
+
+    def __getitem__(self, key: object) -> object:
+        self._log.append(key)
+        value = self._data[key]
+        # Wrap nested objects too, so lookups below the top level are recorded.
+        if isinstance(value, Mapping):
+            return RecordingMapping(value, self._log)
+        return value
+
+    def __contains__(self, key: object) -> bool:
+        self._log.append(key)
+        return key in self._data
+
+    def __iter__(self) -> Iterator:
+        self._log.append(ENUMERATION_MARKER)
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+ENUMERATION_MARKER = "<the classifier enumerated the server key set>"
+
+
+class HostileMapping(Mapping):
+    """A mapping whose every access raises with a private sentinel message."""
+
+    def __getitem__(self, key: object) -> object:
+        raise RuntimeError(ENVELOPE_VALUE_SENTINEL)
+
+    def __contains__(self, key: object) -> bool:
+        raise RuntimeError(ENVELOPE_VALUE_SENTINEL)
+
+    def __iter__(self) -> Iterator:
+        raise RuntimeError(ENVELOPE_VALUE_SENTINEL)
+
+    def __len__(self) -> int:
+        raise RuntimeError(ENVELOPE_VALUE_SENTINEL)
+
+
+class Issue18ResponseEnvelopeTests(ReadOnlyProbeFixtures, unittest.TestCase):
+    """Issue #18: classify where an apparent vocabulary record lives.
+
+    The third owner-authorized run returned a complete HTTP 200 JSON object with
+    no documented top-level ``voc``. These cases reproduce that shape offline
+    with fake transports under the process-level no-network guard: no real
+    credential is read and no Maimemo request is ever sent.
+    """
+
+    def issue14_suite(self) -> Issue14ReadOnlyDiagnosticTests:
+        """Reuse the Issue #14 case table and production-probe fixtures verbatim."""
+        return Issue14ReadOnlyDiagnosticTests()
+
+    def run_failure(
+        self,
+        responses: list[object],
+    ) -> tuple[harness.ReadOnlyProbeFailure, FakeTransport]:
+        test_credential = self.probe_credential()
+        transport = FakeTransport(list(responses))
+        with self.assertRaises(harness.ReadOnlyProbeFailure) as context:
+            harness.ReadOnlyProbeExecutor(transport).execute(
+                test_credential,
+                self.probe_gate(test_credential),
+            )
+        return context.exception, transport
+
+    def rendered_failure(self, failure: harness.ReadOnlyProbeFailure) -> str:
+        return "".join(
+            (
+                json.dumps(failure.safe_summary(), ensure_ascii=False),
+                str(failure),
+                repr(failure),
+                str(failure.diagnostic),
+                repr(failure.diagnostic),
+                repr(failure.__cause__),
+                repr(failure.__context__),
+                "".join(
+                    traceback.format_exception(
+                        type(failure), failure, failure.__traceback__
+                    )
+                ),
+            )
+        )
+
+    def run_cli(self, transport: FakeTransport) -> tuple[int, str, str]:
+        test_credential = self.probe_credential()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            exit_code = harness.main(
+                [
+                    "read-only-probe",
+                    "--word",
+                    self.WORD,
+                    "--account-label",
+                    ACCOUNT_LABEL,
+                    "--allow-network",
+                ],
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: self.probe_gate(
+                    test_credential
+                ).expected_confirmation,
+                transport_factory=lambda: transport,
+                stdin_isatty=lambda: True,
+            )
+        return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def cli_diagnostic(self, stdout: str) -> dict[str, object]:
+        decoder = json.JSONDecoder()
+        index = stdout.index("{", stdout.index("}") + 1)
+        diagnostic, _end = decoder.raw_decode(stdout[index:])
+        return diagnostic
+
+    # ------------------------------------------------------------------
+    # The closed enum itself
+    # ------------------------------------------------------------------
+
+    def test_response_envelope_enum_stays_closed_and_project_owned(self) -> None:
+        self.assertEqual(
+            harness.READ_ONLY_RESPONSE_ENVELOPES,
+            (
+                "direct-voc-object",
+                "direct-vocabulary-object",
+                "data-voc-wrapper",
+                "data-vocabulary-object",
+                "result-voc-wrapper",
+                "result-vocabulary-object",
+                "vocabulary-wrapper",
+                "business-error-like",
+                "unknown-object",
+            ),
+        )
+        self.assertEqual(
+            len(set(harness.READ_ONLY_RESPONSE_ENVELOPES)),
+            len(harness.READ_ONLY_RESPONSE_ENVELOPES),
+        )
+        # An equal-but-distinct string is replaced by the module-owned constant,
+        # so no externally built string object can ever be emitted.
+        equal_copy = "".join(["unknown", "-", "object"])
+        self.assertIsNot(equal_copy, harness.RESPONSE_ENVELOPE_UNKNOWN_OBJECT)
+        emitted = harness.ReadOnlyFailureDiagnostic(
+            failure_stage="vocabulary",
+            failure_class="schema",
+            http_status=200,
+            requests_attempted=1,
+            requests_completed=1,
+            schema_reason="missing-voc",
+            response_envelope=equal_copy,
+        ).response_envelope
+        self.assertIs(emitted, harness.RESPONSE_ENVELOPE_UNKNOWN_OBJECT)
+
+    def test_documented_precedence_matches_the_implemented_order(self) -> None:
+        self.assertEqual(
+            tuple(
+                envelope
+                for envelope, _key, _descend in (
+                    harness._RESPONSE_ENVELOPE_LOCATION_RULES
+                )
+            ),
+            (
+                "direct-voc-object",
+                "direct-vocabulary-object",
+                "data-voc-wrapper",
+                "data-vocabulary-object",
+                "result-voc-wrapper",
+                "result-vocabulary-object",
+                "vocabulary-wrapper",
+            ),
+        )
+        # Business metadata is only ever the last resort before unknown-object.
+        self.assertEqual(
+            harness.READ_ONLY_RESPONSE_ENVELOPES[-2:],
+            ("business-error-like", "unknown-object"),
+        )
+
+    def test_inspected_key_allowlist_is_small_explicit_and_closed(self) -> None:
+        self.assertEqual(
+            harness.RESPONSE_ENVELOPE_INSPECTED_KEYS,
+            (
+                "voc",
+                "id",
+                "spelling",
+                "data",
+                "result",
+                "vocabulary",
+                "code",
+                "message",
+                "error",
+                "status",
+                "success",
+            ),
+        )
+        self.assertEqual(
+            harness.RESPONSE_ENVELOPE_BUSINESS_KEYS,
+            ("code", "message", "error", "status", "success"),
+        )
+
+    def test_every_envelope_constant_is_classified_by_a_case(self) -> None:
+        observed = {envelope for _n, _b, envelope in vocabulary_envelope_cases()}
+        observed.add(
+            harness._classify_vocabulary_response_envelope(
+                {"voc": envelope_record()}
+            )
+        )
+        self.assertEqual(observed, set(harness.READ_ONLY_RESPONSE_ENVELOPES))
+
+    def test_classifier_returns_only_project_owned_constants(self) -> None:
+        bodies: list[object] = [body for _n, body, _e in vocabulary_envelope_cases()]
+        bodies.extend(
+            [
+                {"voc": envelope_record()},
+                {"voc": ENVELOPE_VALUE_SENTINEL},
+                None,
+                [ENVELOPE_VALUE_SENTINEL],
+                ENVELOPE_VALUE_SENTINEL,
+                7,
+                HostileMapping(),
+            ]
+        )
+        for body in bodies:
+            with self.subTest(body=type(body).__name__):
+                envelope = harness._classify_vocabulary_response_envelope(body)
+                self.assertIn(envelope, harness.READ_ONLY_RESPONSE_ENVELOPES)
+                # Identity, not equality: the emitted object is the constant.
+                self.assertTrue(
+                    any(
+                        envelope is constant
+                        for constant in harness.READ_ONLY_RESPONSE_ENVELOPES
+                    )
+                )
+
+    def test_direct_voc_object_is_classified_but_never_reaches_missing_voc(
+        self,
+    ) -> None:
+        """Kept for completeness: a usable top-level ``voc`` is not ``missing-voc``."""
+        body = {"voc": envelope_record()}
+        self.assertEqual(
+            harness._classify_vocabulary_response_envelope(body),
+            "direct-voc-object",
+        )
+        # End to end that same body fails a *later* checkpoint, so no envelope
+        # is reported at all.
+        failure, transport = self.run_failure([harness.HttpResponse(200, body)])
+        summary = failure.safe_summary()
+        self.assertEqual(summary["schema_reason"], "spelling-mismatch")
+        self.assertIsNone(summary["response_envelope"])
+        self.assertEqual(len(transport.requests), 1)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, self.rendered_failure(failure))
+
+    # ------------------------------------------------------------------
+    # End-to-end classification of the live failure shape
+    # ------------------------------------------------------------------
+
+    def test_every_reachable_envelope_is_reported_exactly(self) -> None:
+        for name, body, envelope in vocabulary_envelope_cases():
+            with self.subTest(case=name):
+                failure, transport = self.run_failure(
+                    [harness.HttpResponse(200, body)]
+                )
+                summary = failure.safe_summary()
+                self.assertEqual(summary["response_envelope"], envelope)
+                self.assertIn(
+                    summary["response_envelope"],
+                    harness.READ_ONLY_RESPONSE_ENVELOPES,
+                )
+                # The exact live third-run shape.
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertEqual(summary["http_status"], 200)
+                self.assertEqual(summary["schema_reason"], "missing-voc")
+                self.assertEqual(summary["requests_attempted"], 1)
+                self.assertEqual(summary["requests_completed"], 1)
+                # Exactly one GET, no retry, no follow-up request.
+                self.assertEqual(len(transport.requests), 1)
+                self.assertEqual(transport.requests[0].method, "GET")
+                self.assertIn("/vocabulary?", transport.requests[0].path)
+                self.assertIsNone(failure.__cause__)
+                self.assertIsNone(failure.__context__)
+
+    def test_no_sentinel_key_or_value_escapes_any_representation(self) -> None:
+        for name, body, _envelope in vocabulary_envelope_cases():
+            with self.subTest(case=name):
+                failure, _transport = self.run_failure(
+                    [harness.HttpResponse(200, body)]
+                )
+                rendered = self.rendered_failure(failure)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+                # Not the whole sentinel and not a distinctive fragment either,
+                # and no hash/fingerprint of a server key or value.
+                for fragment in ("PRIVATE", "ISSUE18", "SENTINEL", "Traceback"):
+                    self.assertNotIn(fragment, rendered)
+                for secret in (
+                    ENVELOPE_UNKNOWN_KEY_SENTINEL,
+                    ENVELOPE_OTHER_KEY_SENTINEL,
+                    ENVELOPE_ID_SENTINEL,
+                    ENVELOPE_SPELLING_SENTINEL,
+                    ENVELOPE_MESSAGE_SENTINEL,
+                ):
+                    digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+                    self.assertNotIn(digest, rendered)
+                    self.assertNotIn(digest[:16], rendered)
+
+    def test_cli_prints_the_envelope_and_no_sentinel(self) -> None:
+        for name, body, envelope in vocabulary_envelope_cases():
+            with self.subTest(case=name):
+                transport = FakeTransport([harness.HttpResponse(200, body)])
+                exit_code, stdout, stderr = self.run_cli(transport)
+                self.assertEqual(exit_code, 4)
+                self.assertEqual(len(transport.requests), 1)
+                diagnostic = self.cli_diagnostic(stdout)
+                self.assertEqual(diagnostic["response_envelope"], envelope)
+                self.assertEqual(diagnostic["schema_reason"], "missing-voc")
+                rendered = stdout + stderr
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+                self.assertNotIn("Traceback", rendered)
+
+    def test_unknown_server_keys_collapse_without_being_exposed(self) -> None:
+        body = {
+            ENVELOPE_UNKNOWN_KEY_SENTINEL: ENVELOPE_VALUE_SENTINEL,
+            ENVELOPE_OTHER_KEY_SENTINEL: {
+                "id": ENVELOPE_ID_SENTINEL,
+                "spelling": ENVELOPE_SPELLING_SENTINEL,
+            },
+            f"{ENVELOPE_UNKNOWN_KEY_SENTINEL}-2": [ENVELOPE_VALUE_SENTINEL] * 3,
+        }
+        failure, _transport = self.run_failure([harness.HttpResponse(200, body)])
+        summary = failure.safe_summary()
+        # A vocabulary-shaped record under an unreviewed key is *not* promoted,
+        # and its container's name is never revealed.
+        self.assertIs(
+            summary["response_envelope"], harness.RESPONSE_ENVELOPE_UNKNOWN_OBJECT
+        )
+        rendered = self.rendered_failure(failure)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+        # No unknown key name, count or fingerprint of the unknown key set
+        # travels with it: the emitted value is exactly the closed constant.
+        self.assertEqual(
+            json.dumps(summary["response_envelope"]), '"unknown-object"'
+        )
+
+    def test_business_error_like_never_exposes_its_values(self) -> None:
+        for key in harness.RESPONSE_ENVELOPE_BUSINESS_KEYS:
+            with self.subTest(business_key=key):
+                body = {key: ENVELOPE_MESSAGE_SENTINEL}
+                failure, _transport = self.run_failure(
+                    [harness.HttpResponse(200, body)]
+                )
+                summary = failure.safe_summary()
+                self.assertEqual(summary["response_envelope"], "business-error-like")
+                rendered = self.rendered_failure(failure)
+                self.assertNotIn(ENVELOPE_MESSAGE_SENTINEL, rendered)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, rendered)
+        # Structured, non-string business values are equally contained.
+        body = {
+            "code": {"nested": ENVELOPE_CODE_SENTINEL},
+            "status": [ENVELOPE_STATUS_SENTINEL],
+            "success": False,
+        }
+        failure, _transport = self.run_failure([harness.HttpResponse(200, body)])
+        self.assertEqual(
+            failure.safe_summary()["response_envelope"], "business-error-like"
+        )
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, self.rendered_failure(failure))
+
+    def test_classifier_reads_only_allowlisted_keys_and_never_enumerates(self) -> None:
+        for name, body, envelope in vocabulary_envelope_cases():
+            with self.subTest(case=name):
+                log: list[object] = []
+                observed = harness._classify_vocabulary_response_envelope(
+                    RecordingMapping(body, log)
+                )
+                self.assertEqual(observed, envelope)
+                self.assertNotIn(ENUMERATION_MARKER, log)
+                self.assertTrue(
+                    set(log).issubset(set(harness.RESPONSE_ENVELOPE_INSPECTED_KEYS)),
+                    f"classifier touched an unreviewed key name in case {name}",
+                )
+
+    def test_hostile_mapping_fails_closed_to_unknown_object(self) -> None:
+        envelope = harness._classify_vocabulary_response_envelope(HostileMapping())
+        self.assertIs(envelope, harness.RESPONSE_ENVELOPE_UNKNOWN_OBJECT)
+        self.assertNotIn(ENVELOPE_VALUE_SENTINEL, envelope)
+
+    # ------------------------------------------------------------------
+    # The envelope must be null everywhere else
+    # ------------------------------------------------------------------
+
+    def test_response_envelope_is_null_for_every_non_missing_voc_failure(self) -> None:
+        observed_non_null = set()
+        for name, responses, expected, _count in self.issue14_suite().failure_cases():
+            with self.subTest(case=name):
+                summary = self.run_failure(responses)[0].safe_summary()
+                self.assertEqual(summary, expected)
+                envelope = summary["response_envelope"]
+                if envelope is None:
+                    self.assertNotEqual(
+                        (
+                            summary["failure_stage"],
+                            summary["failure_class"],
+                            summary["schema_reason"],
+                        ),
+                        ("vocabulary", "schema", "missing-voc"),
+                    )
+                    continue
+                observed_non_null.add(envelope)
+                self.assertEqual(summary["failure_stage"], "vocabulary")
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertEqual(summary["schema_reason"], "missing-voc")
+                self.assertEqual(summary["http_status"], 200)
+        self.assertTrue(observed_non_null)
+
+    def test_transport_http_status_and_safety_failures_report_no_envelope(
+        self,
+    ) -> None:
+        cases: list[tuple[str, list[object]]] = [
+            ("transport", [harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL)]),
+            ("transport-oserror", [OSError(TRANSPORT_EXCEPTION_SENTINEL)]),
+            ("safety", [harness.SafetyError(TRANSPORT_EXCEPTION_SENTINEL)]),
+            (
+                "redirect",
+                [harness.HttpResponse(302, {"error": ENVELOPE_VALUE_SENTINEL})],
+            ),
+            (
+                "rejected-without-status",
+                [harness.TransportResponseError(None)],
+            ),
+        ]
+        for status in (401, 403, 404, 429, 500, 503):
+            cases.append(
+                (
+                    f"http-{status}",
+                    [
+                        harness.HttpResponse(
+                            status,
+                            {
+                                "code": ENVELOPE_CODE_SENTINEL,
+                                "message": ENVELOPE_MESSAGE_SENTINEL,
+                            },
+                        )
+                    ],
+                )
+            )
+        for name, responses in cases:
+            with self.subTest(case=name):
+                summary = self.run_failure(responses)[0].safe_summary()
+                self.assertIsNone(summary["response_envelope"])
+                self.assertIn(
+                    summary["failure_class"], ("transport", "http-status", "safety")
+                )
+
+    def test_body_level_schema_reasons_report_no_envelope(self) -> None:
+        for reason in (
+            harness.SCHEMA_REASON_BODY_INVALID_UTF8,
+            harness.SCHEMA_REASON_BODY_INVALID_JSON,
+            harness.SCHEMA_REASON_BODY_NOT_OBJECT,
+            harness.SCHEMA_REASON_BODY_TOO_LARGE,
+        ):
+            with self.subTest(schema_reason=reason):
+                summary = self.run_failure(
+                    [harness.TransportResponseError(200, reason)]
+                )[0].safe_summary()
+                self.assertEqual(summary["schema_reason"], reason)
+                self.assertIsNone(summary["response_envelope"])
+
+    def test_pr15_body_io_failures_stay_transport_with_null_status_and_envelope(
+        self,
+    ) -> None:
+        """Issue #18 must not regress the PR #15 body-I/O repair."""
+        suite = self.issue14_suite()
+        for name, error in suite.io_errors():
+            for status in (200, 401):
+                with self.subTest(error=name, status=status):
+                    failure, state = suite.run_production_probe(
+                        [{"status": status, "body": error}]
+                    )
+                    summary = failure.safe_summary()
+                    self.assertEqual(summary["failure_class"], "transport")
+                    self.assertIsNone(summary["http_status"])
+                    self.assertIsNone(summary["schema_reason"])
+                    self.assertIsNone(summary["response_envelope"])
+                    self.assertEqual(summary["requests_completed"], 0)
+                    self.assertEqual(state["reads"], 1)
+
+    def test_interpretations_and_phrases_schema_failures_report_no_envelope(
+        self,
+    ) -> None:
+        valid = self.responses()
+        cases: list[tuple[str, list[object], str]] = [
+            (
+                "interpretations-not-an-array",
+                self.responses(
+                    interpretations={"data": {"voc": envelope_record()}}
+                ),
+                "interpretations",
+            ),
+            (
+                "interpretations-missing-canonical-key",
+                [
+                    valid[0],
+                    harness.HttpResponse(200, {"data": {"voc": envelope_record()}}),
+                ],
+                "interpretations",
+            ),
+            (
+                "phrases-missing-canonical-key",
+                [
+                    valid[0],
+                    valid[1],
+                    harness.HttpResponse(200, {"vocabulary": envelope_record()}),
+                ],
+                "phrases",
+            ),
+        ]
+        for name, responses, stage in cases:
+            with self.subTest(case=name):
+                failure, _transport = self.run_failure(responses)
+                summary = failure.safe_summary()
+                self.assertEqual(summary["failure_stage"], stage)
+                self.assertEqual(summary["failure_class"], "schema")
+                self.assertEqual(summary["http_status"], 200)
+                self.assertIsNone(summary["response_envelope"])
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, self.rendered_failure(failure))
+
+    # ------------------------------------------------------------------
+    # Acceptance behavior is deliberately unchanged
+    # ------------------------------------------------------------------
+
+    def test_no_classified_envelope_becomes_an_accepted_success_response(self) -> None:
+        """Issue #18 is diagnostic only: the contract stays top-level ``voc``."""
+        for name, body, _envelope in vocabulary_envelope_cases():
+            with self.subTest(case=name):
+                with self.assertRaises(harness.SchemaReasonError) as context:
+                    harness._validate_probe_vocabulary(body, self.WORD)
+                self.assertIs(
+                    context.exception.schema_reason,
+                    harness.SCHEMA_REASON_MISSING_VOC,
+                )
+                self.assertNotIn(
+                    ENVELOPE_SPELLING_SENTINEL,
+                    f"{context.exception}{context.exception!r}",
+                )
+        # The documented shape still validates exactly as before.
+        self.assertEqual(
+            harness._validate_probe_vocabulary(
+                {"voc": {"id": self.VOCABULARY_ID, "spelling": self.RETURNED_WORD}},
+                self.WORD,
+            ),
+            (self.VOCABULARY_ID, self.RETURNED_WORD),
+        )
+        # The classifier is deliberately broader than the acceptance policy: it
+        # locates a record whose id `_safe_record_id` still rejects, and locating
+        # it does not make it acceptable.
+        for located_id in (VOC_ID_PUNCTUATION_SENTINEL, 20260808):
+            with self.subTest(located_id=type(located_id).__name__):
+                self.assertTrue(
+                    harness._looks_like_vocabulary_record(
+                        {
+                            "id": located_id,
+                            "spelling": ENVELOPE_SPELLING_SENTINEL,
+                        }
+                    )
+                )
+                with self.assertRaises(harness.SafetyError):
+                    harness._safe_record_id(located_id, "vocabulary id")
+                with self.assertRaises(harness.SchemaReasonError):
+                    harness._probe_vocabulary_record_id(located_id)
+
+    def test_successful_probe_output_is_unchanged(self) -> None:
+        transport = FakeTransport(self.responses())
+        exit_code, stdout, stderr = self.run_cli(transport)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(stderr, "")
+        result = self.cli_diagnostic(stdout)
+        self.assertNotIn("response_envelope", result)
+        self.assertNotIn("response_envelope", stdout)
+        self.assertNotIn("schema_reason", result)
+        for envelope in harness.READ_ONLY_RESPONSE_ENVELOPES:
+            self.assertNotIn(envelope, stdout)
+        self.assertEqual(
+            result["response_statuses"],
+            {"vocabulary": 200, "interpretations": 200, "phrases": 200},
+        )
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, stdout + stderr)
+
+    # ------------------------------------------------------------------
+    # Diagnostic contract
+    # ------------------------------------------------------------------
+
+    def test_diagnostic_rejects_every_out_of_contract_envelope(self) -> None:
+        missing_voc = dict(
+            failure_stage="vocabulary",
+            failure_class="schema",
+            http_status=200,
+            requests_attempted=1,
+            requests_completed=1,
+            schema_reason="missing-voc",
+            response_envelope="unknown-object",
+        )
+        self.assertEqual(
+            harness.ReadOnlyFailureDiagnostic(**missing_voc).safe_summary()[
+                "response_envelope"
+            ],
+            "unknown-object",
+        )
+        rejected = (
+            # A missing-voc vocabulary failure must name an envelope.
+            {"response_envelope": None},
+            # ...and only a project-owned one.
+            {"response_envelope": ENVELOPE_INJECTED_SENTINEL},
+            {"response_envelope": ""},
+            {"response_envelope": 7},
+            {"response_envelope": ["unknown-object"]},
+            {"response_envelope": "missing-voc"},
+            # No other combination may carry an envelope at all.
+            {"schema_reason": "voc-not-object"},
+            {"schema_reason": "spelling-mismatch"},
+            {"schema_reason": "body-not-object"},
+            {"failure_stage": "interpretations"},
+            {"failure_stage": "phrases"},
+            {
+                "failure_class": "http-status",
+                "http_status": 404,
+                "schema_reason": None,
+            },
+            {
+                "failure_class": "transport",
+                "http_status": None,
+                "schema_reason": None,
+                "requests_completed": 0,
+            },
+            {
+                "failure_class": "safety",
+                "http_status": None,
+                "schema_reason": None,
+                "requests_completed": 0,
+            },
+        )
+        for override in rejected:
+            with self.subTest(override=tuple(sorted(override))):
+                with self.assertRaises(harness.SafetyError):
+                    harness.ReadOnlyFailureDiagnostic(**{**missing_voc, **override})
+
+    def test_injected_envelope_never_survives_by_equality(self) -> None:
+        """A fabricated reason with no body fails closed instead of guessing."""
+        failure, transport = self.run_failure(
+            [harness.TransportResponseError(200, harness.SCHEMA_REASON_MISSING_VOC)]
+        )
+        summary = failure.safe_summary()
+        # No decoded body existed, so no envelope could be classified; the
+        # contract guard downgrades this to a sanitized safety failure rather
+        # than emitting an unverified classification.
+        self.assertEqual(summary["failure_class"], "safety")
+        self.assertIsNone(summary["response_envelope"])
+        self.assertIsNone(summary["schema_reason"])
+        self.assertEqual(len(transport.requests), 1)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, self.rendered_failure(failure))
+
+    def test_envelope_contract_fields_are_exactly_the_documented_set(self) -> None:
+        for name, body, _envelope in vocabulary_envelope_cases():
+            with self.subTest(case=name):
+                summary = self.run_failure(
+                    [harness.HttpResponse(200, body)]
+                )[0].safe_summary()
+                self.assertEqual(
+                    set(summary),
+                    {
+                        "mode",
+                        "status",
+                        "failure_stage",
+                        "failure_class",
+                        "http_status",
+                        "schema_reason",
+                        "response_envelope",
+                        "requests_attempted",
+                        "requests_completed",
+                    },
+                )
+
+    def test_no_maimemo_request_is_possible_under_the_process_guard(self) -> None:
+        self.assertEqual(os.environ.get("MOMO_TEST_NETWORK_DISABLED"), "1")
+        for blocked in (
+            socket.socket,
+            socket.create_connection,
+            urllib.request.urlopen,
+        ):
+            with self.subTest(blocked=getattr(blocked, "__name__", repr(blocked))):
+                with self.assertRaises(RuntimeError):
+                    blocked()
 
 
 if __name__ == "__main__":

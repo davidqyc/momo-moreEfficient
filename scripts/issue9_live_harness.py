@@ -1361,6 +1361,155 @@ def _validate_probe_vocabulary(
     return vocabulary_id, returned_spelling
 
 
+# Issue #18: the closed, project-owned vocabulary response-envelope enum.
+#
+# Production returned a complete HTTP 200 JSON object that does not carry the
+# documented top-level ``voc`` field. To fix that from evidence rather than by
+# blindly relaxing parsing, the next owner-authorized run has to say *where* an
+# apparent vocabulary record lives — without ever telling us a server key name
+# or value. Every constant below is a literal defined in this file, chosen by
+# identity, exactly like :data:`READ_ONLY_SCHEMA_REASONS`.
+RESPONSE_ENVELOPE_DIRECT_VOC_OBJECT = "direct-voc-object"
+RESPONSE_ENVELOPE_DIRECT_VOCABULARY_OBJECT = "direct-vocabulary-object"
+RESPONSE_ENVELOPE_DATA_VOC_WRAPPER = "data-voc-wrapper"
+RESPONSE_ENVELOPE_DATA_VOCABULARY_OBJECT = "data-vocabulary-object"
+RESPONSE_ENVELOPE_RESULT_VOC_WRAPPER = "result-voc-wrapper"
+RESPONSE_ENVELOPE_RESULT_VOCABULARY_OBJECT = "result-vocabulary-object"
+RESPONSE_ENVELOPE_VOCABULARY_WRAPPER = "vocabulary-wrapper"
+RESPONSE_ENVELOPE_BUSINESS_ERROR_LIKE = "business-error-like"
+RESPONSE_ENVELOPE_UNKNOWN_OBJECT = "unknown-object"
+READ_ONLY_RESPONSE_ENVELOPES: tuple[str, ...] = (
+    RESPONSE_ENVELOPE_DIRECT_VOC_OBJECT,
+    RESPONSE_ENVELOPE_DIRECT_VOCABULARY_OBJECT,
+    RESPONSE_ENVELOPE_DATA_VOC_WRAPPER,
+    RESPONSE_ENVELOPE_DATA_VOCABULARY_OBJECT,
+    RESPONSE_ENVELOPE_RESULT_VOC_WRAPPER,
+    RESPONSE_ENVELOPE_RESULT_VOCABULARY_OBJECT,
+    RESPONSE_ENVELOPE_VOCABULARY_WRAPPER,
+    RESPONSE_ENVELOPE_BUSINESS_ERROR_LIKE,
+    RESPONSE_ENVELOPE_UNKNOWN_OBJECT,
+)
+
+# The complete, explicit allowlist of key names the classifier may look up. No
+# other key name is read, copied, sorted, counted, hashed or fingerprinted:
+# unknown keys only ever contribute by *not* matching, which collapses the body
+# to ``unknown-object``.
+RESPONSE_ENVELOPE_VOC_KEY = "voc"
+RESPONSE_ENVELOPE_RECORD_KEYS: tuple[str, ...] = ("id", "spelling")
+RESPONSE_ENVELOPE_CONTAINER_KEYS: tuple[str, ...] = ("data", "result", "vocabulary")
+RESPONSE_ENVELOPE_BUSINESS_KEYS: tuple[str, ...] = (
+    "code",
+    "message",
+    "error",
+    "status",
+    "success",
+)
+RESPONSE_ENVELOPE_INSPECTED_KEYS: tuple[str, ...] = (
+    (RESPONSE_ENVELOPE_VOC_KEY,)
+    + RESPONSE_ENVELOPE_RECORD_KEYS
+    + RESPONSE_ENVELOPE_CONTAINER_KEYS
+    + RESPONSE_ENVELOPE_BUSINESS_KEYS
+)
+
+# Deterministic precedence, most specific vocabulary-bearing location first.
+# Each entry is ``(envelope, top-level container key or None, descend into voc)``.
+# A body that matches several entries is always reported as the first match, so
+# a vocabulary-bearing shape always wins over business metadata.
+_RESPONSE_ENVELOPE_LOCATION_RULES: tuple[tuple[str, "str | None", bool], ...] = (
+    (RESPONSE_ENVELOPE_DIRECT_VOC_OBJECT, None, True),
+    (RESPONSE_ENVELOPE_DIRECT_VOCABULARY_OBJECT, None, False),
+    (RESPONSE_ENVELOPE_DATA_VOC_WRAPPER, "data", True),
+    (RESPONSE_ENVELOPE_DATA_VOCABULARY_OBJECT, "data", False),
+    (RESPONSE_ENVELOPE_RESULT_VOC_WRAPPER, "result", True),
+    (RESPONSE_ENVELOPE_RESULT_VOCABULARY_OBJECT, "result", False),
+    (RESPONSE_ENVELOPE_VOCABULARY_WRAPPER, "vocabulary", False),
+)
+
+
+# Marks "no decoded body is available to classify". A real body may legitimately
+# be ``None``, so a dedicated sentinel is used instead of a ``None`` default.
+_NO_ENVELOPE_BODY = object()
+
+
+def _pinned_response_envelope(value: Any) -> "str | None":
+    """Return the module-owned constant equal to ``value``, else ``None``.
+
+    Same containment property as :func:`_pinned_schema_reason`: the constant
+    *object* is returned rather than the caller's string, so no server text and
+    no injected attribute can be emitted merely by comparing equal.
+    """
+    if not isinstance(value, str):
+        return None
+    return next((item for item in READ_ONLY_RESPONSE_ENVELOPES if item == value), None)
+
+
+def _looks_like_vocabulary_record(value: Any) -> bool:
+    """Report whether ``value`` structurally resembles a vocabulary record.
+
+    This asks one question only — *where does an apparent vocabulary object
+    live?* — and answers it from reviewed structure: a mapping carrying the
+    allowlisted ``id`` and ``spelling`` keys whose values have the expected
+    broad types. ``id`` accepts a string or a plain integer because an envelope
+    can legitimately carry a numeric identifier; that breadth is for *locating*
+    the record only.
+
+    It deliberately does **not** call :func:`_safe_record_id`, does not validate
+    the id value, does not normalize or compare the spelling, and does not
+    return either value. Deciding whether a located record is acceptable stays
+    with :func:`_validate_probe_vocabulary`, whose policy Issue #18 leaves
+    completely unchanged.
+    """
+    if not isinstance(value, Mapping):
+        return False
+    for key in RESPONSE_ENVELOPE_RECORD_KEYS:
+        if key not in value:
+            return False
+    record_id = value["id"]
+    if isinstance(record_id, bool) or not isinstance(record_id, (str, int)):
+        return False
+    return isinstance(value["spelling"], str)
+
+
+def _classify_vocabulary_response_envelope(body: Any) -> str:
+    """Name the reviewed envelope shape of an already-decoded vocabulary body.
+
+    Returns one constant from :data:`READ_ONLY_RESPONSE_ENVELOPES` and nothing
+    else. Only the key names in :data:`RESPONSE_ENVELOPE_INSPECTED_KEYS` are ever
+    looked up, and no key name or value — matched or unmatched — is copied,
+    printed, hashed, counted or persisted. Anything unreviewed collapses to
+    ``unknown-object``.
+
+    It is purely diagnostic: no shape it recognizes becomes an accepted success
+    response, and the documented top-level ``voc`` contract is untouched.
+    """
+    try:
+        if not isinstance(body, Mapping):
+            return RESPONSE_ENVELOPE_UNKNOWN_OBJECT
+        for envelope, container_key, descend in _RESPONSE_ENVELOPE_LOCATION_RULES:
+            candidate: Any = body
+            if container_key is not None:
+                if container_key not in body:
+                    continue
+                candidate = body[container_key]
+            if descend:
+                if (
+                    not isinstance(candidate, Mapping)
+                    or RESPONSE_ENVELOPE_VOC_KEY not in candidate
+                ):
+                    continue
+                candidate = candidate[RESPONSE_ENVELOPE_VOC_KEY]
+            if _looks_like_vocabulary_record(candidate):
+                return envelope
+        if any(key in body for key in RESPONSE_ENVELOPE_BUSINESS_KEYS):
+            return RESPONSE_ENVELOPE_BUSINESS_ERROR_LIKE
+    except Exception:
+        # A hostile mapping must not cost us the whole sanitized diagnostic, and
+        # its exception text must not travel anywhere. Fail closed to the
+        # least-informative constant instead.
+        return RESPONSE_ENVELOPE_UNKNOWN_OBJECT
+    return RESPONSE_ENVELOPE_UNKNOWN_OBJECT
+
+
 READ_ONLY_STATUS_ENUMS: Mapping[str, tuple[str, ...]] = {
     "interpretations": ("PUBLISHED", "UNPUBLISHED", "DELETED"),
     "phrases": ("PUBLISHED", "DELETED"),
@@ -1564,6 +1713,17 @@ class ReadOnlyFailureDiagnostic:
     and always ``None`` for ``transport``, ``http-status`` and ``safety``. It
     describes *our* rule, never the value that broke it: no server field value,
     key name, decoder text or body fragment can travel through it.
+
+    ``response_envelope`` (Issue #18) names where an apparent vocabulary record
+    lives inside a body that was completely received, decoded as a JSON object
+    and then rejected because it has no documented top-level ``voc``. It is a
+    constant selected by identity from :data:`READ_ONLY_RESPONSE_ENVELOPES`, so
+    it is non-``None`` exactly for the reviewed
+    ``vocabulary``/``schema``/``missing-voc`` combination and always ``None``
+    everywhere else — including transport, http-status, safety, every
+    body-level rejection and every interpretations/phrases schema failure. Like
+    ``schema_reason`` it describes only our own closed classification: no server
+    key name, key fingerprint, value, id or spelling can travel through it.
     """
 
     failure_stage: str
@@ -1572,6 +1732,7 @@ class ReadOnlyFailureDiagnostic:
     requests_attempted: int
     requests_completed: int
     schema_reason: str | None = None
+    response_envelope: str | None = None
 
     def __post_init__(self) -> None:
         # Store the module-level constants themselves, so the emitted values can
@@ -1627,6 +1788,24 @@ class ReadOnlyFailureDiagnostic:
         elif self.schema_reason is not None:
             raise SafetyError("only a schema failure may report a schema reason")
         object.__setattr__(self, "schema_reason", reason)
+        # Same containment rule for the Issue #18 envelope: store the
+        # module-level constant itself, and accept one only for the single
+        # reviewed combination that can produce it.
+        envelope = _pinned_response_envelope(self.response_envelope)
+        if (
+            self.failure_class == "schema"
+            and self.failure_stage == "vocabulary"
+            and reason == SCHEMA_REASON_MISSING_VOC
+        ):
+            if envelope is None:
+                raise SafetyError(
+                    "a missing-voc vocabulary failure must name one reviewed envelope"
+                )
+        elif self.response_envelope is not None:
+            raise SafetyError(
+                "only a missing-voc vocabulary failure may report a response envelope"
+            )
+        object.__setattr__(self, "response_envelope", envelope)
 
     def safe_summary(self) -> dict[str, Any]:
         return {
@@ -1636,6 +1815,7 @@ class ReadOnlyFailureDiagnostic:
             "failure_class": self.failure_class,
             "http_status": self.http_status,
             "schema_reason": self.schema_reason,
+            "response_envelope": self.response_envelope,
             "requests_attempted": self.requests_attempted,
             "requests_completed": self.requests_completed,
         }
@@ -1710,6 +1890,7 @@ class _ReadOnlyProbeProgress:
         failure_class: str,
         http_status: int | None = None,
         schema_reason: str | None = None,
+        response_envelope: str | None = None,
     ) -> ReadOnlyProbeFailure:
         return ReadOnlyProbeFailure(
             ReadOnlyFailureDiagnostic(
@@ -1719,6 +1900,7 @@ class _ReadOnlyProbeProgress:
                 requests_attempted=self.requests_attempted,
                 requests_completed=self.requests_completed,
                 schema_reason=schema_reason,
+                response_envelope=response_envelope,
             )
         )
 
@@ -1726,9 +1908,25 @@ class _ReadOnlyProbeProgress:
         self,
         http_status: int,
         error: BaseException,
+        envelope_body: Any = _NO_ENVELOPE_BODY,
     ) -> ReadOnlyProbeFailure:
-        """Report a schema failure, naming the reviewed checkpoint it violated."""
-        return self.failure("schema", http_status, _schema_reason_of(error))
+        """Report a schema failure, naming the reviewed checkpoint it violated.
+
+        ``envelope_body`` is supplied only by the vocabulary-stage caller that
+        already holds a completely received, decoded JSON object. It is
+        classified into one closed :data:`READ_ONLY_RESPONSE_ENVELOPES` constant
+        for the ``missing-voc`` checkpoint alone, and is never stored, echoed or
+        inspected beyond the allowlisted key names.
+        """
+        reason = _schema_reason_of(error)
+        envelope = None
+        if (
+            reason == SCHEMA_REASON_MISSING_VOC
+            and self.stage == "vocabulary"
+            and envelope_body is not _NO_ENVELOPE_BODY
+        ):
+            envelope = _classify_vocabulary_response_envelope(envelope_body)
+        return self.failure("schema", http_status, reason, envelope)
 
 
 def _read_only_response_status(response: Any) -> int | None:
@@ -1826,8 +2024,13 @@ class ReadOnlyProbeExecutor:
                 vocabulary_response.body, "vocabulary"
             )
         except Exception as rejected_vocabulary:
+            # The body is passed in memory only, so a ``missing-voc`` rejection
+            # can also report which reviewed envelope shape it has. It is
+            # classified into one closed constant and never retained.
             raise progress.schema_failure(
-                vocabulary_status, rejected_vocabulary
+                vocabulary_status,
+                rejected_vocabulary,
+                envelope_body=vocabulary_response.body,
             ) from None
 
         try:
