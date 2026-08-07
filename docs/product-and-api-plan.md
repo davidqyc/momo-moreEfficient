@@ -67,7 +67,11 @@ Issue #11 在保留 `offline-plan` 默认行为的同时增加显式 `read-only-
 
 read-only transport 门禁拒绝 POST、PUT、PATCH 和 DELETE；标准库 HTTPS transport 保留证书校验和有限连接/读取超时，遇到 3xx 在读取响应正文或尝试其他地址前停止，因此不会向跳转地址转发 Authorization。401/其他非 2xx、超时、非对象响应、错误数组、重复或不安全 ID、按 NFKC+casefold 规则不匹配的拼写，以及无法识别的 status/highlight 结构都会立即停止当前序列。
 
-普通输出只包含请求/返回拼写、`voc_id` 指纹、自建释义/例句数量、状态计数、highlight 形状计数、HTTP 状态与顶层响应键；不输出原始 ID、释义、例句、翻译或未知字段内容，也不默认保存响应。本 Issue 的实现、测试和审阅使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求**。
+记录级 schema 按端点分别 fail closed。`status` 只接受固定枚举：interpretations 仅 `PUBLISHED`、`UNPUBLISHED`、`DELETED`；phrases 仅 `PUBLISHED`、`DELETED`。缺失、非字符串、大小写或空白不同、跨端点错用（例如 phrases 返回 `UNPUBLISHED`）以及任何枚举外取值都会立即停止；不做规范化、trim、猜测或近似匹配，错误文案固定且不回显服务器返回的原值。安全摘要中的状态名只复用项目内置常量，不复用服务器返回的字符串对象。
+
+例句记录还必须包含非空字符串 `phrase`。该正文只在内存中用于取长度，用来校验每个可识别 highlight 范围满足 `0 <= start < end <= len(phrase)`；对象范围数组和二维整数范围数组使用同一个范围校验器。空数组仍是合法的“本次未返回 highlight”结构观察。负值、`start == end`、`start > end`、超出例句长度、把布尔当整数、结构混用，以及缺失、空或非字符串 `phrase` 都会 fail closed。例句正文和不合法的原始 highlight 值都不会进入普通输出、错误信息或任何持久化状态；本 Issue 的只读探针不保存例句正文。
+
+普通输出只包含请求/返回拼写、`voc_id` 指纹、自建释义/例句数量、状态计数、highlight 形状计数、HTTP 状态与顶层响应键；不输出原始 ID、释义、例句、翻译或未知字段内容，也不默认保存响应。本 Issue 的实现、测试和审阅使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求**；针对独立审阅两项阻断项（端点固定 status 枚举、highlight 越界校验）的修复轮同样为零真实请求、零真实 Token。
 
 未来第一次实际只读运行仍需单独获得所有者明确授权。届时操作者应先在墨墨 App 人工确认登录的是专用副账号，再重新检查官方平台是否仍无强制按量 API 费用、当前条款是否允许个人测试账号用途；任一项不明确或出现强制收费即停止。随后在本地交互式终端运行显式子命令、隐藏输入副账号 Token、核对脱敏确认绑定并逐字确认。该指纹门禁只能防止过程中换错凭证，不能代替仍然**没有找到**的官方账号身份接口。
 

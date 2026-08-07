@@ -2005,6 +2005,25 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
     def probe_credential(self) -> harness.TestAccountCredential:
         return harness.TestAccountCredential(FAKE_TOKEN, ACCOUNT_LABEL)
 
+    def interpretation_record(self, **overrides: object) -> dict[str, object]:
+        record: dict[str, object] = {
+            "id": "INVALID_ISSUE11_INTERPRETATION_ID",
+            "status": "PUBLISHED",
+            "interpretation": self.PRIVATE_INTERPRETATION,
+        }
+        record.update(overrides)
+        return record
+
+    def phrase_record(self, **overrides: object) -> dict[str, object]:
+        record: dict[str, object] = {
+            "id": "INVALID_ISSUE11_PHRASE_ID",
+            "status": "PUBLISHED",
+            "phrase": self.PRIVATE_PHRASE,
+            "highlight": [[0, 10]],
+        }
+        record.update(overrides)
+        return record
+
     def probe_gate(
         self,
         test_credential: harness.TestAccountCredential,
@@ -2528,6 +2547,7 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
                         {
                             "id": "unsafe/id",
                             "status": "PUBLISHED",
+                            "phrase": self.PRIVATE_PHRASE,
                             "highlight": [],
                         }
                     ]
@@ -2541,6 +2561,7 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
                         {
                             "id": "INVALID_PHRASE_ID",
                             "status": "PUBLISHED",
+                            "phrase": self.PRIVATE_PHRASE,
                         }
                     ]
                 ),
@@ -2553,11 +2574,13 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
                         {
                             "id": "INVALID_DUPLICATE_PHRASE",
                             "status": "PUBLISHED",
+                            "phrase": self.PRIVATE_PHRASE,
                             "highlight": [],
                         },
                         {
                             "id": "INVALID_DUPLICATE_PHRASE",
                             "status": "PUBLISHED",
+                            "phrase": self.PRIVATE_PHRASE,
                             "highlight": [],
                         },
                     ]
@@ -2621,11 +2644,13 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
                         {
                             "id": "INVALID_OBJECT_RANGE_PHRASE",
                             "status": "PUBLISHED",
+                            "phrase": self.PRIVATE_PHRASE,
                             "highlight": [{"start": 0, "end": 10}],
                         },
                         {
                             "id": "INVALID_EMPTY_RANGE_PHRASE",
-                            "status": "DRAFT",
+                            "status": "DELETED",
+                            "phrase": self.PRIVATE_PHRASE,
                             "highlight": [],
                         },
                     ]
@@ -2636,6 +2661,257 @@ class Issue11ReadOnlyProbeTests(unittest.TestCase):
             object_shape_result.safe_summary()["phrase_highlight_shapes"],
             {"object-range-array": 1, "empty-array": 1},
         )
+
+    def test_record_status_accepts_only_the_endpoint_specific_enum(self) -> None:
+        test_credential = self.probe_credential()
+        for status in ("PUBLISHED", "UNPUBLISHED", "DELETED"):
+            with self.subTest(endpoint="interpretations", status=status):
+                result = harness.ReadOnlyProbeExecutor(
+                    FakeTransport(
+                        self.responses(
+                            interpretations=[self.interpretation_record(status=status)]
+                        )
+                    )
+                ).execute(test_credential, self.probe_gate(test_credential))
+                self.assertEqual(
+                    result.safe_summary()["interpretation_statuses"], {status: 1}
+                )
+        for status in ("PUBLISHED", "DELETED"):
+            with self.subTest(endpoint="phrases", status=status):
+                result = harness.ReadOnlyProbeExecutor(
+                    FakeTransport(
+                        self.responses(phrases=[self.phrase_record(status=status)])
+                    )
+                ).execute(test_credential, self.probe_gate(test_credential))
+                self.assertEqual(result.safe_summary()["phrase_statuses"], {status: 1})
+
+        server_string = "".join(("PUB", "LISHED"))
+        self.assertIsNot(server_string, "PUBLISHED")
+        reported = harness.ReadOnlyProbeExecutor(
+            FakeTransport(
+                self.responses(
+                    interpretations=[self.interpretation_record(status=server_string)]
+                )
+            )
+        ).execute(test_credential, self.probe_gate(test_credential))
+        reported_status = next(iter(reported.safe_summary()["interpretation_statuses"]))
+        self.assertTrue(
+            any(
+                reported_status is documented
+                for documented in harness.READ_ONLY_STATUS_ENUMS["interpretations"]
+            ),
+            "safe output must reuse the documented constant, not server memory",
+        )
+
+    def test_unknown_or_non_string_status_fails_closed_without_echo(self) -> None:
+        test_credential = self.probe_credential()
+        missing = object()
+        unknown_strings = (
+            "PRIVATESECRET",
+            "DRAFT",
+            "ARCHIVEDPRIVATENOTE",
+            "published",
+            " PUBLISHED ",
+            "",
+        )
+        shared_invalid: tuple[object, ...] = (
+            missing,
+            *unknown_strings,
+            0,
+            7,
+            True,
+            False,
+            None,
+            ["PUBLISHED"],
+            {"status": "PUBLISHED"},
+        )
+        endpoints = (
+            ("interpretations", shared_invalid, 2),
+            ("phrases", (*shared_invalid, "UNPUBLISHED"), 3),
+        )
+        for response_key, invalid_values, expected_requests in endpoints:
+            for index, value in enumerate(invalid_values):
+                with self.subTest(endpoint=response_key, index=index):
+                    if response_key == "interpretations":
+                        record = self.interpretation_record()
+                        responses = self.responses(interpretations=[record])
+                    else:
+                        record = self.phrase_record()
+                        responses = self.responses(phrases=[record])
+                    if value is missing:
+                        del record["status"]
+                    else:
+                        record["status"] = value
+                    transport = FakeTransport(responses)
+                    with self.assertRaises(harness.SafetyError) as context:
+                        harness.ReadOnlyProbeExecutor(transport).execute(
+                            test_credential,
+                            self.probe_gate(test_credential),
+                        )
+                    self.assertEqual(len(transport.requests), expected_requests)
+                    rendered = f"{context.exception}{context.exception!r}"
+                    if isinstance(value, str) and value:
+                        self.assertNotIn(value, rendered)
+                    for forbidden in (
+                        FAKE_TOKEN,
+                        self.PRIVATE_INTERPRETATION,
+                        self.PRIVATE_PHRASE,
+                    ):
+                        self.assertNotIn(forbidden, rendered)
+
+        for response_key, unknown in (
+            ("interpretations", "PRIVATESECRET"),
+            ("phrases", "ANOTHERSECRET"),
+        ):
+            with self.subTest(cli=response_key):
+                if response_key == "interpretations":
+                    responses = self.responses(
+                        interpretations=[self.interpretation_record(status=unknown)]
+                    )
+                else:
+                    responses = self.responses(
+                        phrases=[self.phrase_record(status=unknown)]
+                    )
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+                    exit_code = harness.main(
+                        self.cli_args(),
+                        token_prompt=lambda _message: FAKE_TOKEN,
+                        confirmation_prompt=lambda _message: self.probe_gate(
+                            test_credential
+                        ).expected_confirmation,
+                        transport_factory=lambda: FakeTransport(responses),
+                        stdin_isatty=lambda: True,
+                    )
+                self.assertEqual(exit_code, 4)
+                rendered = stdout.getvalue() + stderr.getvalue()
+                for forbidden in (
+                    unknown,
+                    FAKE_TOKEN,
+                    self.PRIVATE_INTERPRETATION,
+                    self.PRIVATE_PHRASE,
+                ):
+                    self.assertNotIn(forbidden, rendered)
+
+    def test_highlight_ranges_within_phrase_length_are_accepted(self) -> None:
+        test_credential = self.probe_credential()
+        length = len(self.PRIVATE_PHRASE)
+        accepted = (
+            ("object-range", [{"start": 1, "end": 5}], "object-range-array"),
+            ("integer-pair-range", [[1, 5]], "integer-pair-array"),
+            (
+                "object-end-equals-length",
+                [{"start": 0, "end": length}],
+                "object-range-array",
+            ),
+            ("pair-end-equals-length", [[0, length]], "integer-pair-array"),
+            ("no-highlight-returned", [], "empty-array"),
+        )
+        for name, highlight, expected_shape in accepted:
+            with self.subTest(accepted=name):
+                result = harness.ReadOnlyProbeExecutor(
+                    FakeTransport(
+                        self.responses(
+                            phrases=[self.phrase_record(highlight=highlight)]
+                        )
+                    )
+                ).execute(test_credential, self.probe_gate(test_credential))
+                safe = result.safe_summary()
+                self.assertEqual(
+                    safe["phrase_highlight_shapes"], {expected_shape: 1}
+                )
+                rendered = (
+                    json.dumps(safe, ensure_ascii=False) + repr(result) + str(result)
+                )
+                self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+
+    def test_out_of_bounds_or_malformed_highlight_fails_closed_without_echo(
+        self,
+    ) -> None:
+        test_credential = self.probe_credential()
+        length = len(self.PRIVATE_PHRASE)
+        rejected = (
+            ("object-end-beyond-phrase", [{"start": 0, "end": length + 1}]),
+            ("pair-end-beyond-phrase", [[0, length + 1]]),
+            ("pair-far-beyond-phrase", [[0, 999999]]),
+            ("object-zero-length-range", [{"start": 3, "end": 3}]),
+            ("pair-zero-length-range", [[3, 3]]),
+            ("object-negative-start", [{"start": -1, "end": 4}]),
+            ("pair-negative-start", [[-1, 4]]),
+            ("pair-negative-end", [[0, -4]]),
+            ("object-start-after-end", [{"start": 5, "end": 2}]),
+            ("pair-start-after-end", [[5, 2]]),
+            ("object-boolean-start", [{"start": True, "end": 4}]),
+            ("pair-boolean-end", [[0, True]]),
+            ("mixed-structures", [{"start": 0, "end": 4}, [0, 4]]),
+            ("oversized-tuple", [[0, 2, 4]]),
+            ("string-range", [["0", "4"]]),
+            ("missing-object-keys", [{"begin": 0, "finish": 4}]),
+            ("not-an-array", {"start": 0, "end": 4}),
+        )
+        for name, highlight in rejected:
+            with self.subTest(rejected=name):
+                transport = FakeTransport(
+                    self.responses(phrases=[self.phrase_record(highlight=highlight)])
+                )
+                with self.assertRaises(harness.SafetyError) as context:
+                    harness.ReadOnlyProbeExecutor(transport).execute(
+                        test_credential,
+                        self.probe_gate(test_credential),
+                    )
+                self.assertEqual(len(transport.requests), 3)
+                rendered = f"{context.exception}{context.exception!r}"
+                self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+                self.assertNotIn(FAKE_TOKEN, rendered)
+
+        missing = object()
+        invalid_phrases: tuple[object, ...] = (
+            missing,
+            "",
+            123,
+            True,
+            None,
+            ["PRIVATE OFFLINE PHRASE BODY"],
+            {"text": "PRIVATE OFFLINE PHRASE BODY"},
+        )
+        for index, value in enumerate(invalid_phrases):
+            with self.subTest(invalid_phrase=index):
+                record = self.phrase_record()
+                if value is missing:
+                    del record["phrase"]
+                else:
+                    record["phrase"] = value
+                transport = FakeTransport(self.responses(phrases=[record]))
+                with self.assertRaises(harness.SafetyError) as context:
+                    harness.ReadOnlyProbeExecutor(transport).execute(
+                        test_credential,
+                        self.probe_gate(test_credential),
+                    )
+                self.assertEqual(len(transport.requests), 3)
+                rendered = f"{context.exception}{context.exception!r}"
+                self.assertNotIn(self.PRIVATE_PHRASE, rendered)
+                self.assertNotIn(FAKE_TOKEN, rendered)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        out_of_bounds = self.responses(
+            phrases=[self.phrase_record(highlight=[[0, 999999]])]
+        )
+        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            exit_code = harness.main(
+                self.cli_args(),
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: self.probe_gate(
+                    test_credential
+                ).expected_confirmation,
+                transport_factory=lambda: FakeTransport(out_of_bounds),
+                stdin_isatty=lambda: True,
+            )
+        self.assertEqual(exit_code, 4)
+        rendered = stdout.getvalue() + stderr.getvalue()
+        for forbidden in (FAKE_TOKEN, self.PRIVATE_PHRASE, "999999"):
+            self.assertNotIn(forbidden, rendered)
 
 
 if __name__ == "__main__":

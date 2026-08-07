@@ -1098,16 +1098,38 @@ def _require_read_success(response: Any) -> HttpResponse:
     return response
 
 
-def _safe_status(value: Any) -> str:
-    if (
-        not isinstance(value, str)
-        or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value) is None
-    ):
-        raise SafetyError("read-only record status is structurally invalid")
-    return value
+READ_ONLY_STATUS_ENUMS: Mapping[str, tuple[str, ...]] = {
+    "interpretations": ("PUBLISHED", "UNPUBLISHED", "DELETED"),
+    "phrases": ("PUBLISHED", "DELETED"),
+}
 
 
-def _read_only_highlight_shape(value: Any) -> str:
+def _read_only_record_status(record: Mapping[str, Any], response_key: str) -> str:
+    """Return the documented status constant, never a server-provided string."""
+    allowed = READ_ONLY_STATUS_ENUMS.get(response_key)
+    if allowed is None:
+        raise SafetyError("read-only record collection is not a documented endpoint")
+    value = record.get("status")
+    if isinstance(value, str) and not isinstance(value, bool):
+        for documented in allowed:
+            if value == documented:
+                return documented
+    raise SafetyError(
+        "read-only record status is missing or outside the documented endpoint enum"
+    )
+
+
+def _read_only_phrase_length(record: Mapping[str, Any]) -> int:
+    """Measure the phrase in memory only; the body is never printed or persisted."""
+    if "phrase" not in record:
+        raise SafetyError("phrase record is missing the phrase field")
+    phrase = record["phrase"]
+    if not isinstance(phrase, str) or not phrase:
+        raise SafetyError("phrase record body is structurally invalid")
+    return len(phrase)
+
+
+def _read_only_highlight_shape(value: Any, phrase_length: int) -> str:
     if not isinstance(value, list):
         raise SafetyError("phrase highlight is not a documented range array")
     if not value:
@@ -1119,7 +1141,7 @@ def _read_only_highlight_shape(value: Any) -> str:
             and not isinstance(start, bool)
             and isinstance(end, int)
             and not isinstance(end, bool)
-            and 0 <= start < end
+            and 0 <= start < end <= phrase_length
         )
 
     if all(
@@ -1158,12 +1180,13 @@ def _summarize_read_only_records(
         if record_id in seen_ids:
             raise SafetyError("read-only record collection contains duplicate ids")
         seen_ids.add(record_id)
-        status = _safe_status(record.get("status"))
+        status = _read_only_record_status(record, response_key)
         statuses[status] = statuses.get(status, 0) + 1
         if inspect_highlight:
+            phrase_length = _read_only_phrase_length(record)
             if "highlight" not in record:
                 raise SafetyError("phrase record is missing highlight structure")
-            shape = _read_only_highlight_shape(record["highlight"])
+            shape = _read_only_highlight_shape(record["highlight"], phrase_length)
             highlight_shapes[shape] = highlight_shapes.get(shape, 0) + 1
     return (
         len(records),
