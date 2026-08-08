@@ -8,7 +8,7 @@
 
 暂无。
 
-## [0.1.0] - 未发布（准备中）
+## [0.1.0] - 2026-08-09
 
 第一个可用版本，范围刻意收窄为**释义批量录入**这一条已验证闭环。
 
@@ -53,5 +53,5 @@
 - 自动化测试当前只在 **Python 3.13** 上验证（CI 与推荐运行时）。Python 3.9 仅作为遗留兼容性记录，已于 2025-10-31 EOL、不再接收安全更新，不推荐使用；其他版本未经验证。
 - 真实运行验证均在副账号完成，批次规模为最小的 3 条；主账号接入需要单独评审。
 
-[Unreleased]: https://github.com/davidqyc/momo-moreEfficient/compare/main...HEAD
-[0.1.0]: https://github.com/davidqyc/momo-moreEfficient
+[Unreleased]: https://github.com/davidqyc/momo-moreEfficient/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/davidqyc/momo-moreEfficient/releases/tag/v0.1.0
