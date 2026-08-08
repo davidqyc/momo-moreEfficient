@@ -9,6 +9,20 @@
 3. Wait for scope confirmation when the change affects API writes, content ownership, public behavior, or project architecture.
 4. Read `AGENTS.md`, `docs/decision-log.md`, and the relevant product document.
 
+## Running the tests
+
+No dependencies, no build step, standard-library `unittest` only. Always run under the process-level no-network guard:
+
+```bash
+MOMO_TEST_NETWORK_DISABLED=1 PYTHONPATH=tests/no_network_guard python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+The guard replaces `socket.socket`, `socket.create_connection` and `urllib.request.urlopen` with raising stubs, so the suite cannot reach the network. A change that needs a real request to pass is a change that needs an Issue first.
+
+## Credential boundary
+
+The CLI accepts a real token only through a hidden interactive `getpass` prompt, held in process memory. Do **not** add loading from argv, environment variables, `.env`, config files, the clipboard, or the OS keychain — see `SECURITY.md` for why this is stricter than the usual convention. A PR that widens this boundary will be rejected without an Issue-level security decision.
+
 ## Pull requests
 
 - Keep each PR focused on one Issue or one coherent fix.
@@ -37,6 +51,7 @@ Never paste an Authorization header or raw private payload.
 - The project does not modify Maimemo built-in dictionary interpretations.
 - Write-capable tools must default to dry-run.
 - Phrase/example automation remains blocked until the semantic-position requirements in Issue #2 and Issue #4 are resolved.
+- The only supported v0.1.0 product command is `scripts/interpretation_batch_importer.py`, and it contains no phrase request path. The other files under `scripts/` are internal, unsupported development spike/probe/diagnostic tools kept for engineering history; some are live-capable and target phrase endpoints. Do not treat them as product commands, do not run them against a production account, and scope any "no phrase request path" statement to the supported importer.
 - Do not introduce UI automation, cloud infrastructure, a database, or a cross-platform framework without a confirmed need and Issue-level decision.
 
 ## Commit messages

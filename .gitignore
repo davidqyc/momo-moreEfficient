@@ -1,7 +1,8 @@
-# Secrets and local configuration
+# Secrets and local configuration.
+# There is deliberately no `.env.example`: the CLI never reads a token from a
+# dotfile, an environment variable or a config file. See SECURITY.md.
 .env
 .env.*
-!.env.example
 *.local
 secrets/
 credentials/
