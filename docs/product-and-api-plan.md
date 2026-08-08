@@ -520,6 +520,63 @@ Issue #24 的实现与复核全部使用明显虚假的 credential 与 fake tran
 
 Issue #27 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。真实例句写入仍需所有者另开单独 Issue 明确授权，并在执行前重新核对当前官方费用与条款。
 
+### 2.11 Issue #29 例句最终结论与 Issue #32 释义批量 create-only MVP
+
+#### Issue #29 的最终事实（由 Issue #30 GET-only 诊断确认）
+
+Issue #29 在零基线之后发出**唯一一次**真实例句 POST。随后 Issue #30 的 GET-only 诊断在合并 main `ad24c76c64ec78d3f1e71d892dd8c7cd784d577b` 上执行 2 个 GET、0 次写入，得到以下**观测事实**：
+
+- 该例句**已经持久化**：鉴权后的 phrases 集合恰好包含 1 条记录；
+- 记录 ID 通过本地安全策略，`status` 精确为 `PUBLISHED`，无重复 ID；
+- 英文例句正文与固定意图句**逐字一致**；
+- 中文翻译与固定意图译文**逐字一致**；
+- `origin` 精确等于 `自编`；
+- `tags_match_expected = false`：当前回读**没有**返回精确的 `MBA` + `BEC` + `GMAT` 意图集合；
+- 返回的 `highlight` 为 `missing`。
+
+因此 Issue #29 之前报告的 `readback / schema / not-verified` 是**严格本地校验在 HTTP 200 完整响应上的拒绝**，不是「POST 失败」。第一处不兼容点是 `record-content`（标签不符在严格校验顺序中早于 highlight）。
+
+#### 结论：例句自动化暂时阻断，释义线路独立可行
+
+- 例句线路的两个绝对阻断项（三标签精确往返、英文目标词位置）当前**均未满足**，所以**例句自动化保持阻断**；不得为了刻画这两个缺口再发任何例句写入。
+- 释义线路不受影响：Issue #26 已证明自建释义可以精确写入 `MBA` + `BEC` + `GMAT` 与 `PUBLISHED` 并逐字回读通过。**例句阻断不拖住释义线路。**
+
+#### Issue #32：第一个真正可用的产品工作流（create-only）
+
+新增**一个**聚焦模块 `scripts/interpretation_batch_importer.py` 与**一个**测试文件 `tests/test_interpretation_batch_importer.py`；`scripts/issue9_live_harness.py` 保持**冻结未改动**，凭证/账号门禁/生产 transport/`HttpRequest`/已复核 GET path 构造/`data` 外层兼容/vocabulary 与 collection 校验/文档化 create payload 合同全部按 import 复用，不复制。仅标准库。
+
+只支持**一种** Markdown 批次格式（不做 YAML/JSON/CSV/TSV 变体）：
+
+```markdown
+## acquisition
+n. 收购；购置；获得
+
+## leverage
+n. 杠杆作用
+v. 利用；借助
+```
+
+解析器**只做校验，不改写**：拼写走既有已复核拼写策略；释义正文必须非空；内部换行原样保留；只归一化文档自身的 CRLF/CR 与正文外侧空行边界。畸形标题、空正文、重复拼写（NFKC + casefold 比较）、超过 30 条一律拒绝；典型批次 8–15 条。每条固定 `tags = ["MBA","BEC","GMAT"]`、`status = "PUBLISHED"`，命令行不接受标签/状态，Token 只走隐藏交互输入且仅存于内存。
+
+两种模式，一个命令，无子命令：
+
+```bash
+/usr/bin/python3 scripts/interpretation_batch_importer.py --mode dry-run --input batch.md --account-label "副账号测试" --allow-network
+/usr/bin/python3 scripts/interpretation_batch_importer.py --mode create  --input batch.md --account-label "副账号测试" --allow-network
+```
+
+两种模式都先对**整批**做 preflight（每条 GET vocabulary + GET 鉴权释义集合），并按 `ready-create`（自建释义数 = 0）/ `blocked-existing`（= 1）/ `blocked-ambiguous`（> 1）/ `blocked-error`（transport / http-status / schema / safety）分类，然后输出完整的所有者可读预览。dry-run 发 0 个 POST（结构上无法 arm 写预算）。create 模式下只要有任一条不是 `ready-create`，就在**第一个 POST 之前**整批中止：不写已就绪项、不改走 update、不换词、不静默跳过。
+
+create 只需要**一次**批级确认，而不是 15 次逐条确认；该确认摘要绑定 operation、生产 host、写入 path、账号标签、Token 指纹、有序批次 digest、每条拼写、每条精确释义、内部每个已解析 `voc_id`、标签、状态、条目数与费用/条款门禁。任何条目在预览后被改动都会改变摘要，已输入的确认随即失效，发送边界再次拒绝。
+
+写入阶段按原始输入顺序**顺序**处理：每条最多 **1 个 POST**（预算在委托请求之前扣减，因此同一条的第二个 POST 在结构上不可能发生）、**0 次重试**，随后立即**1 次**鉴权 GET 回读。判定成功要求恰好 1 条记录且记录 ID 安全、释义正文逐字一致、标签按集合语义恰好命中三个、状态精确为 `PUBLISHED`；不依赖 POST 响应体里的记录 ID。POST 超时/重置/响应体读取失败/非 2xx/结果不确定时，**绝不重发**，只做那一次 GET-only 恢复回读：零基线 + 精确单条 = `recovered-success`，否则按 `not-verified` / `ambiguous` fail closed 并**停止整批剩余项**。
+
+部分失败语义：立即停止、不自动回滚、不删除任何内容、不继续后续条目，并报告停止位置的序号/拼写、之前已验证的条目与剩余未尝试的条目。重跑同一批次时，先前已创建的条目会在 preflight 阶段被判为 `blocked-existing` 并阻断新的 create 批次——这就是本阶段 create-only 的幂等模型。
+
+本阶段无 update / delete / phrase 请求路径。运行报告只写一个已忽略的小型脱敏文件到 `artifacts/private/`（目录 `0700`、文件 `0600`、`O_NOFOLLOW`），只含模式、批次 digest、时间戳、拼写、意图释义、意图标签/状态、每条 preflight 分类、是否尝试 POST、验证结果与 `voc_id`/记录指纹；不含 Token、Authorization、Cookie、原始 `voc_id`、原始记录 ID 或原始服务器响应，也不是重放状态机。
+
+Issue #32 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。真实 dry-run 与真实批量 create 仍需所有者另开单独 Issue 明确授权，并在执行前重新核对当前官方费用与条款。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
@@ -556,11 +613,11 @@ Issue #27 的实现与复核全部使用明显虚假的 credential 与 fake tran
 
 | 项目 | 优先级 | 当前状态 | 决策 |
 |---|---|---|---|
-| 可同时选择 `MBA`、`BEC`、`GMAT` | 绝对阻断 | 文档/前序分析显示可能支持，尚未真实写入和跨账号验证 | 未通过前不开发正式发布流程 |
-| 伙伴账号可通过上述标签找到内容 | 绝对阻断 | 未验证 | 失败则释义和例句的共享发布目标均停止 |
-| 英文例句中准确标记目标词义位置 | 绝对阻断 | 返回模型可能存在 highlight range，但写入控制权不明确 | 无可靠路径则停止例句自动化 |
+| 可同时选择 `MBA`、`BEC`、`GMAT` | 绝对阻断 | 释义已验证通过（#26）；例句**未通过**：#29/#30 回读 `tags_match_expected = false` | 例句发布流程保持阻断；释义线路照常推进 |
+| 伙伴账号可通过上述标签找到内容 | 绝对阻断 | 未验证；例句侧在标签精确往返修复前无法验证 | 失败则释义和例句的共享发布目标均停止 |
+| 英文例句中准确标记目标词义位置 | 绝对阻断 | #30 回读显示 `highlight` 为 `missing`，文档化 CREATE 请求也无可写字段 | 无可靠路径，例句自动化保持阻断 |
 | 中文翻译中标记具体汉字/标点位置 | 高难度、当前实质阻断 | 尚未发现明确写入字段 | 无法传入精确范围时，除非所有者接受手工收尾，否则保持阻断 |
-| 添加来源/origin | 非阻断 | 前序分析显示可能支持，待实测 | 可缺失，但应尽量保留 |
+| 添加来源/origin | 非阻断 | 已验证：#30 回读 `origin == 自编` | 可缺失，但应尽量保留 |
 
 中文位置不需要 AI 自行猜测。用户可以提前完成高难度语义判断，但 API 必须能接收明确的字符范围或等价结构，否则预处理没有意义。
 
