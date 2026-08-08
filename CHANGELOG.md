@@ -6,7 +6,23 @@
 
 ## [Unreleased]
 
-暂无。
+### Added
+
+- 显式的主账号 opt-in：`--allow-main-account`。默认仍为 **false**，不给该开关时导入器的行为与 `v0.1.0` 的副账号/测试账号策略完全一致。参见 [#51](https://github.com/davidqyc/momo-moreEfficient/issues/51) 与 `docs/decision-log.md` 的 D-014。
+  - 主账号模式必须**同时**满足两个条件：显式 `--allow-main-account`，以及一个经复核的主账号标签（`主账号` 或 `main-account`）。缺任一条件都会在 Token 提示和网络传输层创建**之前** fail closed。
+  - `prod` / `production` 不被当作个人主账号的同义词；`--allow-main-account` 与副账号/测试标签组合同样被拒绝。
+  - 独立的隐藏 Token 提示 `Main-account Maimemo Token (hidden):`，以及 preflight 之前的显式警告：当前处于主账号模式、本工具无法可靠校验 Token 归属哪个账号、必须在登录目标主账号的状态下获取 Token、`create` / `update` 会改动真实账号数据。
+  - 独立的确认串 `CONFIRM MAIN CREATE <16 位十六进制>` / `CONFIRM MAIN UPDATE <16 位十六进制>`；其摘要覆盖与副账号确认相同的完整绑定，并额外绑定账号模式。副账号确认串无法授权主账号运行，主账号确认串也无法授权副账号运行。
+  - 本地脱敏运行报告新增 `account_mode` 字段（`secondary` / `main`）；账号标签本身仍然不落盘。
+- 26 个针对主账号 opt-in 的离线测试，总数由 443 增至 469。
+
+### Unchanged
+
+- 写入安全模型没有任何放宽：整批 preflight、每个待写条目最多一次 POST、不重试、写后立即鉴权回读、任一阻断项都在第一个 POST 之前中止、失败即停止、不回滚、不删除。
+- 凭证策略沿用 D-013：只走隐藏 `getpass`，仅存进程内存，不经 argv、环境变量、`.env`、配置文件、剪贴板或钥匙串。
+- `scripts/issue9_live_harness.py` 的副账号门禁未放宽，历史 spike/probe 工具仍然只能用于测试账号。
+- 仍然没有账号身份接口，因此本工具**不能**证明 Token 属于哪个墨墨账号；账号身份由操作者负责。
+- 仍然没有删除路径、没有自动回滚、没有例句/短语请求路径。
 
 ## [0.1.0] - 2026-08-09
 

@@ -1,4 +1,4 @@
-"""Issue #32/#39 — the small-batch interpretation importer.
+"""Issue #32/#39/#51 — the small-batch interpretation importer.
 
 Every test here runs offline against an injected fake transport, under the
 process-level no-network guard, with an obviously fake credential. No real
@@ -21,6 +21,15 @@ whole-batch abort before the first POST if anything is blocked, a confirmation
 bound to the exact pre-update snapshot, one POST to `/interpretations/{id}` with
 no voc_id and no retry, a same-record strict readback, and a private report that
 keeps the replaced text for MANUAL restoration without ever keeping a raw id.
+
+Issue #51 adds the explicit main-account opt-in beside all of that, and the tests
+are written to prove it is a SEPARATE path rather than a relaxed one: the frozen
+secondary label policy, preview line and CREATE/UPDATE confirmation strings are
+re-asserted byte for byte; main-account mode needs both `--allow-main-account`
+and a reviewed main-account label, and either one alone fails closed before a
+Token prompt or a transport exists; neither account mode's confirmation or
+credential can satisfy the other; and the main path reuses the same one-POST /
+no-retry / immediate-readback machinery rather than a second copy of it.
 """
 
 from __future__ import annotations
@@ -49,6 +58,11 @@ import interpretation_batch_importer as importer  # noqa: E402
 
 FAKE_TOKEN = "FAKE_ISSUE32_CREDENTIAL_NOT_VALID"
 ACCOUNT_LABEL = "issue32-secondary-test"
+# Issue #51 — the explicit main-account opt-in. The Token is as obviously fake as
+# the secondary one; no real credential is ever read by this suite.
+MAIN_TOKEN = "FAKE_ISSUE51_MAIN_CREDENTIAL_NOT_VALID"
+MAIN_LABEL = "主账号"
+MAIN_LABELS = ("主账号", "main-account", "MAIN-ACCOUNT")
 VOC_A = "INVALID_ISSUE32_VOC_A"
 VOC_B = "INVALID_ISSUE32_VOC_B"
 VOC_C = "INVALID_ISSUE32_VOC_C"
@@ -1946,6 +1960,658 @@ class SecurityTests(ImporterFixtures, unittest.TestCase):
                     with self.assertRaises(harness.SafetyError):
                         importer.validate_contract()
         importer.validate_contract()
+
+
+# --------------------------------------------------------------------------- #
+# Issue #51 — the explicit main-account opt-in
+# --------------------------------------------------------------------------- #
+
+
+class MainAccountFixtures(ImporterFixtures):
+    """Offline plumbing for the main-account path, beside the secondary one."""
+
+    def setUp(self):
+        super().setUp()
+        self.main_credential = importer.MainAccountCredential(MAIN_TOKEN, MAIN_LABEL)
+
+    def batch_file(self, document=TWO_ENTRY_DOCUMENT):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "batch.md"
+        path.write_text(document, encoding="utf-8")
+        return path
+
+    def created_pair(self):
+        return self.preflight_pair() + [
+            harness.HttpResponse(201, {}), collection([record(RECORD_A, TEXT_A)]),
+            harness.HttpResponse(201, {}), collection([record(RECORD_B, TEXT_B)]),
+        ]
+
+    def updated_pair(self):
+        return [
+            voc_response(VOC_A, SPELLING_A),
+            collection([record(RECORD_A, OLD_A, tags=OLD_TAGS)]),
+            voc_response(VOC_B, SPELLING_B),
+            collection([record(RECORD_B, OLD_B, tags=OLD_TAGS)]),
+            harness.HttpResponse(200, {}), collection([record(RECORD_A, TEXT_A)]),
+            harness.HttpResponse(200, {}), collection([record(RECORD_B, TEXT_B)]),
+        ]
+
+    def main_plan(self, *, mode=importer.MODE_CREATE, account_mode=None,
+                  account_label=None):
+        """The plan a two-item run over `created_pair`/`updated_pair` builds.
+
+        The same helper builds the secondary-mode plan for the same document, so
+        the two account modes can be compared field for field.
+        """
+        entries = self.entries()
+        if mode == importer.MODE_UPDATE:
+            items = tuple(
+                importer.PlannedItem(
+                    ordinal=ordinal, spelling=spelling, returned_spelling=spelling,
+                    vocabulary_id=vocabulary_id, interpretation=text,
+                    request_body=importer.update_body(text),
+                    baseline=importer.RecordBaseline(
+                        record_id=record_id, interpretation=old_text,
+                        tags=tuple(OLD_TAGS), status="PUBLISHED",
+                    ),
+                )
+                for ordinal, spelling, vocabulary_id, record_id, old_text, text in (
+                    (1, SPELLING_A, VOC_A, RECORD_A, OLD_A, TEXT_A),
+                    (2, SPELLING_B, VOC_B, RECORD_B, OLD_B, TEXT_B),
+                )
+            )
+        else:
+            items = tuple(
+                importer.PlannedItem(
+                    ordinal=ordinal, spelling=spelling, returned_spelling=spelling,
+                    vocabulary_id=vocabulary_id, interpretation=text,
+                    request_body=importer.create_body(vocabulary_id, text),
+                )
+                for ordinal, spelling, vocabulary_id, text in (
+                    (1, SPELLING_A, VOC_A, TEXT_A),
+                    (2, SPELLING_B, VOC_B, TEXT_B),
+                )
+            )
+        account = account_mode if account_mode is not None else importer.ACCOUNT_MAIN
+        default_label = MAIN_LABEL if account == importer.ACCOUNT_MAIN else ACCOUNT_LABEL
+        return importer.BatchPlan(
+            account_label=account_label or default_label,
+            credential_fingerprint=(
+                self.main_credential.fingerprint
+                if account == importer.ACCOUNT_MAIN
+                else self.credential.fingerprint
+            ),
+            items=items,
+            digest=importer.batch_digest(entries, mode=mode),
+            mode=mode,
+            account_mode=account,
+        )
+
+    @property
+    def main_create_confirmation(self):
+        return self.main_plan().expected_confirmation
+
+    def drive_main(self, responses, *, mode=importer.MODE_DRY_RUN,
+                   document=TWO_ENTRY_DOCUMENT, confirm=None, report=None):
+        transport = FakeTransport(responses)
+        lines = []
+        result = importer.run_batch(
+            mode=mode,
+            entries=self.entries(document),
+            transport=transport,
+            credential=self.main_credential,
+            account_label=MAIN_LABEL,
+            confirm=confirm if confirm is not None else self.confirm,
+            emit=lines.append,
+            sleep=self.slept.append,
+            report=report,
+            account_mode=importer.ACCOUNT_MAIN,
+        )
+        return result, transport, "\n".join(lines)
+
+    def cli_main(self, argv, *, responses=(), confirmation=None,
+                 transport_factory=None):
+        """Run the CLI, recording every hidden prompt and every transport built."""
+        prompts, transports = [], []
+
+        def build():
+            transport = FakeTransport(list(responses))
+            transports.append(transport)
+            return transport
+
+        def token_prompt(message):
+            prompts.append(message)
+            return MAIN_TOKEN
+
+        stream = io.StringIO()
+        with mock.patch("sys.stdout", stream):
+            code = importer.main(
+                argv,
+                token_prompt=token_prompt,
+                confirmation_prompt=(
+                    None if confirmation is None else (lambda message: confirmation)
+                ),
+                transport_factory=(
+                    build if transport_factory is None else transport_factory
+                ),
+                stdin_isatty=lambda: True,
+                report_factory=self.private_report,
+                sleep=self.slept.append,
+            )
+        return code, stream.getvalue(), prompts, transports
+
+
+class MainAccountGateTests(MainAccountFixtures, unittest.TestCase):
+    def test_a_main_label_without_the_opt_in_blocks_before_the_token_prompt(self):
+        """No opt-in means the frozen secondary policy, and it rejects these."""
+        for label in MAIN_LABELS:
+            with self.subTest(label=label):
+                code, printed, prompts, transports = self.cli_main(
+                    ["--mode", importer.MODE_DRY_RUN, "--input", str(self.batch_file()),
+                     "--account-label", label, "--allow-network"],
+                )
+                self.assertEqual(code, 3)
+                self.assertEqual(prompts, [])
+                self.assertEqual(transports, [])
+                self.assertIn(importer.BLOCKED_MAIN_ACCOUNT_MESSAGE, printed)
+                self.assertNotIn(MAIN_TOKEN, printed)
+                # And the frozen harness still rejects the label outright.
+                with self.assertRaises(harness.SafetyError):
+                    harness._validate_account_label_shape(label)
+
+    def test_a_main_label_without_the_opt_in_blocks_before_a_transport_exists(self):
+        for label in MAIN_LABELS:
+            with self.subTest(label=label):
+                def refuse():
+                    raise AssertionError("no transport may be built for a blocked run")
+
+                code, printed, prompts, _transports = self.cli_main(
+                    ["--mode", importer.MODE_CREATE, "--input", str(self.batch_file()),
+                     "--account-label", label, "--allow-network"],
+                    transport_factory=refuse,
+                )
+                self.assertEqual(code, 3)
+                self.assertEqual(prompts, [])
+                self.assertIn(importer.BLOCKED_MAIN_ACCOUNT_MESSAGE, printed)
+
+    def test_the_opt_in_with_a_secondary_or_unreviewed_label_blocks(self):
+        """Opt-in alone authorizes nothing: the label must be reviewed too."""
+        for label in (ACCOUNT_LABEL, "secondary", "副号", "测试账号", "issue51-test",
+                      "main", "primary account", "owner", "prod", "production",
+                      "主账户", "主号", "生产", "主账号-test", "unlabelled"):
+            with self.subTest(label=label):
+                code, printed, prompts, transports = self.cli_main(
+                    ["--mode", importer.MODE_DRY_RUN, "--input", str(self.batch_file()),
+                     "--account-label", label, "--allow-network",
+                     "--allow-main-account"],
+                )
+                self.assertEqual(code, 3)
+                self.assertEqual(prompts, [])
+                self.assertEqual(transports, [])
+                self.assertIn("BLOCKED", printed)
+                self.assertNotIn(MAIN_TOKEN, printed)
+
+    def test_only_the_narrow_reviewed_label_family_is_a_main_account_label(self):
+        for label in MAIN_LABELS:
+            with self.subTest(label=label):
+                self.assertIn(
+                    importer.validate_main_account_label(label),
+                    importer.MAIN_ACCOUNT_LABELS,
+                )
+        self.assertEqual(importer.MAIN_ACCOUNT_LABELS, ("主账号", "main-account"))
+        for label in ("prod", "production", "生产", "main", "primary", "owner",
+                      "主账户", "主号", ACCOUNT_LABEL, "主账号 ", "", None, 7):
+            with self.subTest(label=label):
+                with self.assertRaises(harness.SafetyError):
+                    importer.validate_main_account_label(label)
+        # And every reviewed main label is still rejected by the frozen gate.
+        for label in importer.MAIN_ACCOUNT_LABELS:
+            with self.assertRaises(harness.SafetyError):
+                harness._validate_account_label_shape(label)
+
+    def test_neither_account_mode_accepts_the_other_modes_credential(self):
+        cases = (
+            ("secondary credential, main run", self.credential, MAIN_LABEL,
+             importer.ACCOUNT_MAIN),
+            ("main credential, secondary run", self.main_credential, ACCOUNT_LABEL,
+             importer.ACCOUNT_SECONDARY),
+            ("main credential, main label, secondary run", self.main_credential,
+             MAIN_LABEL, importer.ACCOUNT_SECONDARY),
+        )
+        for name, credential, label, account_mode in cases:
+            with self.subTest(case=name):
+                transport = FakeTransport([])
+                with self.assertRaises(harness.SafetyError):
+                    importer.run_batch(
+                        mode=importer.MODE_DRY_RUN,
+                        entries=self.entries(),
+                        transport=transport,
+                        credential=credential,
+                        account_label=label,
+                        emit=lambda line: None,
+                        sleep=self.slept.append,
+                        account_mode=account_mode,
+                    )
+                self.assertEqual(transport.requests, [])
+
+    def test_a_main_credential_requires_a_reviewed_main_label_and_stays_redacted(self):
+        for label in (ACCOUNT_LABEL, "main", "prod", "主账户", ""):
+            with self.subTest(label=label):
+                with self.assertRaises(harness.SafetyError):
+                    importer.MainAccountCredential(MAIN_TOKEN, label)
+        credential = importer.MainAccountCredential(MAIN_TOKEN, "MAIN-ACCOUNT")
+        # The bound label is this project's own constant, never the typed text.
+        self.assertEqual(credential.account_label, "main-account")
+        self.assertEqual(
+            credential.source_name, importer.MAIN_ACCOUNT_CREDENTIAL_SOURCE
+        )
+        self.assertNotEqual(
+            importer.MAIN_ACCOUNT_CREDENTIAL_SOURCE,
+            harness.TEST_ACCOUNT_CREDENTIAL_SOURCE,
+        )
+        rendered = repr(credential) + str(credential) + credential.fingerprint
+        self.assertNotIn(MAIN_TOKEN, rendered)
+
+    def test_the_contract_fails_closed_if_the_main_account_gate_drifts(self):
+        for name, value in (
+            ("MAIN_ACCOUNT_LABELS", ("主账号", "main-account", "production")),
+            ("MAIN_ACCOUNT_LABELS", ("主账号", "secondary-main")),
+            ("MAIN_ACCOUNT_LABELS", ("主账号",)),
+            ("MAIN_CREATE_CONFIRMATION_PREFIX", importer.CONFIRMATION_PREFIX),
+            ("MAIN_UPDATE_CONFIRMATION_PREFIX", importer.MAIN_CREATE_CONFIRMATION_PREFIX),
+            ("MAIN_ACCOUNT_CREDENTIAL_SOURCE", harness.TEST_ACCOUNT_CREDENTIAL_SOURCE),
+            ("MAIN_TOKEN_PROMPT", importer.TOKEN_PROMPT),
+            ("ACCOUNT_MODES", ("secondary",)),
+        ):
+            with self.subTest(name=name, value=value):
+                with mock.patch.object(importer, name, value):
+                    with self.assertRaises(harness.SafetyError):
+                        importer.validate_contract()
+        importer.validate_contract()
+
+
+class MainAccountRunTests(MainAccountFixtures, unittest.TestCase):
+    def test_the_opt_in_and_a_reviewed_label_reach_a_dry_run_with_zero_posts(self):
+        code, printed, prompts, transports = self.cli_main(
+            ["--mode", importer.MODE_DRY_RUN, "--input", str(self.batch_file()),
+             "--account-label", "主账号", "--allow-network", "--allow-main-account"],
+            responses=self.preflight_pair(),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(prompts, [importer.MAIN_TOKEN_PROMPT])
+        self.assertNotEqual(importer.MAIN_TOKEN_PROMPT, importer.TOKEN_PROMPT)
+        self.assertEqual(transports[0].methods(), ["GET"] * 4)
+        self.assertEqual(transports[0].methods().count("POST"), 0)
+        self.assertIn("READY 2", printed)
+        self.assertIn("WRITES 0", printed)
+
+    def test_the_main_account_warning_is_visible_before_the_preflight(self):
+        _result, _transport, output = self.drive_main(self.preflight_pair())
+        banner = output.index("MAIN ACCOUNT MODE IS ACTIVE")
+        self.assertLess(banner, output.index("BATCH INTERPRETATION IMPORTER"))
+        for statement in (
+            "MAIN ACCOUNT MODE IS ACTIVE",
+            "NO reliable account-identity check",
+            "operator's responsibility",
+            "Obtain the Token while logged into the intended main account",
+            "change real account data",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIn(statement, output)
+        self.assertIn("account [REDACTED] (MAIN ACCOUNT", output)
+        self.assertNotIn("secondary/test label accepted", output)
+
+    def test_main_create_uses_the_existing_one_post_and_readback_machinery(self):
+        code, printed, _prompts, transports = self.cli_main(
+            ["--mode", importer.MODE_CREATE, "--input", str(self.batch_file()),
+             "--account-label", "主账号", "--allow-network", "--allow-main-account"],
+            responses=self.created_pair(),
+            confirmation=self.main_create_confirmation,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("VERIFIED 2/2", printed)
+        self.assertEqual(transports[0].calls(), [
+            ("GET", f"{VOCABULARY_PATH}?spelling={SPELLING_A}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_A}"),
+            ("GET", f"{VOCABULARY_PATH}?spelling={SPELLING_B}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+            ("POST", INTERPRETATIONS_PATH),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_A}"),
+            ("POST", INTERPRETATIONS_PATH),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+        ])
+        self.assertEqual(transports[0].methods().count("POST"), 2)
+        self.assertIn("retries 0", printed)
+
+    def test_main_update_uses_the_existing_one_post_and_readback_machinery(self):
+        code, printed, _prompts, transports = self.cli_main(
+            ["--mode", importer.MODE_UPDATE, "--input", str(self.batch_file()),
+             "--account-label", "main-account", "--allow-network",
+             "--allow-main-account"],
+            responses=self.updated_pair(),
+            confirmation=self.main_plan(
+                mode=importer.MODE_UPDATE, account_label="main-account"
+            ).expected_confirmation,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("UPDATED 2/2", printed)
+        self.assertEqual(transports[0].calls()[4:], [
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_A}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_A}"),
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_B}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+        ])
+        self.assertEqual(transports[0].methods().count("POST"), 2)
+
+    def test_a_failed_main_post_is_never_retried_and_stops_the_rest(self):
+        responses = self.preflight_pair() + [
+            harness.TransportError(TRANSPORT_SENTINEL),
+            collection([]),
+        ]
+        result, transport, output = self.drive_main(
+            responses, mode=importer.MODE_CREATE,
+            confirm=lambda plan: plan.expected_confirmation,
+        )
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.post_count, 1)
+        self.assertEqual(transport.methods().count("POST"), 1)
+        self.assertEqual(result.outcomes[1].outcome, importer.NOT_ATTEMPTED)
+        self.assertIn("Nothing was rolled back or deleted", output)
+        self.assertNotIn(TRANSPORT_SENTINEL, output)
+
+    def test_an_already_matching_main_item_stays_a_zero_write_no_op(self):
+        matching = [
+            voc_response(VOC_A, SPELLING_A),
+            collection([record(RECORD_A, TEXT_A)]),
+            voc_response(VOC_B, SPELLING_B),
+            collection([record(RECORD_B, TEXT_B)]),
+        ]
+        result, transport, output = self.drive_main(
+            matching, mode=importer.MODE_UPDATE,
+            confirm=lambda plan: self.fail("no confirmation may be requested"),
+        )
+        self.assertEqual(result.status, "satisfied")
+        self.assertEqual(result.post_count, 0)
+        self.assertEqual(result.no_op_count, 2)
+        self.assertNotIn("POST", transport.methods())
+        self.assertIn("NOTHING TO UPDATE", output)
+        self.assertIn("WRITES 0", output)
+        # One matching item and one changed item: still exactly one POST.
+        mixed = [
+            voc_response(VOC_A, SPELLING_A),
+            collection([record(RECORD_A, OLD_A, tags=OLD_TAGS)]),
+            voc_response(VOC_B, SPELLING_B),
+            collection([record(RECORD_B, TEXT_B)]),
+            harness.HttpResponse(200, {}),
+            collection([record(RECORD_A, TEXT_A)]),
+        ]
+        result, transport, _output = self.drive_main(
+            mixed, mode=importer.MODE_UPDATE,
+            confirm=lambda plan: plan.expected_confirmation,
+        )
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.post_count, 1)
+        self.assertEqual(result.no_op_count, 1)
+
+    def test_a_main_account_run_records_its_account_mode_in_the_private_report(self):
+        report = self.private_report()
+        result, _transport, _output = self.drive_main(
+            self.preflight_pair(), report=report
+        )
+        document = json.loads(result.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["account_mode"], importer.ACCOUNT_MAIN)
+        self.assertEqual(document["post_count"], 0)
+        importer._assert_no_raw_identifiers(document)
+        # The label itself is still never persisted.
+        self.assertNotIn(MAIN_LABEL, json.dumps(document, ensure_ascii=False))
+
+    def test_a_secondary_run_still_reports_the_secondary_account_mode(self):
+        report = self.private_report()
+        result, _transport, _output = self.drive(self.preflight_pair(), report=report)
+        document = json.loads(result.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["account_mode"], importer.ACCOUNT_SECONDARY)
+
+class MainAccountConfirmationIsolationTests(MainAccountFixtures, unittest.TestCase):
+    def test_a_main_confirmation_is_a_short_distinct_bound_token(self):
+        for mode, pattern in (
+            (importer.MODE_CREATE, r"^CONFIRM MAIN CREATE [0-9a-f]{16}$"),
+            (importer.MODE_UPDATE, r"^CONFIRM MAIN UPDATE [0-9a-f]{16}$"),
+        ):
+            with self.subTest(mode=mode):
+                plan = self.main_plan(mode=mode)
+                shown = plan.expected_confirmation
+                self.assertRegex(shown, pattern)
+                self.assertEqual(shown, shown.strip())
+                self.assertLessEqual(
+                    len(shown), importer.MAX_COPIED_CONFIRMATION_CHARS
+                )
+                # The 16 hex chars are still the prefix of the FULL binding digest.
+                self.assertEqual(
+                    plan.binding_digest,
+                    importer._digest(plan.confirmation_binding())[:16],
+                )
+                # The block shows it verbatim and pasteably, and the block alone
+                # says this is a main-account write.
+                lines = importer.confirmation_lines(plan)
+                displayed = [line for line in lines if line == shown]
+                self.assertEqual(len(displayed), 1)
+                block = "\n".join(lines)
+                self.assertIn("REAL MAIN MAIMEMO ACCOUNT", block)
+                self.assertIn(f"TOKEN-FP: {plan.credential_fingerprint}", block)
+                self.assertIn(harness.WRITE_PRICING_TERMS_CLAUSE, block)
+                self.assertIn(importer.BATCH_ONE_POST_CLAUSE, block)
+                self.assertIn(importer.MAIN_PRICING_TERMS_GATE, block)
+                self.assertIn(f"({len(shown)} characters", block)
+                plan.validate_confirmation(shown)
+                for raw in RAW_IDS + (MAIN_TOKEN, MAIN_LABEL):
+                    self.assertNotIn(raw, block)
+
+    def test_the_main_binding_still_covers_every_outcome_relevant_field(self):
+        for mode in (importer.MODE_CREATE, importer.MODE_UPDATE):
+            with self.subTest(mode=mode):
+                plan = self.main_plan(mode=mode)
+                binding = plan.confirmation_binding()
+                expected = [
+                    "operation", "mode", "host", "path", "tags", "status",
+                    "item_count", "batch_digest", "credential_fingerprint",
+                    "items", "account_label", "vocabulary_ids", "request_bodies",
+                    "write_policy", "pricing_and_terms_checked", "account_mode",
+                ]
+                if mode == importer.MODE_UPDATE:
+                    expected += ["no_op_count", "record_ids", "write_paths"]
+                for key in expected:
+                    self.assertIn(key, binding)
+                self.assertEqual(binding["account_mode"], importer.ACCOUNT_MAIN)
+                self.assertEqual(binding["write_policy"], importer.WRITE_POLICY)
+
+    def test_a_secondary_confirmation_can_never_authorize_a_main_account_run(self):
+        for mode in (importer.MODE_CREATE, importer.MODE_UPDATE):
+            with self.subTest(mode=mode):
+                main = self.main_plan(mode=mode)
+                secondary = self.main_plan(
+                    mode=mode, account_mode=importer.ACCOUNT_SECONDARY
+                )
+                self.assertNotEqual(
+                    main.expected_confirmation, secondary.expected_confirmation
+                )
+                self.assertNotEqual(main.binding_digest, secondary.binding_digest)
+                with self.assertRaises(harness.ConfirmationError):
+                    main.validate_confirmation(secondary.expected_confirmation)
+                with self.assertRaises(harness.ConfirmationError):
+                    secondary.validate_confirmation(main.expected_confirmation)
+                # The account mode is bound structurally, not only through the label.
+                self.assertNotIn("account_mode", secondary.confirmation_binding())
+                self.assertIn("account_mode", main.confirmation_binding())
+
+    def test_a_pasted_secondary_confirmation_aborts_a_main_run_before_any_post(self):
+        secondary = self.main_plan(account_mode=importer.ACCOUNT_SECONDARY).expected_confirmation
+        result, transport, output = self.drive_main(
+            self.created_pair(),
+            mode=importer.MODE_CREATE,
+            confirm=lambda _plan: secondary,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.post_count, 0)
+        self.assertNotIn("POST", transport.methods())
+        self.assertIn("ABORTED BEFORE THE FIRST POST", output)
+
+    def test_a_pasted_main_confirmation_aborts_a_secondary_run_before_any_post(self):
+        main = self.main_plan().expected_confirmation
+        result, transport, output = self.drive(
+            self.created_pair(),
+            mode=importer.MODE_CREATE,
+            confirm=lambda _plan: main,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.post_count, 0)
+        self.assertNotIn("POST", transport.methods())
+        self.assertIn("ABORTED BEFORE THE FIRST POST", output)
+
+    def test_the_frozen_secondary_confirmations_are_unchanged_by_this_issue(self):
+        """Issue #51 adds a path beside the reviewed one; it does not move it."""
+        create = self.main_plan(account_mode=importer.ACCOUNT_SECONDARY)
+        self.assertEqual(
+            create.expected_confirmation,
+            "CONFIRM BATCH INTERPRETATION CREATE: cdbef87c197476cf ITEMS: 2 "
+            "TOKEN-FP: 632caaac01f6049e PRICING-TERMS-CHECKED: YES "
+            "EXACTLY-ONE-POST-PER-ITEM-NO-RETRY-IMMEDIATE-READBACK",
+        )
+        self.assertEqual(len(create.expected_confirmation), 170)
+        self.assertEqual(importer.confirmation_lines(create), [
+            "CREATE CONFIRMATION — 2 items, one POST each, no retry",
+            f"batch digest {create.digest}",
+            f"MANUAL GATE: {importer.PRICING_TERMS_GATE}",
+            "Copy the next line exactly into the hidden prompt:",
+            create.expected_confirmation,
+            "",
+        ])
+        update = self.main_plan(
+            mode=importer.MODE_UPDATE, account_mode=importer.ACCOUNT_SECONDARY
+        )
+        self.assertRegex(update.expected_confirmation, r"^CONFIRM UPDATE [0-9a-f]{16}$")
+        self.assertEqual(len(update.expected_confirmation), 31)
+        self.assertEqual(
+            importer.confirmation_lines(update)[0],
+            "UPDATE CONFIRMATION — 2 existing custom interpretations replaced, "
+            "one POST each, no retry (0 already matching, no request)",
+        )
+        # The secondary preview line is byte-identical to the reviewed one.
+        _result, _transport, output = self.drive(self.preflight_pair())
+        self.assertIn("account [REDACTED] (secondary/test label accepted)   ", output)
+        self.assertNotIn("MAIN ACCOUNT", output)
+
+
+class MainAccountContainmentTests(MainAccountFixtures, unittest.TestCase):
+    def test_the_main_token_never_reaches_output_a_report_a_repr_or_a_traceback(self):
+        report = self.private_report()
+        transport = FakeTransport(self.created_pair())
+        lines = []
+        result = importer.run_batch(
+            mode=importer.MODE_CREATE, entries=self.entries(), transport=transport,
+            credential=self.main_credential, account_label=MAIN_LABEL,
+            confirm=lambda plan: plan.expected_confirmation,
+            emit=lines.append, sleep=self.slept.append, report=report,
+            account_mode=importer.ACCOUNT_MAIN,
+        )
+        rendered = "\n".join(lines) + repr(result) + str(result)
+        rendered += repr(self.main_credential) + str(self.main_credential)
+        rendered += "".join(repr(item) for item in result.preflight)
+        rendered += repr(self.main_plan())
+        rendered += result.report_path.read_text(encoding="utf-8")
+        try:
+            importer.MainAccountCredential(MAIN_TOKEN, ACCOUNT_LABEL)
+        except harness.SafetyError as rejected:
+            rendered += "".join(
+                traceback.format_exception_only(type(rejected), rejected)
+            )
+        else:  # pragma: no cover - the label above is never accepted
+            self.fail("a secondary label must never build a main credential")
+        self.assertNotIn(MAIN_TOKEN, rendered)
+        self.assertNotIn(MAIN_LABEL, rendered)
+        for raw in RAW_IDS:
+            self.assertNotIn(raw, rendered)
+
+    def test_the_main_cli_prints_no_token_on_stdout_or_stderr(self):
+        errors = io.StringIO()
+        with mock.patch("sys.stderr", errors):
+            code, printed, _prompts, _transports = self.cli_main(
+                ["--mode", importer.MODE_CREATE, "--input", str(self.batch_file()),
+                 "--account-label", "主账号", "--allow-network",
+                 "--allow-main-account"],
+                responses=self.created_pair(),
+                confirmation=self.main_plan().expected_confirmation,
+            )
+        self.assertEqual(code, 0)
+        for stream in (printed, errors.getvalue()):
+            self.assertNotIn(MAIN_TOKEN, stream)
+            for sentinel in SENTINELS:
+                self.assertNotIn(sentinel, stream)
+
+    def test_an_internal_main_failure_still_prints_only_the_fixed_sentence(self):
+        with mock.patch.object(importer, "run_batch",
+                               side_effect=RuntimeError(MAIN_TOKEN)):
+            code, printed, _prompts, _transports = self.cli_main(
+                ["--mode", importer.MODE_CREATE, "--input", str(self.batch_file()),
+                 "--account-label", "主账号", "--allow-network",
+                 "--allow-main-account"],
+            )
+        self.assertEqual(code, 4)
+        self.assertIn(importer.BLOCKED_INTERNAL_MESSAGE, printed)
+        self.assertNotIn(MAIN_TOKEN, printed)
+
+    def test_the_main_cli_never_accepts_a_token_or_a_record_id_on_argv(self):
+        stream = io.StringIO()
+        for argv in (
+            ["--mode", "create", "--input", "batch.md", "--account-label", MAIN_LABEL,
+             "--allow-main-account", "--token", MAIN_TOKEN],
+            ["--mode", "update", "--input", "batch.md", "--account-label", MAIN_LABEL,
+             "--allow-main-account", "--record-id", RECORD_A],
+            ["--mode", "delete", "--input", "batch.md", "--account-label", MAIN_LABEL,
+             "--allow-main-account"],
+            ["--mode", "create", "--input", "batch.md", "--account-label", MAIN_LABEL,
+             "--allow-main-account=yes"],
+        ):
+            with self.subTest(argv=argv[-1]):
+                with mock.patch("sys.stderr", stream):
+                    with self.assertRaises(SystemExit) as context:
+                        importer.parse_args(list(argv))
+                self.assertEqual(context.exception.code, 2)
+        self.assertNotIn(MAIN_TOKEN, stream.getvalue())
+        # The opt-in defaults to off and is a plain flag.
+        self.assertIs(
+            importer.parse_args(
+                ["--input", "batch.md", "--account-label", ACCOUNT_LABEL]
+            ).allow_main_account,
+            False,
+        )
+        self.assertIs(
+            importer.parse_args(
+                ["--input", "batch.md", "--account-label", MAIN_LABEL,
+                 "--allow-main-account"]
+            ).allow_main_account,
+            True,
+        )
+
+    def test_a_main_run_cannot_reach_the_network_under_the_process_guard(self):
+        """With the real transport the guard, not this module, is the last line."""
+        self.assertEqual(os.environ.get("MOMO_TEST_NETWORK_DISABLED"), "1")
+        code, printed, prompts, _transports = self.cli_main(
+            ["--mode", importer.MODE_DRY_RUN, "--input", str(self.batch_file()),
+             "--account-label", "主账号", "--allow-network", "--allow-main-account"],
+            transport_factory=harness.ProductionHttpTransport,
+        )
+        self.assertEqual(prompts, [importer.MAIN_TOKEN_PROMPT])
+        self.assertEqual(code, 3)
+        self.assertIn("BLOCK_ERROR (transport)", printed)
+        self.assertIn("requests: GET 2  POST 0  retries 0", printed)
+        self.assertNotIn(MAIN_TOKEN, printed)
+        for call in (lambda: socket.socket(),
+                     lambda: socket.create_connection(("open.maimemo.com", 443)),
+                     lambda: urllib.request.urlopen("https://open.maimemo.com/")):
+            with self.subTest(call=call):
+                with self.assertRaises(RuntimeError):
+                    call()
 
 
 class NoNetworkGuardTests(unittest.TestCase):
