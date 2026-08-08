@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #32 — small-batch interpretation importer: dry-run and create-only.
+"""Issue #32/#39 — small-batch interpretation importer: dry-run, create, update.
 
 This is the first actually useful product workflow: the owner keeps a batch of
 roughly 8–15 vocabulary entries whose interpretations are already written, and
@@ -8,20 +8,33 @@ improves, translates, summarizes or otherwise alters the owner's interpretation
 text — the only text transformation is normalizing the document's own newline /
 blank-line boundary so the batch can be split into entries at all.
 
-Deliberate non-goals, so this stays a bicycle: no update/replace path, no
-phrase/example path, no delete path, no workflow engine, no plugin system, no
+Issue #39 adds the last core MVP mode: ``--mode update`` replaces exactly one
+existing authenticated-user custom interpretation per vocabulary item, using the
+documented ``POST /open/api/v1/interpretations/{id}`` endpoint whose body carries
+only ``interpretation``/``tags``/``status`` and never a ``voc_id``. The update
+target is only ever the single record returned by the authenticated collection
+GET, never a value from argv or from the batch document, and update mode never
+falls back to create.
+
+Deliberate non-goals, so this stays a bicycle: no phrase/example path, no delete
+path, no automated rollback engine, no workflow engine, no plugin system, no
 service layer, no database, no server, no GUI and no general Maimemo client
 library. `scripts/issue9_live_harness.py` remains a frozen spike/safety harness:
 every already-reviewed primitive (hidden credential handling, account-label
 policy, production transport, ``HttpRequest``, reviewed GET path building, the
 observed ``data`` wrappers, vocabulary/collection/record-id/status validation and
-the documented create-payload contract) is imported from it rather than copied.
+the documented create/update payload contracts) is imported from it rather than
+copied.
 
 The reviewed network shape is per item, sequential, and structurally capped:
 
     dry-run  — 2 GETs per item, 0 POSTs;
     create   — 2 preflight GETs per item, then at most 1 POST + 1 readback GET
-               per item, with no retry of any kind.
+               per item, with no retry of any kind;
+    update   — the same 2 preflight GETs per item, then at most 1 POST + 1
+               readback GET per *changed* item, with no retry of any kind. An
+               item that already matches the intended final state exactly is a
+               satisfied no-op and sends nothing.
 """
 
 from __future__ import annotations
@@ -49,9 +62,15 @@ import issue9_live_harness as harness  # noqa: E402
 
 MODE_DRY_RUN = "dry-run"
 MODE_CREATE = "create"
-MODES: tuple[str, ...] = (MODE_DRY_RUN, MODE_CREATE)
+MODE_UPDATE = "update"
+MODES: tuple[str, ...] = (MODE_DRY_RUN, MODE_CREATE, MODE_UPDATE)
 OPERATION = "batch-interpretation-create"
+OPERATION_UPDATE = "batch-interpretation-update"
 CREATE_PATH = f"{harness.OPEN_API_PREFIX}/interpretations"
+# The documented update endpoint. The record id lives ONLY in the path, and the
+# concrete path is always rebuilt from this project-owned prefix plus one safe
+# id taken from the authenticated collection GET.
+UPDATE_PATH_TEMPLATE = f"{CREATE_PATH}/{{record_id}}"
 COLLECTION_KEY = "interpretations"
 # Exactly two reviewed GET endpoints. Phrases are outside the set on purpose:
 # this tool performs no phrase request of any kind.
@@ -61,6 +80,20 @@ TAGS: tuple[str, ...] = ("MBA", "BEC", "GMAT")
 STATUS = "PUBLISHED"
 # The documented CREATE request keys. Nothing else is ever sent.
 BODY_FIELDS: tuple[str, ...] = ("voc_id", "interpretation", "tags", "status")
+# The documented UPDATE request keys. There is deliberately no voc_id and no id.
+UPDATE_BODY_FIELDS: tuple[str, ...] = ("interpretation", "tags", "status")
+# The documented interpretation status enum, owned by the frozen harness.
+RECORD_STATUSES: tuple[str, ...] = harness.READ_ONLY_STATUS_ENUMS[COLLECTION_KEY]
+# The documented tag vocabulary. An existing record's tags are pinned against
+# this tuple before they are ever shown or stored, so an arbitrary server string
+# can never travel out through the preview or the local report.
+DOCUMENTED_TAGS: tuple[str, ...] = (
+    "简明", "详细", "英英", "小学", "初中", "高中",
+    "四级", "六级", "专升本", "专四", "专八", "考研",
+    "考博", "雅思", "托福", "托业", "新概念", "法学", "医学",
+    "GRE", "GMAT", "BEC", "MBA", "SAT", "ACT",
+)
+MAX_RECORD_TAGS = len(DOCUMENTED_TAGS)
 
 # One simple Markdown batch format, and only one. No YAML/JSON/CSV/TSV variant.
 HEADING_MARKER = "##"
@@ -74,10 +107,12 @@ MAX_INPUT_BYTES = 262_144
 # read-only nor the single-write confirmation, so no earlier confirmation string
 # can be pasted into this gate.
 CONFIRMATION_PREFIX = "CONFIRM BATCH INTERPRETATION CREATE"
+UPDATE_CONFIRMATION_PREFIX = "CONFIRM BATCH INTERPRETATION UPDATE"
 BATCH_ONE_POST_CLAUSE = "EXACTLY-ONE-POST-PER-ITEM-NO-RETRY-IMMEDIATE-READBACK"
 WRITE_POLICY = "EXACTLY ONE POST PER ITEM / NO RETRY / IMMEDIATE READBACK"
 TOKEN_PROMPT = "Secondary/test-account Maimemo Token (hidden): "
 CONFIRMATION_PROMPT = "Exact batch CREATE confirmation (hidden): "
+UPDATE_CONFIRMATION_PROMPT = "Exact batch UPDATE confirmation (hidden): "
 PRICING_TERMS_GATE = (
     "Confirm current official pricing/terms permit personal secondary/test-account "
     "use and show no mandatory metered API fee."
@@ -109,13 +144,23 @@ PARSE_REASONS: tuple[str, ...] = (
 
 # The per-item preflight classification. `blocked-error` is the only state that
 # also carries a closed transport/http/schema/safety class.
+#
+# `ready-create` / `blocked-existing` belong to create mode's zero baseline;
+# `ready-update` / `already-matching` / `blocked-missing` belong to update mode's
+# exactly-one baseline. `already-matching` is a satisfied no-op, not a blocker.
 READY_CREATE = "ready-create"
+READY_UPDATE = "ready-update"
+ALREADY_MATCHING = "already-matching"
 BLOCK_EXISTING = "blocked-existing"
+BLOCK_MISSING = "blocked-missing"
 BLOCK_AMBIGUOUS = "blocked-ambiguous"
 BLOCK_ERROR = "blocked-error"
 PREFLIGHT_STATES: tuple[str, ...] = (
     READY_CREATE,
+    READY_UPDATE,
+    ALREADY_MATCHING,
     BLOCK_EXISTING,
+    BLOCK_MISSING,
     BLOCK_AMBIGUOUS,
     BLOCK_ERROR,
 )
@@ -138,10 +183,18 @@ RECOVERED = harness.WRITE_OUTCOME_RECOVERED_SUCCESS
 NOT_VERIFIED = harness.WRITE_OUTCOME_NOT_VERIFIED
 AMBIGUOUS = harness.WRITE_OUTCOME_AMBIGUOUS
 
-RUN_STATUSES: tuple[str, ...] = ("ready", "blocked", "verified", "stopped")
+# `satisfied` is update mode's successful zero-write outcome: every item already
+# equals the intended final state, so nothing was confirmed and nothing was sent.
+RUN_STATUSES: tuple[str, ...] = (
+    "ready",
+    "blocked",
+    "verified",
+    "stopped",
+    "satisfied",
+)
 
 REPORT_PREFIX = "issue32-interpretation-batch"
-REPORT_VERSION = 1
+REPORT_VERSION = 2
 
 BLOCKED_GATE_MESSAGE = (
     "BLOCKED: --allow-network, --mode, the batch file, the account label, the "
@@ -206,23 +259,38 @@ def _account_gate(label: str, fingerprint: str) -> harness.ManualAccountGate:
 
 
 def validate_contract() -> None:
-    """Fail closed if the fixed batch-create contract ever drifts."""
+    """Fail closed if the fixed batch create/update contract ever drifts."""
     harness._validate_read_only_origin_contract()
+    reserved = (
+        harness.READ_ONLY_CONFIRMATION_PREFIX,
+        harness.WRITE_CONFIRMATION_PREFIX,
+    )
     if (
         CREATE_PATH != "/open/api/v1/interpretations"
+        or UPDATE_PATH_TEMPLATE != "/open/api/v1/interpretations/{record_id}"
         or READ_PATHS != ("/open/api/v1/vocabulary", "/open/api/v1/interpretations")
         or TAGS != ("MBA", "BEC", "GMAT")
         or TAGS != harness.REQUIRED_TAGS
+        or set(TAGS) - set(DOCUMENTED_TAGS)
         or STATUS != "PUBLISHED"
+        or STATUS not in RECORD_STATUSES
+        or RECORD_STATUSES != harness.READ_ONLY_STATUS_ENUMS[COLLECTION_KEY]
         or BODY_FIELDS != ("voc_id", "interpretation", "tags", "status")
-        or MODES != (MODE_DRY_RUN, MODE_CREATE)
+        or UPDATE_BODY_FIELDS != ("interpretation", "tags", "status")
+        or "voc_id" in UPDATE_BODY_FIELDS
+        or MODES != (MODE_DRY_RUN, MODE_CREATE, MODE_UPDATE)
         or MAX_BATCH_ITEMS != 30
-        or CONFIRMATION_PREFIX
-        in (harness.READ_ONLY_CONFIRMATION_PREFIX, harness.WRITE_CONFIRMATION_PREFIX)
+        or CONFIRMATION_PREFIX in reserved
+        or UPDATE_CONFIRMATION_PREFIX in reserved
+        or CONFIRMATION_PREFIX == UPDATE_CONFIRMATION_PREFIX
         or "BATCH" not in CONFIRMATION_PREFIX
         or "CREATE" not in CONFIRMATION_PREFIX
+        or "UPDATE" in CONFIRMATION_PREFIX
+        or "BATCH" not in UPDATE_CONFIRMATION_PREFIX
+        or "UPDATE" not in UPDATE_CONFIRMATION_PREFIX
+        or "CREATE" in UPDATE_CONFIRMATION_PREFIX
     ):
-        raise harness.SafetyError("the fixed batch interpretation-create contract changed")
+        raise harness.SafetyError("the fixed batch interpretation write contract changed")
 
 
 # --------------------------------------------------------------------------- #
@@ -380,20 +448,24 @@ def load_batch(path: Any) -> tuple[BatchEntry, ...]:
     return parse_batch(document)
 
 
-def batch_digest(entries: Sequence[BatchEntry]) -> str:
+def batch_digest(entries: Sequence[BatchEntry], *, mode: str = MODE_CREATE) -> str:
     """The ordered, id-free digest of the whole intended batch.
 
     It is stable across runs, safe to show and safe to persist, and it changes if
     any spelling, any interpretation, the order, the item count, the tags, the
-    status, the host or the write path changes.
+    status, the host, the intended operation or the write path changes. A dry-run
+    previews the create path, so it shares the create digest; an update batch has
+    a different operation and a different write path and therefore never collides
+    with the create digest of the same document.
     """
     validate_contract()
+    update = _pinned(MODES, mode) == MODE_UPDATE
     return _digest(
         {
-            "operation": OPERATION,
+            "operation": OPERATION_UPDATE if update else OPERATION,
             "host": harness.PRODUCTION_BASE_URL,
             "method": "POST",
-            "path": CREATE_PATH,
+            "path": UPDATE_PATH_TEMPLATE if update else CREATE_PATH,
             "tags": list(TAGS),
             "status": STATUS,
             "item_count": len(entries),
@@ -410,8 +482,20 @@ def batch_digest(entries: Sequence[BatchEntry]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# The single documented CREATE body
+# The two documented request bodies
 # --------------------------------------------------------------------------- #
+
+
+def update_path(record_id: Any) -> str:
+    """Build the documented update path from the project prefix and one safe id.
+
+    The id is never interpolated as given: it is re-validated as a single safe
+    path segment and the returned string is assembled from this module's own
+    constant, so nothing from argv, from the batch document or from a response
+    body can steer the request anywhere else.
+    """
+    validate_contract()
+    return f"{CREATE_PATH}/{harness._safe_record_id(record_id, 'target interpretation id')}"
 
 
 def create_body(vocabulary_id: str, interpretation: str) -> dict[str, Any]:
@@ -441,6 +525,43 @@ def validate_create_body(body: Any, vocabulary_id: str, interpretation: str) -> 
     entity = thawed["interpretation"]
     if set(entity) != set(BODY_FIELDS) or entity["interpretation"] != interpretation:
         raise harness.SafetyError("interpretation create body is not the intended payload")
+
+
+def update_body(interpretation: str) -> dict[str, Any]:
+    """Build the one documented UPDATE body from project-owned values only.
+
+    The documented update body carries exactly ``interpretation``, ``tags`` and
+    ``status``. There is no ``voc_id`` and no top-level ``id``: the target record
+    is addressed only by the path.
+    """
+    return {
+        "interpretation": {
+            "interpretation": _validate_interpretation_text(interpretation),
+            "tags": list(TAGS),
+            "status": STATUS,
+        }
+    }
+
+
+def validate_update_body(body: Any, path: str, interpretation: str) -> None:
+    """Reject anything that is not exactly the documented per-item update payload."""
+    if not isinstance(body, Mapping):
+        raise harness.SafetyError("interpretation update body must be one reviewed object")
+    thawed = harness._thaw_json(body)
+    harness._assert_no_sensitive_keys(thawed, "interpretation update body")
+    # The reviewed update contract does the structural work: exact top-level key,
+    # exact field set, tags exactly MBA/BEC/GMAT, non-empty text, PUBLISHED
+    # status, an absent voc_id/id and the reviewed `/interpretations/{id}` path.
+    prefix = f"{CREATE_PATH}/"
+    if not isinstance(path, str) or not path.startswith(prefix):
+        raise harness.SafetyError("the update path is outside the reviewed endpoint")
+    record_id = harness._safe_record_id(path[len(prefix):], "target interpretation id")
+    harness._validate_operation_payload(
+        "update_interpretation", update_path(record_id), thawed, record_id
+    )
+    entity = thawed["interpretation"]
+    if set(entity) != set(UPDATE_BODY_FIELDS) or entity["interpretation"] != interpretation:
+        raise harness.SafetyError("interpretation update body is not the intended payload")
 
 
 def verify_record(record: Mapping[str, Any], interpretation: str) -> str:
@@ -485,6 +606,21 @@ class _ItemError(harness.SafetyError):
         return "a batch item failed safely; only sanitized fields are available"
 
 
+def _armable_write_path(value: Any) -> str:
+    """Return the one create path or one reviewed update path, rebuilt locally.
+
+    Anything else — a phrase endpoint, a nested segment, an unsafe id, a query
+    string, a non-string — fails closed before any POST budget is granted.
+    """
+    validate_contract()
+    if value == CREATE_PATH:
+        return CREATE_PATH
+    prefix = f"{CREATE_PATH}/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise harness.SafetyError("the write path is outside the reviewed endpoints")
+    return update_path(value[len(prefix):])
+
+
 class BatchWriteGuard:
     """Structurally cap the run at the reviewed GET budget and one POST per item.
 
@@ -517,6 +653,7 @@ class BatchWriteGuard:
         self.post_count = 0
         self.posted_ordinals: set[int] = set()
         self._armed_ordinal: int | None = None
+        self._armed_path: str | None = None
         self._armed_ordinals: set[int] = set()
         self._post_allowance = 0
         self._dispatched = False
@@ -525,16 +662,24 @@ class BatchWriteGuard:
     def posts_allowed(self) -> bool:
         return self.max_posts > 0
 
-    def arm(self, ordinal: int) -> None:
-        """Grant the single POST budget for exactly one item, exactly once."""
+    def arm(self, ordinal: int, path: str = CREATE_PATH) -> None:
+        """Grant the single POST budget for exactly one item and one exact path.
+
+        Both halves matter: the ordinal caps the item at one POST for the whole
+        process, and the path pins that POST to the create endpoint or to one
+        already-selected update record. A POST to any other path — including a
+        different record id — is refused before it is dispatched.
+        """
         if not self.posts_allowed:
             raise harness.SafetyError("this run is read-only; no POST can be armed")
         if not _plain_count(ordinal, MAX_BATCH_ITEMS) or ordinal < 1:
             raise harness.SafetyError("the armed item ordinal is outside the fixed bound")
         if ordinal in self._armed_ordinals or self.post_count >= self.max_posts:
             raise harness.SafetyError("this item was already armed or the budget is spent")
+        target = _armable_write_path(path)
         self._armed_ordinals.add(ordinal)
         self._armed_ordinal = ordinal
+        self._armed_path = target
         self._post_allowance = 1
 
     def send(
@@ -555,7 +700,8 @@ class BatchWriteGuard:
         elif request.method == "POST":
             ordinal = self._armed_ordinal
             if (
-                request.path != CREATE_PATH
+                self._armed_path is None
+                or request.path != self._armed_path
                 or not self.posts_allowed
                 or self._post_allowance <= 0
                 or ordinal is None
@@ -606,6 +752,96 @@ def _read(
 # --------------------------------------------------------------------------- #
 
 
+def _validate_baseline_text(value: Any) -> str:
+    """Accept the account's own current interpretation text verbatim, or fail closed.
+
+    This is the only server-provided free text this module ever shows or stores:
+    the owner cannot judge a replacement without seeing exactly what is about to
+    be overwritten. It is never rewritten or normalized — it is bounded, and any
+    control character other than a newline is a hard rejection rather than a
+    silent strip.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise harness.SafetyError("the existing interpretation text is empty or unreadable")
+    if len(value) > MAX_INTERPRETATION_CHARS or any(
+        (ord(character) < 32 or ord(character) == 127) and character != "\n"
+        for character in value
+    ):
+        raise harness.SafetyError("the existing interpretation text is outside the local policy")
+    return value
+
+
+def _baseline_tags(value: Any) -> tuple[str, ...]:
+    """Return the record's tags as documented project-owned constants."""
+    if not isinstance(value, list) or len(value) > MAX_RECORD_TAGS:
+        raise harness.SafetyError("the existing interpretation tags are not a documented list")
+    return tuple(_pinned(DOCUMENTED_TAGS, tag) for tag in value)
+
+
+@dataclass(frozen=True, repr=False)
+class RecordBaseline:
+    """The exact pre-update state of the one authenticated-user custom record.
+
+    It exists so the owner can see what is being replaced, so the confirmation is
+    bound to that exact prior state, and so the local private report holds enough
+    evidence for a MANUAL restoration. It is not a rollback engine: nothing in
+    this module ever replays it.
+    """
+
+    record_id: str = field(repr=False)
+    interpretation: str = field(repr=False)
+    tags: tuple[str, ...] = ()
+    status: str = STATUS
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tags", tuple(self.tags))
+        self.revalidate()
+
+    def revalidate(self) -> None:
+        harness._safe_record_id(self.record_id, "target interpretation id")
+        _validate_baseline_text(self.interpretation)
+        object.__setattr__(self, "tags", _baseline_tags(list(self.tags)))
+        object.__setattr__(self, "status", _pinned(RECORD_STATUSES, self.status))
+
+    @property
+    def record_fingerprint(self) -> str:
+        return _short_fingerprint(self.record_id)
+
+    def matches(self, interpretation: str) -> bool:
+        """True when this record already equals the intended final state exactly."""
+        return (
+            self.interpretation == interpretation
+            and len(self.tags) == len(TAGS)
+            and harness._tags_equal(list(TAGS), list(self.tags))
+            and self.status == STATUS
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        """The id-free pre-update snapshot shown, bound and privately retained."""
+        return {
+            "interpretation": self.interpretation,
+            "tags": list(self.tags),
+            "status": self.status,
+            "record_fingerprint": self.record_fingerprint,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"RecordBaseline(record_fingerprint={self.record_fingerprint!r}, "
+            f"tags={list(self.tags)!r}, status={self.status!r})"
+        )
+
+
+def read_baseline(record: Mapping[str, Any]) -> RecordBaseline:
+    """Build the pre-update snapshot from one strictly validated record."""
+    return RecordBaseline(
+        record_id=harness._safe_record_id(record.get("id"), "target interpretation id"),
+        interpretation=_validate_baseline_text(record.get("interpretation")),
+        tags=_baseline_tags(record.get("tags")),
+        status=harness._read_only_record_status(record, COLLECTION_KEY),
+    )
+
+
 @dataclass(frozen=True, repr=False)
 class PreflightItem:
     """One item's whole-batch preflight verdict. The raw id never leaves."""
@@ -619,6 +855,7 @@ class PreflightItem:
     returned_spelling: str | None = None
     error_class: str | None = None
     http_status: int | None = None
+    baseline: RecordBaseline | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "state", _pinned(PREFLIGHT_STATES, self.state))
@@ -634,10 +871,37 @@ class PreflightItem:
             self.existing_count != 0 or self.vocabulary_id is None
         ):
             raise harness.SafetyError("a ready item requires a resolved zero baseline")
+        if self.state == BLOCK_MISSING and self.existing_count != 0:
+            raise harness.SafetyError("a missing-record item requires a zero baseline")
+        if (self.baseline is not None) != self.settled:
+            raise harness.SafetyError("only a settled update item may carry a baseline")
+        if self.settled:
+            if self.existing_count != 1 or self.vocabulary_id is None:
+                raise harness.SafetyError(
+                    "an update verdict requires exactly one resolved existing record"
+                )
+            self.baseline.revalidate()
+            if self.baseline.matches(self.interpretation) != self.no_op:
+                raise harness.SafetyError(
+                    "the update verdict contradicts the pre-update snapshot"
+                )
 
     @property
     def ready(self) -> bool:
         return self.state == READY_CREATE
+
+    @property
+    def update_ready(self) -> bool:
+        return self.state == READY_UPDATE
+
+    @property
+    def no_op(self) -> bool:
+        return self.state == ALREADY_MATCHING
+
+    @property
+    def settled(self) -> bool:
+        """True when update mode may proceed with this item: change it, or skip it."""
+        return self.state in (READY_UPDATE, ALREADY_MATCHING)
 
     @property
     def voc_id_fingerprint(self) -> str | None:
@@ -645,11 +909,18 @@ class PreflightItem:
             return None
         return _short_fingerprint(self.vocabulary_id)
 
+    @property
+    def record_fingerprint(self) -> str | None:
+        if self.baseline is None:
+            return None
+        return self.baseline.record_fingerprint
+
     def __repr__(self) -> str:
         return (
             f"PreflightItem(ordinal={self.ordinal!r}, spelling={self.spelling!r}, "
             f"state={self.state!r}, existing_count={self.existing_count!r}, "
-            f"voc_id_fingerprint={self.voc_id_fingerprint!r})"
+            f"voc_id_fingerprint={self.voc_id_fingerprint!r}, "
+            f"record_fingerprint={self.record_fingerprint!r})"
         )
 
 
@@ -657,8 +928,11 @@ def preflight_item(
     guard: BatchWriteGuard,
     entry: BatchEntry,
     credential: harness.TestAccountCredential,
+    *,
+    mode: str = MODE_CREATE,
 ) -> PreflightItem:
     """GET vocabulary, GET the authenticated collection, classify. Never raises."""
+    update = _pinned(MODES, mode) == MODE_UPDATE
     base = {
         "ordinal": entry.ordinal,
         "spelling": entry.spelling,
@@ -710,16 +984,39 @@ def preflight_item(
             http_status=status,
             returned_spelling=returned,
         )
-    # Exactly the reviewed classification: 0 may be created, 1 needs the
-    # out-of-scope update path, and more than 1 is ambiguous. Neither blocked
-    # state may fall back to a write or to a different word.
-    state = (
-        READY_CREATE
-        if len(records) == 0
-        else BLOCK_EXISTING
-        if len(records) == 1
-        else BLOCK_AMBIGUOUS
-    )
+    # Exactly the reviewed classification, mirrored for the two write modes.
+    #
+    # create: 0 may be created, 1 needs update mode, more than 1 is ambiguous.
+    # update: exactly 1 is the only shape that can carry an update target, 0 has
+    #         nothing to replace, more than 1 is ambiguous.
+    #
+    # No blocked state may ever fall back to the other mode, to another record or
+    # to a different word.
+    baseline: RecordBaseline | None = None
+    if update and len(records) == 1:
+        try:
+            baseline = read_baseline(records[0])
+        except Exception:
+            return PreflightItem(
+                **base,
+                state=BLOCK_ERROR,
+                error_class="schema",
+                http_status=status,
+                returned_spelling=returned,
+            )
+        state = (
+            ALREADY_MATCHING if baseline.matches(entry.interpretation) else READY_UPDATE
+        )
+    elif update:
+        state = BLOCK_MISSING if len(records) == 0 else BLOCK_AMBIGUOUS
+    else:
+        state = (
+            READY_CREATE
+            if len(records) == 0
+            else BLOCK_EXISTING
+            if len(records) == 1
+            else BLOCK_AMBIGUOUS
+        )
     try:
         return PreflightItem(
             **base,
@@ -728,6 +1025,7 @@ def preflight_item(
             vocabulary_id=vocabulary_id,
             returned_spelling=returned,
             http_status=status,
+            baseline=baseline,
         )
     except Exception:
         return PreflightItem(**base, state=BLOCK_ERROR, error_class="safety")
@@ -737,9 +1035,13 @@ def preflight_batch(
     guard: BatchWriteGuard,
     entries: Sequence[BatchEntry],
     credential: harness.TestAccountCredential,
+    *,
+    mode: str = MODE_CREATE,
 ) -> tuple[PreflightItem, ...]:
     """Preflight the WHOLE batch, in input order, before any write is possible."""
-    return tuple(preflight_item(guard, entry, credential) for entry in entries)
+    return tuple(
+        preflight_item(guard, entry, credential, mode=mode) for entry in entries
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -749,7 +1051,12 @@ def preflight_batch(
 
 @dataclass(frozen=True, repr=False)
 class PlannedItem:
-    """One frozen, fully bound create item. Preview, digest and POST share it."""
+    """One frozen, fully bound write item. Preview, digest and POST share it.
+
+    A create item has no ``baseline``; an update item carries the exact
+    pre-update snapshot of the single authenticated-user record it replaces, and
+    that snapshot supplies the only record id this module will ever POST to.
+    """
 
     ordinal: int
     spelling: str
@@ -757,6 +1064,7 @@ class PlannedItem:
     vocabulary_id: str = field(repr=False)
     interpretation: str = field(repr=False)
     request_body: Mapping[str, Any] = field(repr=False)
+    baseline: RecordBaseline | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_body", harness._freeze_json(self.request_body))
@@ -770,11 +1078,40 @@ class PlannedItem:
         normalize = harness._normalize_probe_spelling
         if normalize(self.returned_spelling) != normalize(self.spelling):
             raise harness.SafetyError("returned spelling is not the intended spelling")
-        validate_create_body(self.request_body, self.vocabulary_id, self.interpretation)
+        if self.baseline is None:
+            validate_create_body(
+                self.request_body, self.vocabulary_id, self.interpretation
+            )
+            return
+        self.baseline.revalidate()
+        # An item that already equals the intended final state is a no-op, never
+        # a write target: if a mutation makes it match, the plan fails closed.
+        if self.baseline.matches(self.interpretation):
+            raise harness.SafetyError("an already matching item is never an update target")
+        validate_update_body(self.request_body, self.write_path, self.interpretation)
+
+    @property
+    def is_update(self) -> bool:
+        return self.baseline is not None
+
+    @property
+    def record_id(self) -> str | None:
+        """The raw update target id. Internal only — it is never emitted."""
+        return None if self.baseline is None else self.baseline.record_id
 
     @property
     def voc_id_fingerprint(self) -> str:
         return _short_fingerprint(self.vocabulary_id)
+
+    @property
+    def record_fingerprint(self) -> str | None:
+        return None if self.baseline is None else self.baseline.record_fingerprint
+
+    @property
+    def write_path(self) -> str:
+        if self.baseline is None:
+            return CREATE_PATH
+        return update_path(self.baseline.record_id)
 
     @property
     def readback_path(self) -> str:
@@ -784,11 +1121,11 @@ class PlannedItem:
         """Build the single POST from the frozen plan body, never from a copy."""
         self.revalidate()
         return harness.HttpRequest(
-            "POST", CREATE_PATH, harness._thaw_json(self.request_body)
+            "POST", self.write_path, harness._thaw_json(self.request_body)
         )
 
     def bound_fields(self) -> dict[str, Any]:
-        return {
+        fields = {
             "ordinal": self.ordinal,
             "spelling": self.spelling,
             "interpretation": self.interpretation,
@@ -796,11 +1133,15 @@ class PlannedItem:
             "status": STATUS,
             "voc_id_fingerprint": self.voc_id_fingerprint,
         }
+        if self.baseline is not None:
+            fields["pre_update"] = self.baseline.snapshot()
+        return fields
 
     def __repr__(self) -> str:
         return (
             f"PlannedItem(ordinal={self.ordinal!r}, spelling={self.spelling!r}, "
-            f"voc_id_fingerprint={self.voc_id_fingerprint!r})"
+            f"voc_id_fingerprint={self.voc_id_fingerprint!r}, "
+            f"record_fingerprint={self.record_fingerprint!r})"
         )
 
 
@@ -813,32 +1154,54 @@ class BatchPlan:
     operation, production host, write path, account label, Token fingerprint, the
     ordered batch digest, every spelling, every resolved raw ``voc_id``, every
     exact interpretation, the tags, the status, the item count and the
-    pricing/terms gate. Mutating any item afterwards changes the digest, so the
-    already-entered confirmation no longer matches and the send boundary rejects
-    it.
+    pricing/terms gate. An update plan additionally binds every raw target record
+    id, every exact pre-update text/tags/status snapshot, the exact intended
+    update body and the no-op count. Mutating any item or any baseline afterwards
+    changes the digest, so the already-entered confirmation no longer matches and
+    the send boundary rejects it.
     """
 
     account_label: str = field(repr=False)
     credential_fingerprint: str
     items: tuple[PlannedItem, ...] = field(repr=False)
     digest: str = ""
+    mode: str = MODE_CREATE
+    no_op_count: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "items", tuple(self.items))
+        object.__setattr__(self, "mode", _pinned(MODES, self.mode))
         self.revalidate()
 
     def revalidate(self) -> None:
         validate_contract()
         harness._validate_account_label_shape(self.account_label)
         if (
-            not _valid_fingerprint(self.credential_fingerprint)
+            self.mode not in (MODE_CREATE, MODE_UPDATE)
+            or not _valid_fingerprint(self.credential_fingerprint)
             or not self.items
             or not _plain_count(len(self.items), MAX_BATCH_ITEMS)
+            or not _plain_count(self.no_op_count, MAX_BATCH_ITEMS)
+            or not _plain_count(len(self.items) + self.no_op_count, MAX_BATCH_ITEMS)
             or not re.fullmatch(r"[0-9a-f]{64}", self.digest or "")
         ):
             raise harness.SafetyError("the batch plan violates the fixed write policy")
+        if any(item.is_update != self.is_update for item in self.items):
+            raise harness.SafetyError("the batch plan mixes create and update items")
+        if self.is_update:
+            record_ids = [item.record_id for item in self.items]
+            if len(set(record_ids)) != len(record_ids):
+                raise harness.SafetyError("the batch plan targets one record twice")
+        elif self.no_op_count:
+            raise harness.SafetyError("a create plan can never carry a no-op count")
         ordinals = [item.ordinal for item in self.items]
-        if ordinals != list(range(1, len(self.items) + 1)):
+        # A create plan covers the whole batch, so its ordinals are 1..n. An
+        # update plan skips the already-matching items, so its ordinals are the
+        # original batch ordinals in strictly increasing input order.
+        expected = (
+            sorted(set(ordinals)) if self.is_update else list(range(1, len(ordinals) + 1))
+        )
+        if ordinals != expected:
             raise harness.SafetyError("the batch plan is not in original input order")
         spellings = [item.spelling for item in self.items]
         if len(set(spellings)) != len(spellings):
@@ -847,17 +1210,21 @@ class BatchPlan:
             item.revalidate()
 
     @property
+    def is_update(self) -> bool:
+        return self.mode == MODE_UPDATE
+
+    @property
     def item_count(self) -> int:
         return len(self.items)
 
     def bound_fields(self) -> dict[str, Any]:
         """The shared, id-free description behind preview, digest and report."""
-        return {
-            "operation": OPERATION,
-            "mode": MODE_CREATE,
+        fields = {
+            "operation": OPERATION_UPDATE if self.is_update else OPERATION,
+            "mode": self.mode,
             "host": harness.PRODUCTION_BASE_URL,
             "method": "POST",
-            "path": CREATE_PATH,
+            "path": UPDATE_PATH_TEMPLATE if self.is_update else CREATE_PATH,
             "tags": list(TAGS),
             "status": STATUS,
             "item_count": self.item_count,
@@ -865,10 +1232,13 @@ class BatchPlan:
             "credential_fingerprint": self.credential_fingerprint,
             "items": [item.bound_fields() for item in self.items],
         }
+        if self.is_update:
+            fields["no_op_count"] = self.no_op_count
+        return fields
 
     def confirmation_binding(self) -> dict[str, Any]:
         # The raw ids and the account label are bound here but never emitted.
-        return dict(
+        binding = dict(
             self.bound_fields(),
             account_label=self.account_label,
             vocabulary_ids=[item.vocabulary_id for item in self.items],
@@ -876,11 +1246,22 @@ class BatchPlan:
             write_policy=WRITE_POLICY,
             pricing_and_terms_checked=True,
         )
+        if self.is_update:
+            binding["record_ids"] = [item.record_id for item in self.items]
+            binding["write_paths"] = [item.write_path for item in self.items]
+        return binding
 
     @property
     def expected_confirmation(self) -> str:
         self.revalidate()
         digest = _digest(self.confirmation_binding())[:16]
+        if self.is_update:
+            return (
+                f"{UPDATE_CONFIRMATION_PREFIX}: {digest} UPDATES: {self.item_count} "
+                f"NO-OP: {self.no_op_count} "
+                f"TOKEN-FP: {self.credential_fingerprint} "
+                f"{harness.WRITE_PRICING_TERMS_CLAUSE} {BATCH_ONE_POST_CLAUSE}"
+            )
         return (
             f"{CONFIRMATION_PREFIX}: {digest} ITEMS: {self.item_count} "
             f"TOKEN-FP: {self.credential_fingerprint} "
@@ -892,6 +1273,7 @@ class BatchPlan:
         self.revalidate()
         _account_gate(self.account_label, self.credential_fingerprint).validate(credential)
         for item in self.items:
+            baseline = item.baseline
             if credential.token in (
                 item.spelling,
                 item.interpretation,
@@ -901,6 +1283,12 @@ class BatchPlan:
                 harness._thaw_json(item.request_body), credential.token
             ):
                 raise harness.SafetyError("the batch plan contains forbidden credential material")
+            if baseline is not None and credential.token in (
+                baseline.record_id,
+                baseline.interpretation,
+                *baseline.tags,
+            ):
+                raise harness.SafetyError("the batch plan contains forbidden credential material")
 
     def validate_confirmation(self, provided: Any) -> None:
         if not isinstance(provided, str) or provided != self.expected_confirmation:
@@ -908,7 +1296,8 @@ class BatchPlan:
 
     def __repr__(self) -> str:
         return (
-            f"BatchPlan(item_count={self.item_count!r}, digest={self.digest!r}, "
+            f"BatchPlan(mode={self.mode!r}, item_count={self.item_count!r}, "
+            f"no_op_count={self.no_op_count!r}, digest={self.digest!r}, "
             f"credential_fingerprint={self.credential_fingerprint!r})"
         )
 
@@ -949,6 +1338,64 @@ def build_plan(
         credential_fingerprint=credential_fingerprint,
         items=tuple(items),
         digest=batch_digest(entries),
+        mode=MODE_CREATE,
+    )
+
+
+def build_update_plan(
+    *,
+    account_label: str,
+    credential_fingerprint: str,
+    entries: Sequence[BatchEntry],
+    preflight: Sequence[PreflightItem],
+) -> BatchPlan:
+    """Build the frozen update plan from the READY_UPDATE items only.
+
+    Every item must already be settled: an ALREADY_MATCHING item is skipped as a
+    satisfied no-op, and anything blocked is a programming error here because the
+    whole batch aborts before this point.
+    """
+    if len(entries) != len(preflight) or not entries:
+        raise harness.SafetyError("the batch plan requires one preflight verdict per entry")
+    items: list[PlannedItem] = []
+    no_op_count = 0
+    for entry, verdict in zip(entries, preflight):
+        if (
+            verdict.ordinal != entry.ordinal
+            or verdict.spelling != entry.spelling
+            or verdict.interpretation != entry.interpretation
+            or not verdict.settled
+        ):
+            raise harness.SafetyError("only a fully settled batch may become an update plan")
+        if verdict.no_op:
+            no_op_count += 1
+            continue
+        if (
+            verdict.vocabulary_id is None
+            or verdict.returned_spelling is None
+            or verdict.baseline is None
+        ):
+            raise harness.SafetyError("an update target requires one resolved existing record")
+        items.append(
+            PlannedItem(
+                ordinal=entry.ordinal,
+                spelling=entry.spelling,
+                returned_spelling=verdict.returned_spelling,
+                vocabulary_id=verdict.vocabulary_id,
+                interpretation=entry.interpretation,
+                request_body=update_body(entry.interpretation),
+                baseline=verdict.baseline,
+            )
+        )
+    if not items:
+        raise harness.SafetyError("an update plan requires at least one changed item")
+    return BatchPlan(
+        account_label=account_label,
+        credential_fingerprint=credential_fingerprint,
+        items=tuple(items),
+        digest=batch_digest(entries, mode=MODE_UPDATE),
+        mode=MODE_UPDATE,
+        no_op_count=no_op_count,
     )
 
 
@@ -1024,13 +1471,15 @@ def write_item(
     provided_confirmation: str,
     plan: BatchPlan,
 ) -> ItemOutcome:
-    """Create one item: at most one POST, then exactly one GET-only readback."""
+    """Write one item: at most one POST, then exactly one GET-only readback."""
     base = {"ordinal": item.ordinal, "spelling": item.spelling}
     try:
         plan.revalidate()
         if plan.expected_confirmation != provided_confirmation:
             raise harness.ConfirmationError("the confirmation changed before the send boundary")
-        guard.arm(item.ordinal)
+        if not any(item is planned for planned in plan.items):
+            raise harness.SafetyError("this item is not part of the confirmed plan")
+        guard.arm(item.ordinal, item.write_path)
         request = item.write_request()
         if harness._contains_credential_material(
             harness._thaw_json(request.payload), credential.token
@@ -1094,6 +1543,11 @@ def write_item(
         )
     try:
         record_id = verify_record(records[0], item.interpretation)
+        # An update must land on the record this run selected during preflight.
+        # A different id — even one carrying the exact intended content — is a
+        # closed failure, never a success and never a reason to POST again.
+        if item.is_update and record_id != item.record_id:
+            raise harness.VerificationError("the readback record is not the update target")
     except Exception:
         return ItemOutcome(
             **partial,
@@ -1173,7 +1627,18 @@ class BatchResult:
 
     @property
     def ready_count(self) -> int:
+        """The items this mode may proceed with — a no-op counts as satisfied."""
+        if self.mode == MODE_UPDATE:
+            return sum(1 for item in self.preflight if item.settled)
         return sum(1 for item in self.preflight if item.ready)
+
+    @property
+    def update_count(self) -> int:
+        return sum(1 for item in self.preflight if item.update_ready)
+
+    @property
+    def no_op_count(self) -> int:
+        return sum(1 for item in self.preflight if item.no_op)
 
     @property
     def blocked_count(self) -> int:
@@ -1200,6 +1665,16 @@ class BatchResult:
             None,
         )
 
+    @property
+    def remaining_not_attempted(self) -> int:
+        """How many attempted-batch items were left untouched after the stop."""
+        for index, item in enumerate(self.outcomes):
+            if not item.verified and (
+                item.post_attempted or item.failure_class is not None
+            ):
+                return len(self.outcomes) - index - 1
+        return 0
+
     def __repr__(self) -> str:
         return (
             f"BatchResult(mode={self.mode!r}, status={self.status!r}, "
@@ -1221,7 +1696,7 @@ def run_batch(
     report: "BatchRunReport | None" = None,
     now: Callable[[], datetime] | None = None,
 ) -> BatchResult:
-    """Run one dry-run or one create batch. Both preflight the WHOLE batch first."""
+    """Run one dry-run, create or update batch. All preflight the WHOLE batch first."""
     validate_contract()
     chosen = _pinned(MODES, mode)
     if not entries or len(entries) > MAX_BATCH_ITEMS:
@@ -1229,25 +1704,30 @@ def run_batch(
     label = harness._validate_account_label_shape(account_label)
     _account_gate(label, credential.fingerprint).validate(credential)
     write = emit if emit is not None else _print_line
-    digest = batch_digest(entries)
+    writes = chosen in (MODE_CREATE, MODE_UPDATE)
+    digest = batch_digest(entries, mode=chosen)
     guard = BatchWriteGuard(
         transport,
-        max_gets=(3 if chosen == MODE_CREATE else 2) * len(entries),
-        max_posts=len(entries) if chosen == MODE_CREATE else 0,
+        max_gets=(3 if writes else 2) * len(entries),
+        max_posts=len(entries) if writes else 0,
         sleep=sleep,
     )
 
-    preflight = preflight_batch(guard, entries, credential)
+    preflight = preflight_batch(guard, entries, credential, mode=chosen)
     for line in preview_lines(chosen, digest, credential.fingerprint, preflight):
         write(line)
 
     outcomes: tuple[ItemOutcome, ...] = ()
-    if chosen == MODE_DRY_RUN or any(not item.ready for item in preflight):
+    acceptable = (
+        (lambda item: item.settled) if chosen == MODE_UPDATE else (lambda item: item.ready)
+    )
+    if chosen == MODE_DRY_RUN or not all(acceptable(item) for item in preflight):
         status = "ready" if all(item.ready for item in preflight) else "blocked"
-        if chosen == MODE_CREATE and status == "blocked":
+        if writes:
+            status = "blocked"
             write(
                 "ABORTED BEFORE THE FIRST POST: the whole batch is blocked because at "
-                "least one item is not ready to create."
+                f"least one item is not ready to {chosen}."
             )
         return _finish(
             mode=chosen,
@@ -1261,7 +1741,27 @@ def run_batch(
             now=now,
         )
 
-    plan = build_plan(
+    if chosen == MODE_UPDATE and not any(item.update_ready for item in preflight):
+        # Every item already equals the intended final state. This is a satisfied
+        # no-op: no confirmation is asked for and no request is sent.
+        write(
+            "NOTHING TO UPDATE: every item already matches the intended "
+            "interpretation, tags and status exactly."
+        )
+        return _finish(
+            mode=chosen,
+            status="satisfied",
+            digest=digest,
+            preflight=preflight,
+            outcomes=outcomes,
+            guard=guard,
+            emit=write,
+            report=report,
+            now=now,
+        )
+
+    builder = build_update_plan if chosen == MODE_UPDATE else build_plan
+    plan = builder(
         account_label=label,
         credential_fingerprint=credential.fingerprint,
         entries=entries,
@@ -1364,10 +1864,35 @@ def _indented(text: str, prefix: str = "      ") -> list[str]:
 
 _STATE_LABELS: Mapping[str, str] = {
     READY_CREATE: "READY_CREATE",
+    READY_UPDATE: "READY_UPDATE",
+    ALREADY_MATCHING: "ALREADY_MATCHING",
     BLOCK_EXISTING: "BLOCK_EXISTING",
+    BLOCK_MISSING: "BLOCK_MISSING",
     BLOCK_AMBIGUOUS: "BLOCK_AMBIGUOUS",
     BLOCK_ERROR: "BLOCK_ERROR",
 }
+
+
+def _update_item_lines(item: PreflightItem) -> list[str]:
+    """The old/new block for one update item. Neither text is ever rewritten."""
+    baseline = item.baseline
+    if baseline is None:
+        return _indented(item.interpretation)
+    if item.no_op:
+        lines = ["      CURRENT = PROPOSED (no change, no request will be sent):"]
+        lines.extend(_indented(baseline.interpretation, "        "))
+        lines.append(f"      tags {' '.join(baseline.tags)}   status {baseline.status}")
+        return lines
+    lines = ["      CURRENT (this exact text will be replaced):"]
+    lines.extend(_indented(baseline.interpretation, "        "))
+    lines.append(
+        f"      current tags {' '.join(baseline.tags) or '(none)'}"
+        f"   current status {baseline.status}"
+    )
+    lines.append("      PROPOSED:")
+    lines.extend(_indented(item.interpretation, "        "))
+    lines.append(f"      proposed tags {' '.join(TAGS)}   proposed status {STATUS}")
+    return lines
 
 
 def preview_lines(
@@ -1376,11 +1901,15 @@ def preview_lines(
     credential_fingerprint: str,
     preflight: Sequence[PreflightItem],
 ) -> list[str]:
-    """The complete owner-readable batch preview. No raw voc_id, ever."""
+    """The complete owner-readable batch preview. No raw voc_id or record id, ever."""
+    chosen = _pinned(MODES, mode)
+    update = chosen == MODE_UPDATE
     ready = sum(1 for item in preflight if item.ready)
     lines = [
-        f"BATCH INTERPRETATION IMPORTER — mode {_pinned(MODES, mode)}",
-        f"host {harness.PRODUCTION_BASE_URL}   path {CREATE_PATH}",
+        f"BATCH INTERPRETATION IMPORTER — mode {chosen}",
+        "host "
+        f"{harness.PRODUCTION_BASE_URL}   path "
+        f"{UPDATE_PATH_TEMPLATE if update else CREATE_PATH}",
         "account [REDACTED] (secondary/test label accepted)   "
         f"token fp {credential_fingerprint}",
         f"tags {' '.join(TAGS)}   status {STATUS}   items {len(preflight)}"
@@ -1394,16 +1923,31 @@ def preview_lines(
         if item.state == BLOCK_ERROR:
             detail = f"{detail} ({item.error_class}"
             detail += f", http {item.http_status})" if item.http_status else ")"
-        elif item.existing_count:
+        elif item.state == BLOCK_MISSING:
+            detail = f"{detail} (no custom interpretation to replace)"
+        elif item.existing_count and not item.settled:
             detail = f"{detail} (existing custom interpretations: {item.existing_count})"
         lines.append(f"{item.ordinal:>3}  {item.spelling}  —  {detail}")
-        lines.extend(_indented(item.interpretation))
+        if update:
+            lines.extend(_update_item_lines(item))
+        else:
+            lines.extend(_indented(item.interpretation))
+        fingerprints = []
         if item.voc_id_fingerprint is not None:
-            lines.append(f"      voc fp {item.voc_id_fingerprint}")
+            fingerprints.append(f"voc fp {item.voc_id_fingerprint}")
+        if item.record_fingerprint is not None:
+            fingerprints.append(f"record fp {item.record_fingerprint}")
+        if fingerprints:
+            lines.append(f"      {'   '.join(fingerprints)}")
         lines.append("")
+    if update:
+        lines.append(f"READY_UPDATE {sum(1 for item in preflight if item.update_ready)}")
+        lines.append(f"ALREADY_MATCHING {sum(1 for item in preflight if item.no_op)}")
+        lines.append(f"BLOCKED {sum(1 for item in preflight if not item.settled)}")
+        return lines
     lines.append(f"READY {ready}")
     lines.append(f"BLOCKED {len(preflight) - ready}")
-    if mode == MODE_DRY_RUN:
+    if chosen == MODE_DRY_RUN:
         lines.append("WRITES 0")
     return lines
 
@@ -1415,8 +1959,18 @@ def confirmation_lines(plan: BatchPlan) -> list[str]:
     decoration, because `validate_confirmation` demands exact equality: whatever
     is displayed must be directly pasteable without the owner editing it.
     """
+    if plan.is_update:
+        headline = (
+            f"UPDATE CONFIRMATION — {plan.item_count} existing custom "
+            f"interpretations replaced, one POST each, no retry "
+            f"({plan.no_op_count} already matching, no request)"
+        )
+    else:
+        headline = (
+            f"CREATE CONFIRMATION — {plan.item_count} items, one POST each, no retry"
+        )
     return [
-        f"CREATE CONFIRMATION — {plan.item_count} items, one POST each, no retry",
+        headline,
         f"batch digest {plan.digest}",
         f"MANUAL GATE: {PRICING_TERMS_GATE}",
         "Copy the next line exactly into the hidden prompt:",
@@ -1428,10 +1982,18 @@ def confirmation_lines(plan: BatchPlan) -> list[str]:
 def result_lines(result: BatchResult, report_path: Path | None = None) -> list[str]:
     """The short, obvious owner-facing verdict."""
     lines: list[str] = []
-    if result.mode == MODE_CREATE and result.status not in ("verified", "stopped"):
+    if result.mode == MODE_DRY_RUN:
+        pass
+    elif result.status not in ("verified", "stopped"):
+        if result.mode == MODE_UPDATE and result.status == "satisfied":
+            lines.append(f"ALREADY MATCHING {result.no_op_count}/{result.item_count}")
         lines.append("WRITES 0")
-    elif result.mode == MODE_CREATE:
-        lines.append(f"VERIFIED {result.verified_count}/{result.item_count}")
+    else:
+        attempted = result.update_count if result.mode == MODE_UPDATE else result.item_count
+        verb = "UPDATED" if result.mode == MODE_UPDATE else "VERIFIED"
+        lines.append(f"{verb} {result.verified_count}/{attempted}")
+        if result.mode == MODE_UPDATE:
+            lines.append(f"ALREADY MATCHING {result.no_op_count} (no request sent)")
         stopped = result.stopped_on
         if stopped is not None:
             lines.append(f"STOPPED ON {stopped.ordinal}: {stopped.spelling}")
@@ -1439,12 +2001,15 @@ def result_lines(result: BatchResult, report_path: Path | None = None) -> list[s
                 f"  outcome {stopped.outcome}"
                 + (f" / {stopped.failure_class}" if stopped.failure_class else "")
             )
-            lines.append(
-                f"REMAINING NOT ATTEMPTED {result.item_count - stopped.ordinal}"
+            lines.append(f"REMAINING NOT ATTEMPTED {result.remaining_not_attempted}")
+            rerun = (
+                "will preflight the finished items as ALREADY_MATCHING"
+                if result.mode == MODE_UPDATE
+                else "will block the already-created items during preflight"
             )
             lines.append(
                 "Nothing was rolled back or deleted. Do not re-POST any item; a rerun "
-                "will block the already-created items during preflight."
+                f"{rerun}."
             )
     lines.append(
         f"requests: GET {result.get_count}  POST {result.post_count}  retries 0"
@@ -1462,13 +2027,21 @@ def result_lines(result: BatchResult, report_path: Path | None = None) -> list[s
 def report_document(
     result: BatchResult, *, now: Callable[[], datetime] | None = None
 ) -> dict[str, Any]:
-    """Build the small sanitized report. Fingerprints only — never a raw id."""
+    """Build the small sanitized report. Fingerprints only — never a raw id.
+
+    For an update target the report also retains the exact pre-update text, tags
+    and status. That is the whole point of the file: it is the local evidence the
+    owner needs to restore a replaced interpretation BY HAND. It is not a replay
+    log — no code path in this module ever reads it back.
+    """
     validate_contract()
+    update = result.mode == MODE_UPDATE
     clock = now if now is not None else (lambda: datetime.now(timezone.utc))
     outcomes = {item.ordinal: item for item in result.outcomes}
     items: list[dict[str, Any]] = []
     for verdict in result.preflight:
         outcome = outcomes.get(verdict.ordinal)
+        baseline = verdict.baseline
         items.append(
             {
                 "ordinal": verdict.ordinal,
@@ -1481,23 +2054,29 @@ def report_document(
                 "preflight_http_status": verdict.http_status,
                 "existing_count": verdict.existing_count,
                 "voc_id_fingerprint": verdict.voc_id_fingerprint,
+                "pre_update_interpretation": baseline.interpretation if baseline else None,
+                "pre_update_tags": list(baseline.tags) if baseline else None,
+                "pre_update_status": baseline.status if baseline else None,
                 "post_attempted": bool(outcome and outcome.post_attempted),
                 "readback_attempted": bool(outcome and outcome.readback_attempted),
                 "outcome": outcome.outcome if outcome else NOT_ATTEMPTED,
                 "failure_class": outcome.failure_class if outcome else None,
                 "post_http_status": outcome.post_http_status if outcome else None,
                 "readback_http_status": outcome.readback_http_status if outcome else None,
-                "record_fingerprint": outcome.record_fingerprint if outcome else None,
+                "record_fingerprint": (
+                    (outcome.record_fingerprint if outcome else None)
+                    or (baseline.record_fingerprint if baseline else None)
+                ),
             }
         )
     stopped = result.stopped_on
     document = {
         "version": REPORT_VERSION,
-        "operation": OPERATION,
+        "operation": OPERATION_UPDATE if update else OPERATION,
         "mode": result.mode,
         "status": result.status,
         "host": harness.PRODUCTION_BASE_URL,
-        "path": CREATE_PATH,
+        "path": UPDATE_PATH_TEMPLATE if update else CREATE_PATH,
         "created_at": clock().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "batch_digest": result.digest,
         "intended_tags": list(TAGS),
@@ -1505,6 +2084,8 @@ def report_document(
         "item_count": result.item_count,
         "ready_count": result.ready_count,
         "blocked_count": result.blocked_count,
+        "update_count": result.update_count if update else None,
+        "no_op_count": result.no_op_count if update else None,
         "verified_count": result.verified_count,
         "not_attempted_count": (
             result.not_attempted_count if result.outcomes else result.item_count
@@ -1513,7 +2094,7 @@ def report_document(
         "get_count": result.get_count,
         "post_count": result.post_count,
         "retries": 0,
-        "rollback": "none; manual review only",
+        "rollback": "none; manual restoration only, from the pre-update snapshot",
         "items": items,
     }
     harness._assert_no_sensitive_keys(document, "batch run report")
@@ -1599,12 +2180,17 @@ CLI_PROGRAM_NAME = "interpretation_batch_importer.py"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """One command, two modes, no subcommands, and never a Token on argv."""
+    """One command, three modes, no subcommands, and never a Token on argv.
+
+    There is deliberately no way to name a target interpretation record: update
+    mode only ever writes to the single record the authenticated GET returned.
+    """
     parser = harness.SanitizedArgumentParser(
         prog=CLI_PROGRAM_NAME,
         description=(
-            "Issue #32 small-batch interpretation importer. Tags and status are "
-            "fixed by this project and are never accepted from the command line."
+            "Issue #32/#39 small-batch interpretation importer. Tags, status and "
+            "the update target are fixed by this project and are never accepted "
+            "from the command line."
         ),
     )
     parser.add_argument("--mode", choices=MODES, default=MODE_DRY_RUN)
@@ -1619,7 +2205,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _cli_confirm(plan: BatchPlan, prompt: Callable[[str], str]) -> str:
-    return harness._hidden_prompt(prompt, CONFIRMATION_PROMPT)
+    return harness._hidden_prompt(
+        prompt,
+        UPDATE_CONFIRMATION_PROMPT if plan.is_update else CONFIRMATION_PROMPT,
+    )
 
 
 def main(
@@ -1678,7 +2267,7 @@ def main(
         # travel out here: only this fixed project-owned sentence is printed.
         print(BLOCKED_INTERNAL_MESSAGE)
         return 4
-    if result.status in ("ready", "verified"):
+    if result.status in ("ready", "verified", "satisfied"):
         return 0
     return 3 if result.status == "blocked" else 4
 

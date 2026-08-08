@@ -1,4 +1,4 @@
-"""Issue #32 — the small-batch interpretation importer.
+"""Issue #32/#39 — the small-batch interpretation importer.
 
 Every test here runs offline against an injected fake transport, under the
 process-level no-network guard, with an obviously fake credential. No real
@@ -13,6 +13,14 @@ remaining batch without rollback. Every emitted field is a project-owned closed
 enum, a bounded count, a boolean, owner-provided content or a fingerprint — so a
 hostile production response, a raw voc_id, a raw record id or the Token can never
 escape through stdout, stderr, a repr, a traceback or the local report.
+
+Issue #39 adds update mode under the same contract: exactly one existing
+authenticated-user record per item, the target id chosen only from the
+authenticated GET, an already-matching item as a satisfied zero-request no-op, a
+whole-batch abort before the first POST if anything is blocked, a confirmation
+bound to the exact pre-update snapshot, one POST to `/interpretations/{id}` with
+no voc_id and no retry, a same-record strict readback, and a private report that
+keeps the replaced text for MANUAL restoration without ever keeping a raw id.
 """
 
 from __future__ import annotations
@@ -62,6 +70,10 @@ SENTINELS = (FAKE_TOKEN, SERVER_KEY, SERVER_VALUE, TRANSPORT_SENTINEL, UNSAFE_ID
 SPELLING_A, TEXT_A = "acquisition", "n. 收购；购置；获得"
 SPELLING_B, TEXT_B = "leverage", "n. 杠杆作用\nv. 利用；借助"
 SPELLING_C, TEXT_C = "amortization", "n. 摊销；分期偿还"
+# The pre-update state of an existing authenticated-user custom interpretation.
+OLD_A = "n. 收购（旧版释义）"
+OLD_B = "n. 杠杆（旧版释义）"
+OLD_TAGS = ["考研"]
 TWO_ENTRY_DOCUMENT = (
     f"## {SPELLING_A}\n{TEXT_A}\n\n## {SPELLING_B}\n{TEXT_B}\n"
 )
@@ -868,6 +880,585 @@ class CreateTests(ImporterFixtures, unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Update
+# --------------------------------------------------------------------------- #
+
+
+class UpdateTests(ImporterFixtures, unittest.TestCase):
+    """Issue #39: replace exactly one existing authenticated-user record."""
+
+    def existing(self, record_id, text, *, tags=None, status="PUBLISHED"):
+        return record(record_id, text, tags=tags or OLD_TAGS, status=status)
+
+    def update_pair(self, first=None, second=None):
+        """Preflight responses where both items already have one stale record."""
+        return [
+            voc_response(VOC_A, SPELLING_A),
+            collection(first if first is not None else [self.existing(RECORD_A, OLD_A)]),
+            voc_response(VOC_B, SPELLING_B),
+            collection(second if second is not None else [self.existing(RECORD_B, OLD_B)]),
+        ]
+
+    def updated(self, *, post_status=200, first=None, second=None):
+        """A clean two-item update batch: both items change and both verify."""
+        return self.update_pair() + [
+            harness.HttpResponse(post_status, {}),
+            collection(first if first is not None else [record(RECORD_A, TEXT_A)]),
+            harness.HttpResponse(post_status, {}),
+            collection(second if second is not None else [record(RECORD_B, TEXT_B)]),
+        ]
+
+    def run_update(self, responses, **kwargs):
+        return self.drive(responses, mode=importer.MODE_UPDATE, **kwargs)
+
+    # ----------------------------------------------------------------- preflight
+
+    def test_update_preflight_classifies_zero_one_matching_one_differing_and_many(self):
+        cases = (
+            ([], importer.BLOCK_MISSING, 0, "blocked"),
+            ([self.existing(RECORD_B, OLD_B)], importer.READY_UPDATE, 1, "blocked"),
+            ([record(RECORD_B, TEXT_B)], importer.ALREADY_MATCHING, 1, "satisfied"),
+            ([self.existing(RECORD_B, OLD_B), self.existing(OTHER_RECORD, "n. 另一条")],
+             importer.BLOCK_AMBIGUOUS, 2, "blocked"),
+        )
+        for records, state, count, status in cases:
+            with self.subTest(state=state):
+                # A wrong confirmation keeps every case at preflight, so the
+                # classification is observed before any write can exist.
+                result, transport, output = self.run_update(
+                    self.update_pair(first=[record(RECORD_A, TEXT_A)], second=records),
+                    confirm=lambda _plan: "",
+                )
+                verdict = result.preflight[1]
+                self.assertEqual(verdict.state, state)
+                self.assertEqual(verdict.existing_count, count)
+                self.assertEqual(transport.methods(), ["GET"] * 4)
+                self.assertEqual(result.post_count, 0)
+                self.assertEqual(result.status, status)
+                self.assertIn(importer._STATE_LABELS[state], output)
+
+    def test_only_the_exactly_one_shape_ever_carries_an_update_baseline(self):
+        result, _transport, _output = self.run_update(
+            self.update_pair(first=[], second=None)
+        )
+        self.assertIsNone(result.preflight[0].baseline)
+        self.assertIsNone(result.preflight[0].record_fingerprint)
+        self.assertEqual(result.preflight[1].baseline.interpretation, OLD_B)
+        self.assertEqual(list(result.preflight[1].baseline.tags), OLD_TAGS)
+        self.assertEqual(result.preflight[1].baseline.status, "PUBLISHED")
+        self.assertEqual(result.preflight[1].record_fingerprint,
+                         importer._short_fingerprint(RECORD_B))
+
+    def test_an_unreadable_existing_record_blocks_instead_of_being_guessed(self):
+        for name, existing in (
+            ("unsafe id", [record(UNSAFE_ID, OLD_B)]),
+            ("undocumented tag", [record(RECORD_B, OLD_B, tags=[SERVER_VALUE])]),
+            ("control character", [record(RECORD_B, "n. 旧\x07", tags=OLD_TAGS)]),
+        ):
+            with self.subTest(case=name):
+                result, _transport, output = self.run_update(
+                    self.update_pair(first=[record(RECORD_A, TEXT_A)], second=existing)
+                )
+                self.assertEqual(result.preflight[1].state, importer.BLOCK_ERROR)
+                self.assertEqual(result.preflight[1].error_class, "schema")
+                self.assertEqual(result.post_count, 0)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, output)
+
+    def test_any_blocked_item_aborts_the_whole_update_batch_before_the_first_post(self):
+        cases = (
+            ("missing", self.update_pair(second=[])),
+            ("ambiguous", self.update_pair(
+                second=[self.existing(RECORD_B, OLD_B),
+                        self.existing(OTHER_RECORD, "n. 另一条")])),
+            ("error", [voc_response(VOC_A, SPELLING_A),
+                       collection([self.existing(RECORD_A, OLD_A)]),
+                       harness.TransportError(TRANSPORT_SENTINEL),
+                       voc_response(VOC_B, SPELLING_B)]),
+        )
+        for name, responses in cases:
+            with self.subTest(case=name):
+                self.confirmations = []
+                result, transport, output = self.run_update(responses)
+                self.assertEqual(result.status, "blocked")
+                self.assertEqual(result.post_count, 0)
+                self.assertEqual(result.outcomes, ())
+                self.assertNotIn("POST", transport.methods())
+                self.assertEqual(self.confirmations, [])
+                self.assertIn("ABORTED BEFORE THE FIRST POST", output)
+                self.assertIn("not ready to update", output)
+
+    def test_an_all_matching_batch_completes_with_zero_writes_and_no_confirmation(self):
+        report = self.private_report()
+        result, transport, output = self.run_update(
+            self.update_pair(first=[record(RECORD_A, TEXT_A)],
+                             second=[record(RECORD_B, TEXT_B)]),
+            report=report,
+        )
+        self.assertEqual(result.status, "satisfied")
+        self.assertEqual((result.post_count, result.no_op_count), (0, 2))
+        self.assertEqual(result.update_count, 0)
+        self.assertEqual(transport.methods(), ["GET"] * 4)
+        self.assertEqual(self.confirmations, [])
+        self.assertNotIn(importer.UPDATE_CONFIRMATION_PREFIX, output)
+        self.assertIn("NOTHING TO UPDATE", output)
+        self.assertIn("ALREADY MATCHING 2/2", output)
+        self.assertIn("WRITES 0", output)
+        document = json.loads(result.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["post_count"], 0)
+        self.assertEqual([item["preflight"] for item in document["items"]],
+                         [importer.ALREADY_MATCHING] * 2)
+
+    def test_tag_order_and_status_are_compared_as_the_documented_final_state(self):
+        cases = (
+            ("reordered tags", ["GMAT", "MBA", "BEC"], "PUBLISHED",
+             importer.ALREADY_MATCHING),
+            ("missing tag", ["MBA", "BEC"], "PUBLISHED", importer.READY_UPDATE),
+            ("extra tag", ["MBA", "BEC", "GMAT", "考研"], "PUBLISHED",
+             importer.READY_UPDATE),
+            ("unpublished", ["MBA", "BEC", "GMAT"], "UNPUBLISHED",
+             importer.READY_UPDATE),
+        )
+        for name, tags, status, state in cases:
+            with self.subTest(case=name):
+                result, _transport, _output = self.run_update(
+                    self.update_pair(
+                        first=[record(RECORD_A, TEXT_A)],
+                        second=[record(RECORD_B, TEXT_B, tags=tags, status=status)],
+                    )
+                )
+                self.assertEqual(result.preflight[1].state, state)
+
+    # ------------------------------------------------------------------- preview
+
+    def test_the_update_preview_shows_the_old_and_new_values_without_raw_ids(self):
+        _result, _transport, output = self.run_update(
+            self.update_pair(first=[record(RECORD_A, TEXT_A)])
+        )
+        self.assertIn("READY_UPDATE", output)
+        self.assertIn("ALREADY_MATCHING", output)
+        self.assertIn("CURRENT (this exact text will be replaced):", output)
+        self.assertIn(OLD_B, output)
+        self.assertIn("current tags 考研   current status PUBLISHED", output)
+        self.assertIn("PROPOSED:", output)
+        for line in TEXT_B.split("\n"):
+            self.assertIn(line, output)
+        self.assertIn("proposed tags MBA BEC GMAT   proposed status PUBLISHED", output)
+        self.assertIn("CURRENT = PROPOSED (no change, no request will be sent):", output)
+        self.assertIn(f"path {importer.UPDATE_PATH_TEMPLATE}", output)
+        self.assertIn(importer._short_fingerprint(VOC_B), output)
+        self.assertIn(importer._short_fingerprint(RECORD_B), output)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, output)
+
+    # --------------------------------------------------------------------- write
+
+    def test_a_clean_update_posts_the_documented_body_to_the_selected_record(self):
+        result, transport, output = self.run_update(self.updated())
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.verified_count, 2)
+        self.assertIn("UPDATED 2/2", output)
+        self.assertEqual(transport.calls(), [
+            ("GET", f"{VOCABULARY_PATH}?spelling={SPELLING_A}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_A}"),
+            ("GET", f"{VOCABULARY_PATH}?spelling={SPELLING_B}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_A}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_A}"),
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_B}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+        ])
+        posts = [payload for payload in transport.payloads if payload is not None]
+        self.assertEqual(posts[0], {"interpretation": {
+            "interpretation": TEXT_A,
+            "tags": ["MBA", "BEC", "GMAT"],
+            "status": "PUBLISHED",
+        }})
+        self.assertEqual(posts[1]["interpretation"]["interpretation"], TEXT_B)
+        for payload in posts:
+            entity = payload["interpretation"]
+            self.assertEqual(set(entity), set(importer.UPDATE_BODY_FIELDS))
+            self.assertNotIn("voc_id", entity)
+            self.assertNotIn("id", entity)
+            self.assertNotIn("voc_id", payload)
+
+    def test_a_mixed_batch_updates_only_the_changed_item(self):
+        responses = self.update_pair(first=[record(RECORD_A, TEXT_A)]) + [
+            harness.HttpResponse(200, {}), collection([record(RECORD_B, TEXT_B)]),
+        ]
+        result, transport, output = self.run_update(responses)
+        self.assertEqual(result.status, "verified")
+        self.assertEqual((result.update_count, result.no_op_count), (1, 1))
+        self.assertEqual(result.post_count, 1)
+        self.assertEqual(transport.calls()[4:], [
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_B}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+        ])
+        # The plan skipped the already-matching first item entirely.
+        self.assertEqual([outcome.ordinal for outcome in result.outcomes], [2])
+        self.assertIn("UPDATED 1/1", output)
+        self.assertIn("ALREADY MATCHING 1 (no request sent)", output)
+
+    def test_the_guard_pins_each_post_to_one_ordinal_and_one_exact_record_path(self):
+        guard = importer.BatchWriteGuard(
+            FakeTransport([harness.HttpResponse(200, {})] * 3),
+            max_gets=6, max_posts=2, sleep=self.slept.append,
+        )
+        request = harness.HttpRequest(
+            "POST", f"{INTERPRETATIONS_PATH}/{RECORD_A}", importer.update_body(TEXT_A)
+        )
+        other = harness.HttpRequest(
+            "POST", f"{INTERPRETATIONS_PATH}/{OTHER_RECORD}", importer.update_body(TEXT_A)
+        )
+        create = harness.HttpRequest(
+            "POST", importer.CREATE_PATH, importer.create_body(VOC_A, TEXT_A)
+        )
+        guard.arm(1, f"{INTERPRETATIONS_PATH}/{RECORD_A}")
+        # Neither another record nor the create endpoint may consume this budget.
+        for rejected in (other, create):
+            with self.assertRaises(harness.SafetyError):
+                guard.send(rejected, self.credential)
+        guard.send(request, self.credential)
+        with self.assertRaises(harness.SafetyError):
+            guard.send(request, self.credential)
+        with self.assertRaises(harness.SafetyError):
+            guard.arm(1, f"{INTERPRETATIONS_PATH}/{RECORD_A}")
+        with self.assertRaises(harness.SafetyError):
+            guard.arm(2, f"{INTERPRETATIONS_PATH}/{UNSAFE_ID}")
+        self.assertEqual((guard.post_count, guard.posted_ordinals), (1, {1}))
+
+    # -------------------------------------------------------------- confirmation
+
+    def update_plan(self, *, record_id=RECORD_A, old_text=OLD_A, old_tags=("考研",),
+                    old_status="PUBLISHED", interpretation=None, no_op_count=1):
+        baseline = importer.RecordBaseline(
+            record_id=record_id, interpretation=old_text,
+            tags=tuple(old_tags), status=old_status,
+        )
+        text = interpretation if interpretation is not None else TEXT_A
+        item = importer.PlannedItem(
+            ordinal=1, spelling=SPELLING_A, returned_spelling=SPELLING_A,
+            vocabulary_id=VOC_A, interpretation=text,
+            request_body=importer.update_body(text), baseline=baseline,
+        )
+        return importer.BatchPlan(
+            account_label=ACCOUNT_LABEL,
+            credential_fingerprint=self.credential.fingerprint,
+            items=(item,),
+            digest=importer.batch_digest(self.entries(), mode=importer.MODE_UPDATE),
+            mode=importer.MODE_UPDATE,
+            no_op_count=no_op_count,
+        )
+
+    def test_one_update_confirmation_is_copy_safe_and_distinct_from_create(self):
+        plan = self.update_plan()
+        lines = importer.confirmation_lines(plan)
+        displayed = [line for line in lines
+                     if importer.UPDATE_CONFIRMATION_PREFIX in line]
+        self.assertEqual(len(displayed), 1)
+        shown = displayed[0]
+        # Byte-for-byte pasteable: no indentation, no quoting, no trimming.
+        self.assertEqual(shown, plan.expected_confirmation)
+        self.assertEqual(shown, shown.strip())
+        plan.validate_confirmation(shown)
+        self.assertNotIn(importer.CONFIRMATION_PREFIX, shown)
+        self.assertIn("UPDATES: 1", shown)
+        self.assertIn("NO-OP: 1", shown)
+        self.assertIn(f"TOKEN-FP: {self.credential.fingerprint}", shown)
+        self.assertIn(harness.WRITE_PRICING_TERMS_CLAUSE, shown)
+        self.assertIn(importer.BATCH_ONE_POST_CLAUSE, shown)
+        for raw in RAW_IDS:
+            self.assertNotIn(raw, shown)
+
+    def test_the_update_confirmation_binds_the_target_and_the_pre_update_snapshot(self):
+        baseline = self.update_plan().expected_confirmation
+        variants = (
+            ("target record", {"record_id": RECORD_C}),
+            ("old text", {"old_text": OLD_A + "。"}),
+            ("old tags", {"old_tags": ("四级",)}),
+            ("old status", {"old_status": "UNPUBLISHED"}),
+            ("proposed text", {"interpretation": TEXT_A + "。"}),
+            ("no-op count", {"no_op_count": 0}),
+        )
+        for name, changes in variants:
+            with self.subTest(field=name):
+                self.assertNotEqual(baseline, self.update_plan(**changes).expected_confirmation)
+        # The create confirmation for the same document is a different string.
+        self.assertNotEqual(
+            importer.batch_digest(self.entries()),
+            importer.batch_digest(self.entries(), mode=importer.MODE_UPDATE),
+        )
+
+    def test_mutating_the_baseline_or_the_proposal_after_the_preview_blocks_the_post(self):
+        for name, mutate in (
+            ("target record",
+             lambda plan: object.__setattr__(plan.items[0].baseline, "record_id", RECORD_C)),
+            ("old text",
+             lambda plan: object.__setattr__(
+                 plan.items[0].baseline, "interpretation", OLD_A + "（改动）")),
+            ("proposed text",
+             lambda plan: object.__setattr__(
+                 plan.items[0], "interpretation", TEXT_A + "（改动）")),
+        ):
+            with self.subTest(case=name):
+                plan = self.update_plan()
+                accepted = plan.expected_confirmation
+                plan.validate_confirmation(accepted)
+                mutate(plan)
+                guard = importer.BatchWriteGuard(
+                    FakeTransport([]), max_gets=3, max_posts=1, sleep=self.slept.append
+                )
+                outcome = importer.write_item(
+                    guard, plan.items[0], self.credential, accepted, plan
+                )
+                self.assertEqual(outcome.outcome, importer.NOT_ATTEMPTED)
+                self.assertEqual(outcome.failure_class, "safety")
+                self.assertEqual(guard.post_count, 0)
+
+    def test_an_item_that_became_already_matching_can_never_be_a_write_target(self):
+        plan = self.update_plan()
+        object.__setattr__(plan.items[0].baseline, "interpretation", TEXT_A)
+        object.__setattr__(plan.items[0].baseline, "tags", tuple(importer.TAGS))
+        with self.assertRaises(harness.SafetyError):
+            plan.revalidate()
+
+    def test_a_stale_or_create_shaped_confirmation_aborts_the_update_with_zero_posts(self):
+        for provided in ("", importer.CONFIRMATION_PREFIX,
+                         "CONFIRM BATCH INTERPRETATION UPDATE: wrong"):
+            with self.subTest(provided=provided[:24]):
+                result, transport, output = self.run_update(
+                    self.updated(), confirm=lambda _plan, value=provided: value
+                )
+                self.assertEqual(result.status, "blocked")
+                self.assertEqual(result.post_count, 0)
+                self.assertNotIn("POST", transport.methods())
+                self.assertIn("ABORTED BEFORE THE FIRST POST", output)
+
+    # ------------------------------------------------------------------ readback
+
+    def test_a_verified_update_requires_the_same_record_and_the_exact_final_state(self):
+        cases = (
+            ("wrong text", [record(RECORD_A, "n. 不一样")],
+             importer.NOT_VERIFIED, "mismatch"),
+            ("missing tag", [record(RECORD_A, TEXT_A, tags=["MBA", "BEC"])],
+             importer.NOT_VERIFIED, "mismatch"),
+            ("unpublished", [record(RECORD_A, TEXT_A, status="UNPUBLISHED")],
+             importer.NOT_VERIFIED, "mismatch"),
+            ("different record id", [record(OTHER_RECORD, TEXT_A)],
+             importer.NOT_VERIFIED, "mismatch"),
+            ("no record", [], importer.NOT_VERIFIED, "unknown-write-outcome"),
+            ("two records", [record(RECORD_A, TEXT_A), record(OTHER_RECORD, TEXT_A)],
+             importer.AMBIGUOUS, "ambiguous"),
+        )
+        for name, records, outcome, failure in cases:
+            with self.subTest(case=name):
+                result, transport, output = self.run_update(self.updated(first=records))
+                self.assertEqual(result.status, "stopped")
+                self.assertEqual(result.verified_count, 0)
+                self.assertEqual(result.outcomes[0].outcome, outcome)
+                self.assertEqual(result.outcomes[0].failure_class, failure)
+                self.assertEqual(transport.methods().count("POST"), 1)
+                self.assertEqual(result.outcomes[1].outcome, importer.NOT_ATTEMPTED)
+                self.assertIn(f"STOPPED ON 1: {SPELLING_A}", output)
+                self.assertIn("REMAINING NOT ATTEMPTED 1", output)
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, output)
+
+    def test_an_uncertain_update_post_is_resolved_by_one_get_only_recovery(self):
+        for name, failure in (
+            ("transport", harness.TransportError(TRANSPORT_SENTINEL)),
+            ("response", harness.TransportResponseError(502)),
+            ("non-2xx", harness.HttpResponse(500, {SERVER_KEY: SERVER_VALUE})),
+        ):
+            with self.subTest(case=name):
+                responses = self.update_pair() + [
+                    failure, collection([record(RECORD_A, TEXT_A)]),
+                    harness.HttpResponse(200, {}), collection([record(RECORD_B, TEXT_B)]),
+                ]
+                result, transport, output = self.run_update(responses)
+                self.assertEqual(result.status, "verified")
+                self.assertEqual(result.outcomes[0].outcome, importer.RECOVERED)
+                self.assertEqual(result.outcomes[1].outcome, importer.CONFIRMED)
+                # One POST per item and exactly one GET recovery — never a resend.
+                self.assertEqual(transport.methods().count("POST"), 2)
+                self.assertEqual(transport.methods().count("GET"), 6)
+                self.assertIn("UPDATED 2/2", output)
+
+    def test_an_uncertain_update_without_the_same_target_fails_closed(self):
+        cases = (
+            ("zero", [], importer.NOT_VERIFIED, "unknown-write-outcome"),
+            ("different id", [record(OTHER_RECORD, TEXT_A)],
+             importer.NOT_VERIFIED, "mismatch"),
+            ("multiple", [record(RECORD_A, TEXT_A), record(OTHER_RECORD, TEXT_A)],
+             importer.AMBIGUOUS, "ambiguous"),
+        )
+        for name, records, outcome, failure in cases:
+            with self.subTest(case=name):
+                responses = self.update_pair() + [
+                    harness.TransportError(TRANSPORT_SENTINEL), collection(records),
+                ]
+                result, transport, _output = self.run_update(responses)
+                self.assertEqual(result.status, "stopped")
+                self.assertEqual(result.outcomes[0].outcome, outcome)
+                self.assertEqual(result.outcomes[0].failure_class, failure)
+                self.assertEqual(transport.methods().count("POST"), 1)
+                self.assertEqual(transport.methods().count("GET"), 5)
+
+    # --------------------------------------------------- partial failure / rerun
+
+    def test_a_later_update_failure_stops_the_batch_and_keeps_earlier_successes(self):
+        report = self.private_report()
+        responses = [
+            voc_response(VOC_A, SPELLING_A), collection([self.existing(RECORD_A, OLD_A)]),
+            voc_response(VOC_B, SPELLING_B), collection([self.existing(RECORD_B, OLD_B)]),
+            voc_response(VOC_C, SPELLING_C), collection([self.existing(RECORD_C, "n. 旧")]),
+            harness.HttpResponse(200, {}), collection([record(RECORD_A, TEXT_A)]),
+            harness.HttpResponse(200, {}), collection([record(RECORD_B, "n. 没有改成")]),
+        ]
+        result, transport, output = self.run_update(
+            responses, document=THREE_ENTRY_DOCUMENT, report=report
+        )
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.verified_count, 1)
+        self.assertEqual([item.outcome for item in result.outcomes],
+                         [importer.CONFIRMED, importer.NOT_VERIFIED,
+                          importer.NOT_ATTEMPTED])
+        self.assertEqual(transport.methods().count("POST"), 2)
+        self.assertFalse(result.outcomes[2].post_attempted)
+        self.assertIn(f"STOPPED ON 2: {SPELLING_B}", output)
+        self.assertIn("REMAINING NOT ATTEMPTED 1", output)
+        self.assertIn("Nothing was rolled back or deleted", output)
+        self.assertIn("ALREADY_MATCHING", output)
+        document = json.loads(result.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["stopped_on_ordinal"], 2)
+        self.assertEqual(document["verified_count"], 1)
+
+    def test_a_rerun_after_a_partial_update_is_a_no_op_for_the_finished_items(self):
+        # Item 1 was already replaced on the previous run; item 2 still differs.
+        result, transport, output = self.run_update(
+            self.update_pair(first=[record(RECORD_A, TEXT_A)]) + [
+                harness.HttpResponse(200, {}), collection([record(RECORD_B, TEXT_B)]),
+            ]
+        )
+        self.assertEqual([item.state for item in result.preflight],
+                         [importer.ALREADY_MATCHING, importer.READY_UPDATE])
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.post_count, 1)
+        self.assertIn("ALREADY MATCHING 1 (no request sent)", output)
+        # A second rerun of the finished batch now writes nothing at all.
+        self.confirmations = []
+        again, transport, output = self.run_update(
+            self.update_pair(first=[record(RECORD_A, TEXT_A)],
+                             second=[record(RECORD_B, TEXT_B)])
+        )
+        self.assertEqual(again.status, "satisfied")
+        self.assertEqual(again.post_count, 0)
+        self.assertEqual(self.confirmations, [])
+        self.assertEqual(transport.methods(), ["GET"] * 4)
+
+    # -------------------------------------------------------------- private report
+
+    def test_the_private_report_keeps_the_pre_update_snapshot_without_raw_ids(self):
+        report = self.private_report()
+        result, _transport, output = self.run_update(self.updated(), report=report)
+        self.assertEqual(result.status, "verified")
+        raw = result.report_path.read_text(encoding="utf-8")
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, raw)
+            self.assertNotIn(sentinel, output)
+        document = json.loads(raw)
+        importer._assert_no_raw_identifiers(document)
+        self.assertEqual(document["mode"], importer.MODE_UPDATE)
+        self.assertEqual(document["operation"], importer.OPERATION_UPDATE)
+        self.assertEqual(document["path"], importer.UPDATE_PATH_TEMPLATE)
+        self.assertEqual(document["update_count"], 2)
+        self.assertEqual(document["no_op_count"], 0)
+        self.assertEqual(document["retries"], 0)
+        self.assertIn("manual restoration only", document["rollback"])
+        first = document["items"][0]
+        # Enough local evidence to restore the replaced interpretation by hand.
+        self.assertEqual(first["pre_update_interpretation"], OLD_A)
+        self.assertEqual(first["pre_update_tags"], OLD_TAGS)
+        self.assertEqual(first["pre_update_status"], "PUBLISHED")
+        self.assertEqual(first["interpretation"], TEXT_A)
+        self.assertEqual(first["tags"], ["MBA", "BEC", "GMAT"])
+        self.assertEqual(first["status"], "PUBLISHED")
+        self.assertEqual(first["voc_id_fingerprint"], importer._short_fingerprint(VOC_A))
+        self.assertEqual(first["record_fingerprint"], importer._short_fingerprint(RECORD_A))
+        self.assertTrue(first["post_attempted"])
+        self.assertTrue(first["readback_attempted"])
+        self.assertEqual(first["outcome"], importer.CONFIRMED)
+
+    # ---------------------------------------------------------------- boundaries
+
+    def test_update_mode_never_falls_back_to_create(self):
+        result, transport, output = self.run_update(self.update_pair(second=[]))
+        self.assertEqual(result.preflight[1].state, importer.BLOCK_MISSING)
+        self.assertEqual(result.status, "blocked")
+        self.assertNotIn(("POST", INTERPRETATIONS_PATH), transport.calls())
+        self.assertEqual(result.post_count, 0)
+        self.assertIn("no custom interpretation to replace", output)
+        # And a create batch still refuses the one-existing-record shape rather
+        # than quietly turning itself into an update.
+        created, _transport, _output = self.drive(
+            self.update_pair(), mode=importer.MODE_CREATE
+        )
+        self.assertEqual([item.state for item in created.preflight],
+                         [importer.BLOCK_EXISTING, importer.BLOCK_EXISTING])
+        self.assertEqual(created.post_count, 0)
+
+    def test_the_update_body_validator_rejects_a_voc_id_or_a_create_shaped_payload(self):
+        path = f"{INTERPRETATIONS_PATH}/{RECORD_A}"
+        for body in (
+            {"interpretation": {"voc_id": VOC_A, "interpretation": TEXT_A,
+                                "tags": ["MBA", "BEC", "GMAT"], "status": "PUBLISHED"}},
+            {"interpretation": {"id": RECORD_A, "interpretation": TEXT_A,
+                                "tags": ["MBA", "BEC", "GMAT"], "status": "PUBLISHED"}},
+            {"interpretation": {"interpretation": TEXT_A, "tags": ["MBA"],
+                                "status": "PUBLISHED"}},
+            {"interpretation": {"interpretation": TEXT_A,
+                                "tags": ["MBA", "BEC", "GMAT"], "status": "UNPUBLISHED"}},
+            {"interpretation": {"interpretation": TEXT_A,
+                                "tags": ["MBA", "BEC", "GMAT"], "status": "PUBLISHED",
+                                "origin": "自编"}},
+        ):
+            with self.subTest(body=sorted(body["interpretation"])[0]):
+                with self.assertRaises(harness.SafetyError):
+                    importer.validate_update_body(body, path, TEXT_A)
+        # The intended body only validates against its own record path and text.
+        importer.validate_update_body(importer.update_body(TEXT_A), path, TEXT_A)
+        for bad_path in (importer.CREATE_PATH, f"{INTERPRETATIONS_PATH}/{UNSAFE_ID}"):
+            with self.subTest(path=bad_path[-12:]):
+                with self.assertRaises(harness.SafetyError):
+                    importer.validate_update_body(
+                        importer.update_body(TEXT_A), bad_path, TEXT_A
+                    )
+        with self.assertRaises(harness.SafetyError):
+            importer.validate_update_body(importer.update_body(TEXT_A), path, TEXT_B)
+
+    def test_the_update_target_path_is_rebuilt_from_the_project_prefix(self):
+        self.assertEqual(importer.update_path(RECORD_A),
+                         f"{INTERPRETATIONS_PATH}/{RECORD_A}")
+        for unsafe in (UNSAFE_ID, "../vocabulary", "", None, 7, f"{RECORD_A}?x=1"):
+            with self.subTest(value=str(unsafe)[:16]):
+                with self.assertRaises(harness.SafetyError):
+                    importer.update_path(unsafe)
+
+    def test_the_fixed_update_contract_fails_closed_when_it_drifts(self):
+        for name, value in (
+            ("UPDATE_PATH_TEMPLATE", "/open/api/v1/interpretations"),
+            ("UPDATE_BODY_FIELDS", ("voc_id", "interpretation", "tags", "status")),
+            ("UPDATE_CONFIRMATION_PREFIX", importer.CONFIRMATION_PREFIX),
+            ("MODES", (importer.MODE_DRY_RUN, importer.MODE_CREATE)),
+        ):
+            with self.subTest(name=name):
+                with mock.patch.object(importer, name, value):
+                    with self.assertRaises(harness.SafetyError):
+                        importer.validate_contract()
+        importer.validate_contract()
+
+
+# --------------------------------------------------------------------------- #
 # Security and containment
 # --------------------------------------------------------------------------- #
 
@@ -905,7 +1496,11 @@ class SecurityTests(ImporterFixtures, unittest.TestCase):
             ["--input", "batch.md", "--account-label", ACCOUNT_LABEL, "--token", FAKE_TOKEN],
             ["--input", "batch.md", "--account-label", ACCOUNT_LABEL, "--tags", "MBA"],
             ["--input", "batch.md", "--account-label", ACCOUNT_LABEL, "--status", "PUBLISHED"],
-            ["--mode", "update", "--input", "batch.md", "--account-label", ACCOUNT_LABEL],
+            # There is no delete/replace mode, and --record-id does not exist:
+            # the update target is never nameable from the command line.
+            ["--mode", "delete", "--input", "batch.md", "--account-label", ACCOUNT_LABEL],
+            ["--mode", "update", "--input", "batch.md", "--account-label", ACCOUNT_LABEL,
+             "--record-id", RECORD_A],
             ["--mode", "dry-run", "--account-label", ACCOUNT_LABEL],
             ["--input", "batch.md"],
             [],
@@ -969,8 +1564,11 @@ class SecurityTests(ImporterFixtures, unittest.TestCase):
              "batch_digest": "0" * 64, "items": [{"voc_id": VOC_A}]},
             {"mode": importer.MODE_DRY_RUN, "created_at": "2026-08-08T00:00:00Z",
              "batch_digest": "0" * 64, "items": [{"record_fingerprint": RECORD_A}]},
-            {"mode": "update", "created_at": "2026-08-08T00:00:00Z",
+            {"mode": "delete", "created_at": "2026-08-08T00:00:00Z",
              "batch_digest": "0" * 64},
+            {"mode": importer.MODE_UPDATE, "created_at": "2026-08-08T00:00:00Z",
+             "batch_digest": "0" * 64,
+             "items": [{"record_id": RECORD_A}]},
         ):
             with self.subTest(document=sorted(document)[0]):
                 with self.assertRaises(harness.SafetyError):
@@ -1025,6 +1623,19 @@ class SecurityTests(ImporterFixtures, unittest.TestCase):
                                "tags": ["MBA", "BEC", "GMAT"], "origin": "自编"}}),
                 self.credential,
             )
+        # Arming an interpretation update never opens the phrase update path.
+        second = importer.BatchWriteGuard(
+            FakeTransport([]), max_gets=1, max_posts=1, sleep=self.slept.append
+        )
+        second.arm(1, f"{INTERPRETATIONS_PATH}/{RECORD_A}")
+        with self.assertRaises(harness.SafetyError):
+            second.send(
+                harness.HttpRequest("POST", f"/open/api/v1/phrases/{RECORD_A}", {
+                    "phrase": {"phrase": "x", "interpretation": TEXT_A,
+                               "tags": ["MBA", "BEC", "GMAT"], "origin": "自编"}}),
+                self.credential,
+            )
+        self.assertEqual(second.post_count, 0)
         for method in ("PUT", "PATCH", "DELETE"):
             with self.subTest(method=method):
                 with self.assertRaises(harness.SafetyError):
@@ -1110,6 +1721,71 @@ class SecurityTests(ImporterFixtures, unittest.TestCase):
         for sentinel in SENTINELS:
             self.assertNotIn(sentinel, printed)
 
+    def test_the_cli_runs_an_update_batch_end_to_end(self):
+        path = self.batch_file()
+        captured = {}
+
+        def transport_factory():
+            captured["transport"] = FakeTransport(self.updated_pair())
+            return captured["transport"]
+
+        stream = io.StringIO()
+        with mock.patch("sys.stdout", stream):
+            code = importer.main(
+                ["--mode", importer.MODE_UPDATE, "--input", str(path),
+                 "--account-label", ACCOUNT_LABEL, "--allow-network"],
+                token_prompt=lambda _message: FAKE_TOKEN,
+                confirmation_prompt=lambda _message: self.expected_update_confirmation,
+                transport_factory=transport_factory,
+                stdin_isatty=lambda: True,
+                report_factory=self.private_report,
+                sleep=self.slept.append,
+            )
+        printed = stream.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("UPDATED 2/2", printed)
+        self.assertEqual(captured["transport"].calls()[4:], [
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_A}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_A}"),
+            ("POST", f"{INTERPRETATIONS_PATH}/{RECORD_B}"),
+            ("GET", f"{INTERPRETATIONS_PATH}?voc_id={VOC_B}"),
+        ])
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, printed)
+
+    def updated_pair(self):
+        return [
+            voc_response(VOC_A, SPELLING_A),
+            collection([record(RECORD_A, OLD_A, tags=OLD_TAGS)]),
+            voc_response(VOC_B, SPELLING_B),
+            collection([record(RECORD_B, OLD_B, tags=OLD_TAGS)]),
+            harness.HttpResponse(200, {}), collection([record(RECORD_A, TEXT_A)]),
+            harness.HttpResponse(200, {}), collection([record(RECORD_B, TEXT_B)]),
+        ]
+
+    @property
+    def expected_update_confirmation(self):
+        """The update confirmation the CLI run above is expected to print."""
+        def planned(ordinal, spelling, vocabulary_id, record_id, old_text, text):
+            return importer.PlannedItem(
+                ordinal=ordinal, spelling=spelling, returned_spelling=spelling,
+                vocabulary_id=vocabulary_id, interpretation=text,
+                request_body=importer.update_body(text),
+                baseline=importer.RecordBaseline(
+                    record_id=record_id, interpretation=old_text,
+                    tags=tuple(OLD_TAGS), status="PUBLISHED",
+                ),
+            )
+
+        return importer.BatchPlan(
+            account_label=ACCOUNT_LABEL,
+            credential_fingerprint=self.credential.fingerprint,
+            items=(planned(1, SPELLING_A, VOC_A, RECORD_A, OLD_A, TEXT_A),
+                   planned(2, SPELLING_B, VOC_B, RECORD_B, OLD_B, TEXT_B)),
+            digest=importer.batch_digest(self.entries(), mode=importer.MODE_UPDATE),
+            mode=importer.MODE_UPDATE,
+        ).expected_confirmation
+
     @property
     def expected_confirmation(self):
         """The confirmation the CLI run above is expected to print."""
@@ -1150,7 +1826,7 @@ class SecurityTests(ImporterFixtures, unittest.TestCase):
             self.assertNotIn(sentinel, stream.getvalue())
 
     def test_every_emitted_enum_is_project_owned(self):
-        for allowed, value in ((importer.MODES, "update"),
+        for allowed, value in ((importer.MODES, "replace"),
                                (importer.PREFLIGHT_STATES, "ready"),
                                (importer.ERROR_CLASSES, "unknown"),
                                (importer.OUTCOMES, "succeeded"),

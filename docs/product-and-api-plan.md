@@ -577,6 +577,34 @@ create 只需要**一次**批级确认，而不是 15 次逐条确认；该确�
 
 Issue #32 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。真实 dry-run 与真实批量 create 仍需所有者另开单独 Issue 明确授权，并在执行前重新核对当前官方费用与条款。
 
+#### Issue #39：同一个导入器补齐 `--mode update`
+
+不新建第二个产品，也不引入通用 CRUD 层：仍然只有 `scripts/interpretation_batch_importer.py` 与 `tests/test_interpretation_batch_importer.py`，`scripts/issue9_live_harness.py` 继续冻结未改动。Markdown 格式、固定 `MBA/BEC/GMAT` + `PUBLISHED`、1.6 秒节流、账号与凭证边界、copy-safe 确认、每条最多 1 个 POST、0 重试、立即回读全部沿用。
+
+```bash
+/usr/bin/python3 scripts/interpretation_batch_importer.py --mode update --input batch.md --account-label "副账号测试" --allow-network
+```
+
+官方一方文档当前记录的更新入口是 `POST /open/api/v1/interpretations/{id}`，请求体**只有**：
+
+```json
+{"interpretation": {"interpretation": "<所有者原文>", "tags": ["MBA","BEC","GMAT"], "status": "PUBLISHED"}}
+```
+
+更新体内**没有 `voc_id`**，也没有顶层 `id`；不实现 PUT/PATCH，不发送任何未文档化字段。
+
+update preflight 用与 create 相同的两次 GET，但按 update 语义分类：`ready-update`（恰好 1 条自建释义且正文/标签/状态与目标终态不同）、`already-matching`（恰好 1 条且已经逐字等于目标终态）、`blocked-missing`（0 条）、`blocked-ambiguous`（> 1 条）、`blocked-error`（transport / http-status / schema / safety）。`already-matching` 是**已满足的 no-op**，不是阻断项，且发 0 个 POST；只要有任何 `blocked-*`，就在**第一个 POST 之前**整批中止，不回退到 create、不换记录、不静默跳过。若整批都是 `already-matching`，则零写入、不弹确认、以 `satisfied` 成功结束。
+
+目标记录 ID 只来自鉴权 GET 集合，必须通过既有 safe-record-ID 策略，且**不接受来自 argv 或 Markdown 的记录 ID**；原始 ID 只在进程内使用，预览、输出和报告一律只出现指纹。预览对每条 `ready-update` 并排展示旧释义原文、旧标签/状态与拟写入的新释义与 `MBA BEC GMAT` / `PUBLISHED`，两侧文本都不改写。
+
+update 同样只需要**一次**批级确认，除 create 已绑定的字段外，还额外绑定每个原始目标记录 ID、每条精确的写前快照（正文/标签/状态）、每条精确的更新请求体、更新条数与 no-op 条数。预览后修改任何目标或任何基线快照都会改变摘要并使已输入确认失效。
+
+写入阶段按输入顺序逐条：先按“该序号 + 该精确目标 path”arm 唯一一次 POST 预算并在委托前扣减，再 `POST /interpretations/{record_id}` 一次、绝不重试，随后立即一次鉴权 GET 回读。成功要求回读后仍恰好 1 条自建释义、记录 ID 安全、**且与本轮内部选定的目标 ID 完全相同**、正文逐字一致、标签按集合语义恰好三个、状态精确为 `PUBLISHED`；不依赖 POST 响应体里的 ID。POST 结果不确定时只做同一次 GET 恢复：同一目标上的精确终态记为 `recovered-success`，否则 fail closed 并停止整批剩余项。部分失败不回滚、不删除、不继续后续条目；重跑时已完成的条目会变成 `already-matching`，仍有差异的条目继续是 `ready-update`——这就是 update 模式的幂等模型。
+
+私有报告在原有字段上最小扩展：为更新目标额外保留写前精确正文、写前标签/状态、意图终态与记录指纹，作为**人工**恢复所需的本地证据；仍不写入 Token / Authorization / Cookie / 原始 `voc_id` / 原始记录 ID / 原始响应体，也不新增任何自动回滚或重放机制。
+
+Issue #39 同样全程离线：只用明显虚假 credential 与 fake transport，在进程级 no-network guard 下运行，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。真实批量 update 需要所有者另开单独运行 Issue 授权。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
