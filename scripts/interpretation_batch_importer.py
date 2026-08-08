@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #32/#39 — small-batch interpretation importer: dry-run, create, update.
+"""Issue #32/#39/#51 — small-batch interpretation importer: dry-run, create, update.
 
 This is the first actually useful product workflow: the owner keeps a batch of
 roughly 8–15 vocabulary entries whose interpretations are already written, and
@@ -15,6 +15,16 @@ only ``interpretation``/``tags``/``status`` and never a ``voc_id``. The update
 target is only ever the single record returned by the authenticated collection
 GET, never a value from argv or from the batch document, and update mode never
 falls back to create.
+
+Issue #51 adds the explicit main-account opt-in that D-010 contemplated. The
+default is unchanged and stays secondary/test-account only; ``--allow-main-account``
+together with one of a narrow reviewed main-account label family (``主账号`` /
+``main-account``) is the only way to reach the owner's real account, and the two
+requirements fail closed independently. The write machinery is identical — the
+main path adds an account gate, a distinct hidden Token prompt, a visible warning
+and a distinct confirmation binding, and changes no preflight, POST, readback or
+stop rule. There is still no account-identity endpoint, so the account a Token
+belongs to remains the operator's responsibility and the tool says so out loud.
 
 Deliberate non-goals, so this stays a bicycle: no phrase/example path, no delete
 path, no automated rollback engine, no workflow engine, no plugin system, no
@@ -134,6 +144,37 @@ PRICING_TERMS_GATE = (
     "use and show no mandatory metered API fee."
 )
 
+# Issue #51: the explicit, opt-in main-account path.
+#
+# The default is unchanged and stays secondary/test-account only. Main-account
+# mode requires BOTH `--allow-main-account` AND one of a narrow reviewed label
+# family, and it is deliberately built beside — never on top of — the frozen
+# secondary policy in `issue9_live_harness`: that harness keeps rejecting every
+# main/production label, so the historical spike/probe tools remain
+# test-account-only exactly as D-010 requires.
+ACCOUNT_SECONDARY = "secondary"
+ACCOUNT_MAIN = "main"
+ACCOUNT_MODES: tuple[str, ...] = (ACCOUNT_SECONDARY, ACCOUNT_MAIN)
+# The whole reviewed main-account label family. It is intentionally tiny and
+# personal: `prod`/`production` are NOT synonyms for the owner's main account and
+# are never accepted here.
+MAIN_ACCOUNT_LABELS: tuple[str, ...] = ("主账号", "main-account")
+MAIN_ACCOUNT_CREDENTIAL_SOURCE = "owner-main-account"
+MAIN_ACCOUNT_GATE_PREFIX = "CONFIRM MAIN ACCOUNT"
+# Distinct confirmation prefixes, so a confirmation copied out of a secondary run
+# is not even the right shape for a main-account run. Both are short tokens over
+# the SAME full `confirmation_binding()` digest that the reviewed UPDATE form
+# already uses, so nothing that was bound before becomes unbound here.
+MAIN_CREATE_CONFIRMATION_PREFIX = "CONFIRM MAIN CREATE"
+MAIN_UPDATE_CONFIRMATION_PREFIX = "CONFIRM MAIN UPDATE"
+MAIN_TOKEN_PROMPT = "Main-account Maimemo Token (hidden): "
+MAIN_CONFIRMATION_PROMPT = "Exact MAIN-ACCOUNT batch CREATE confirmation (hidden): "
+MAIN_UPDATE_CONFIRMATION_PROMPT = "Exact MAIN-ACCOUNT batch UPDATE confirmation (hidden): "
+MAIN_PRICING_TERMS_GATE = (
+    "Confirm current official pricing/terms permit personal MAIN-account use and "
+    "show no mandatory metered API fee."
+)
+
 # Conservative fixed pacing between production requests, so a 15-item batch does
 # not arrive as one burst. It is a two-line local mechanism, not a rate limiter,
 # and no correctness rule in this module depends on its value: tests inject a
@@ -219,6 +260,16 @@ BLOCKED_GATE_MESSAGE = (
 BLOCKED_CREDENTIAL_MESSAGE = (
     "BLOCKED: the hidden secondary-account credential was not accepted."
 )
+BLOCKED_MAIN_CREDENTIAL_MESSAGE = (
+    "BLOCKED: the hidden main-account credential was not accepted."
+)
+BLOCKED_MAIN_ACCOUNT_MESSAGE = (
+    "BLOCKED: main-account use requires BOTH --allow-main-account AND one reviewed "
+    "main-account label (主账号 or main-account). Without --allow-main-account this "
+    "importer stays secondary/test-account only, and a secondary/test label can "
+    "never be combined with --allow-main-account. No Token was requested and no "
+    "transport was created."
+)
 BLOCKED_INTERNAL_MESSAGE = (
     "BLOCKED: the batch importer stopped safely; only project-owned sanitized "
     "fields are available."
@@ -265,7 +316,217 @@ def _plain_count(value: Any, maximum: int) -> bool:
     )
 
 
-def _account_gate(label: str, fingerprint: str) -> harness.ManualAccountGate:
+# --------------------------------------------------------------------------- #
+# Account policy: the frozen secondary path, and the explicit main-account path
+# --------------------------------------------------------------------------- #
+
+
+class MainAccountGateError(harness.SafetyError):
+    """The main-account opt-in and the account label did not agree.
+
+    It names the one operator mistake this gate exists to catch — a reviewed
+    main-account label without ``--allow-main-account``, or ``--allow-main-account``
+    with a secondary/test label — without ever echoing the label itself.
+    """
+
+
+def _pinned_main_label(value: Any) -> str | None:
+    """Return the reviewed main-account constant this label names, else ``None``.
+
+    Matching is case-insensitive but the returned string is always this module's
+    own constant, so the label that gets bound, gated and compared is canonical
+    and can never be a caller-supplied lookalike.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.casefold()
+    return next(
+        (label for label in MAIN_ACCOUNT_LABELS if label.casefold() == normalized),
+        None,
+    )
+
+
+def _secondary_label_accepted(value: Any) -> bool:
+    """True when the FROZEN secondary/test policy would accept this label."""
+    try:
+        harness._validate_account_label_shape(value)
+    except harness.SafetyError:
+        return False
+    return True
+
+
+def validate_main_account_label(value: Any) -> str:
+    """Accept only the narrow reviewed main-account label family, or fail closed.
+
+    This is importer-local on purpose. The frozen harness gate is not relaxed and
+    not consulted for acceptance: it keeps rejecting every main/production label,
+    so no historical spike/probe tool gains a main-account path from this change.
+    """
+    validate_contract()
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > harness.MAX_ACCOUNT_LABEL_CHARS
+        or harness._has_control_characters(value)
+    ):
+        raise harness.SafetyError("account label does not meet the fixed safety policy")
+    if any(
+        marker in value.casefold()
+        for marker in harness.REQUIRED_TEST_ACCOUNT_LABEL_MARKERS
+    ):
+        raise MainAccountGateError(
+            "a secondary/test account label can never authorize main-account mode"
+        )
+    label = _pinned_main_label(value)
+    if label is None:
+        raise MainAccountGateError(
+            "main-account mode requires one reviewed main-account label"
+        )
+    return label
+
+
+def validate_account_label(
+    value: Any, *, account_mode: str = ACCOUNT_SECONDARY
+) -> str:
+    """Validate one account label under exactly one account policy.
+
+    The default is the frozen secondary/test policy, byte for byte as before. The
+    only new behavior is that a reviewed main-account label offered WITHOUT the
+    opt-in is reported as the specific gate mistake it is — it is still rejected,
+    still before any Token prompt or transport, and still with a ``SafetyError``.
+    """
+    if _pinned(ACCOUNT_MODES, account_mode) == ACCOUNT_MAIN:
+        return validate_main_account_label(value)
+    try:
+        return harness._validate_account_label_shape(value)
+    except harness.SafetyError:
+        if _pinned_main_label(value) is not None:
+            raise MainAccountGateError(
+                "a main-account label requires the explicit main-account opt-in"
+            ) from None
+        raise
+
+
+@dataclass(frozen=True, repr=False)
+class MainAccountCredential(harness.TestAccountCredential):
+    """A hidden, memory-only Token explicitly bound to the owner's MAIN account.
+
+    It reuses the reviewed credential primitive — same token-shape policy, same
+    redacted ``repr``/``str``, same 16-hex fingerprint, same "never on argv, in
+    the environment, in a file or in a log" contract — and differs in exactly two
+    ways: it demands a reviewed main-account label, and it carries a distinct
+    source name so a secondary gate can never accept it and vice versa.
+    """
+
+    source_name: str = MAIN_ACCOUNT_CREDENTIAL_SOURCE
+
+    def __post_init__(self) -> None:
+        # Deliberately does not call the base validator: that one enforces the
+        # frozen secondary-only label policy, which this path must not relax.
+        if (
+            not isinstance(self.token, str)
+            or not self.token
+            or self.token != self.token.strip()
+            or len(self.token) > harness.MAX_TOKEN_CHARS
+            or harness._has_control_characters(self.token)
+        ):
+            raise harness.SafetyError("an injected main-account credential is required")
+        label = validate_main_account_label(self.account_label)
+        object.__setattr__(self, "account_label", label)
+        if self.token in label:
+            raise harness.SafetyError("account label contains forbidden credential material")
+        if self.source_name != MAIN_ACCOUNT_CREDENTIAL_SOURCE:
+            raise harness.SafetyError("credential source is not the main-account source")
+
+    def __repr__(self) -> str:
+        return "MainAccountCredential(<redacted>)"
+
+    def __str__(self) -> str:
+        return "<redacted main-account credential>"
+
+
+@dataclass(frozen=True, repr=False)
+class MainAccountGate:
+    """The main-account analogue of the frozen manual secondary gate.
+
+    Same shape, same redaction and the same strict equality — with a different
+    expected sentence and an explicit main-account credential source, so neither
+    gate can ever be satisfied by the other side's credential.
+    """
+
+    allow_network: bool
+    account_label: str
+    credential_fingerprint: str
+    confirmation: str
+
+    def __post_init__(self) -> None:
+        validate_main_account_label(self.account_label)
+        if (
+            not isinstance(self.credential_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{16}", self.credential_fingerprint) is None
+        ):
+            raise harness.SafetyError("credential fingerprint does not meet the fixed policy")
+        if (
+            not isinstance(self.confirmation, str)
+            or not self.confirmation
+            or self.confirmation != self.confirmation.strip()
+            or len(self.confirmation) > harness.MAX_GATE_CONFIRMATION_CHARS
+            or harness._has_control_characters(self.confirmation)
+        ):
+            raise harness.SafetyError("account confirmation does not meet the fixed policy")
+
+    def __repr__(self) -> str:
+        return (
+            "MainAccountGate(allow_network="
+            f"{self.allow_network!r}, account_label=<redacted>, "
+            f"credential_fingerprint={self.credential_fingerprint!r}, "
+            "confirmation=<redacted>)"
+        )
+
+    def __str__(self) -> str:
+        return (
+            "<manual main-account gate; label/confirmation redacted; "
+            f"fingerprint={self.credential_fingerprint}>"
+        )
+
+    @property
+    def expected_confirmation(self) -> str:
+        return (
+            f"{MAIN_ACCOUNT_GATE_PREFIX}: {self.account_label} "
+            f"TOKEN-FP: {self.credential_fingerprint}"
+        )
+
+    def validate(self, credential: harness.TestAccountCredential) -> None:
+        if not self.allow_network:
+            raise harness.SafetyError("network mode was not explicitly enabled")
+        label = validate_main_account_label(self.account_label)
+        if getattr(credential, "source_name", None) != MAIN_ACCOUNT_CREDENTIAL_SOURCE:
+            raise harness.SafetyError(
+                "main-account mode requires an explicit main-account credential"
+            )
+        if credential.account_label != label:
+            raise harness.SafetyError("credential label does not match the confirmed account")
+        if credential.token in label or credential.token in self.confirmation:
+            raise harness.SafetyError("account gate contains forbidden credential material")
+        if self.credential_fingerprint != credential.fingerprint:
+            raise harness.SafetyError("credential fingerprint does not match the confirmed token")
+        if self.confirmation != self.expected_confirmation:
+            raise harness.SafetyError("main-account confirmation does not match exactly")
+
+
+def _account_gate(
+    label: str, fingerprint: str, *, account_mode: str = ACCOUNT_SECONDARY
+) -> harness.ManualAccountGate | MainAccountGate:
+    if _pinned(ACCOUNT_MODES, account_mode) == ACCOUNT_MAIN:
+        return MainAccountGate(
+            allow_network=True,
+            account_label=label,
+            credential_fingerprint=fingerprint,
+            confirmation=(
+                f"{MAIN_ACCOUNT_GATE_PREFIX}: {label} TOKEN-FP: {fingerprint}"
+            ),
+        )
     return harness.ManualAccountGate(
         allow_network=True,
         account_label=label,
@@ -281,6 +542,7 @@ def validate_contract() -> None:
         harness.READ_ONLY_CONFIRMATION_PREFIX,
         harness.WRITE_CONFIRMATION_PREFIX,
     )
+    main_prefixes = (MAIN_CREATE_CONFIRMATION_PREFIX, MAIN_UPDATE_CONFIRMATION_PREFIX)
     if (
         CREATE_PATH != "/open/api/v1/interpretations"
         or UPDATE_PATH_TEMPLATE != "/open/api/v1/interpretations/{record_id}"
@@ -308,6 +570,45 @@ def validate_contract() -> None:
         or BINDING_DIGEST_CHARS != 16
         # The pasted UPDATE token must stay short enough to copy in one piece.
         or len(UPDATE_CONFIRMATION_PREFIX) + 1 + BINDING_DIGEST_CHARS
+        > MAX_COPIED_CONFIRMATION_CHARS
+        # Issue #51 — the main-account opt-in, and its separation from the frozen
+        # secondary path.
+        or ACCOUNT_MODES != (ACCOUNT_SECONDARY, ACCOUNT_MAIN)
+        or ACCOUNT_SECONDARY == ACCOUNT_MAIN
+        or MAIN_ACCOUNT_LABELS != ("主账号", "main-account")
+        # The two label families can never overlap: every reviewed main-account
+        # label must still be rejected by the frozen secondary/test policy and
+        # must carry no secondary/test marker at all.
+        or any(_secondary_label_accepted(label) for label in MAIN_ACCOUNT_LABELS)
+        or any(
+            marker in label.casefold()
+            for label in MAIN_ACCOUNT_LABELS
+            for marker in harness.REQUIRED_TEST_ACCOUNT_LABEL_MARKERS
+        )
+        # And the frozen secondary gate itself is still closed against them.
+        or {"main", "primary", "owner", "主账号"}
+        - set(harness.FORBIDDEN_ACCOUNT_LABEL_MARKERS)
+        # A production label is not a personal main-account label.
+        or _pinned_main_label("prod") is not None
+        or _pinned_main_label("production") is not None
+        or MAIN_ACCOUNT_CREDENTIAL_SOURCE == harness.TEST_ACCOUNT_CREDENTIAL_SOURCE
+        or MAIN_TOKEN_PROMPT == TOKEN_PROMPT
+        # Neither confirmation family can be mistaken for, or pasted into, the
+        # other, and both main forms stay copy-safe in one piece.
+        or MAIN_CREATE_CONFIRMATION_PREFIX == MAIN_UPDATE_CONFIRMATION_PREFIX
+        or set(main_prefixes)
+        & {CONFIRMATION_PREFIX, UPDATE_CONFIRMATION_PREFIX, *reserved}
+        or any("MAIN" not in prefix for prefix in main_prefixes)
+        or "MAIN" in CONFIRMATION_PREFIX
+        or "MAIN" in UPDATE_CONFIRMATION_PREFIX
+        or MAIN_ACCOUNT_GATE_PREFIX == "CONFIRM SECONDARY TEST ACCOUNT"
+        or "MAIN" not in MAIN_ACCOUNT_GATE_PREFIX
+        or "CREATE" not in MAIN_CREATE_CONFIRMATION_PREFIX
+        or "UPDATE" in MAIN_CREATE_CONFIRMATION_PREFIX
+        or "UPDATE" not in MAIN_UPDATE_CONFIRMATION_PREFIX
+        or "CREATE" in MAIN_UPDATE_CONFIRMATION_PREFIX
+        or any(prefix != prefix.strip() for prefix in main_prefixes)
+        or max(len(prefix) for prefix in main_prefixes) + 1 + BINDING_DIGEST_CHARS
         > MAX_COPIED_CONFIRMATION_CHARS
     ):
         raise harness.SafetyError("the fixed batch interpretation write contract changed")
@@ -1187,15 +1488,17 @@ class BatchPlan:
     digest: str = ""
     mode: str = MODE_CREATE
     no_op_count: int = 0
+    account_mode: str = ACCOUNT_SECONDARY
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "items", tuple(self.items))
         object.__setattr__(self, "mode", _pinned(MODES, self.mode))
+        object.__setattr__(self, "account_mode", _pinned(ACCOUNT_MODES, self.account_mode))
         self.revalidate()
 
     def revalidate(self) -> None:
         validate_contract()
-        harness._validate_account_label_shape(self.account_label)
+        validate_account_label(self.account_label, account_mode=self.account_mode)
         if (
             self.mode not in (MODE_CREATE, MODE_UPDATE)
             or not _valid_fingerprint(self.credential_fingerprint)
@@ -1234,6 +1537,10 @@ class BatchPlan:
         return self.mode == MODE_UPDATE
 
     @property
+    def is_main(self) -> bool:
+        return self.account_mode == ACCOUNT_MAIN
+
+    @property
     def item_count(self) -> int:
         return len(self.items)
 
@@ -1269,6 +1576,14 @@ class BatchPlan:
         if self.is_update:
             binding["record_ids"] = [item.record_id for item in self.items]
             binding["write_paths"] = [item.write_path for item in self.items]
+        if self.is_main:
+            # The smallest distinct binding this needs: everything the secondary
+            # confirmation bound is still bound, and a main-account run adds the
+            # account mode itself. A secondary binding therefore cannot produce a
+            # main digest and a main binding cannot produce a secondary one, even
+            # if every other bound field somehow agreed. The secondary binding is
+            # untouched, so its already live-validated digests stay identical.
+            binding["account_mode"] = ACCOUNT_MAIN
         return binding
 
     @property
@@ -1286,6 +1601,17 @@ class BatchPlan:
     @property
     def expected_confirmation(self) -> str:
         digest = self.binding_digest
+        if self.is_main:
+            # One short, unmistakably main-account token per operation. It is the
+            # same construction the reviewed UPDATE form uses — the digest still
+            # covers the WHOLE binding — and the surrounding block keeps every
+            # human-readable field visible.
+            prefix = (
+                MAIN_UPDATE_CONFIRMATION_PREFIX
+                if self.is_update
+                else MAIN_CREATE_CONFIRMATION_PREFIX
+            )
+            return f"{prefix} {digest}"
         if self.is_update:
             # One short token. The counts, Token fingerprint, pricing clause and
             # write policy stay visible in `confirmation_lines`, and remain bound
@@ -1299,9 +1625,13 @@ class BatchPlan:
         )
 
     def validate(self, credential: harness.TestAccountCredential) -> None:
-        """Rebind the plan to the exact manual secondary-account gate."""
+        """Rebind the plan to the exact manual gate for ITS account mode."""
         self.revalidate()
-        _account_gate(self.account_label, self.credential_fingerprint).validate(credential)
+        _account_gate(
+            self.account_label,
+            self.credential_fingerprint,
+            account_mode=self.account_mode,
+        ).validate(credential)
         for item in self.items:
             baseline = item.baseline
             if credential.token in (
@@ -1326,7 +1656,8 @@ class BatchPlan:
 
     def __repr__(self) -> str:
         return (
-            f"BatchPlan(mode={self.mode!r}, item_count={self.item_count!r}, "
+            f"BatchPlan(mode={self.mode!r}, account_mode={self.account_mode!r}, "
+            f"item_count={self.item_count!r}, "
             f"no_op_count={self.no_op_count!r}, digest={self.digest!r}, "
             f"credential_fingerprint={self.credential_fingerprint!r})"
         )
@@ -1338,6 +1669,7 @@ def build_plan(
     credential_fingerprint: str,
     entries: Sequence[BatchEntry],
     preflight: Sequence[PreflightItem],
+    account_mode: str = ACCOUNT_SECONDARY,
 ) -> BatchPlan:
     """Build the frozen plan. Every item must already be READY_CREATE."""
     if len(entries) != len(preflight) or not entries:
@@ -1369,6 +1701,7 @@ def build_plan(
         items=tuple(items),
         digest=batch_digest(entries),
         mode=MODE_CREATE,
+        account_mode=account_mode,
     )
 
 
@@ -1378,6 +1711,7 @@ def build_update_plan(
     credential_fingerprint: str,
     entries: Sequence[BatchEntry],
     preflight: Sequence[PreflightItem],
+    account_mode: str = ACCOUNT_SECONDARY,
 ) -> BatchPlan:
     """Build the frozen update plan from the READY_UPDATE items only.
 
@@ -1426,6 +1760,7 @@ def build_update_plan(
         digest=batch_digest(entries, mode=MODE_UPDATE),
         mode=MODE_UPDATE,
         no_op_count=no_op_count,
+        account_mode=account_mode,
     )
 
 
@@ -1644,10 +1979,12 @@ class BatchResult:
     get_count: int = 0
     post_count: int = 0
     report_path: Path | None = field(default=None, repr=False)
+    account_mode: str = ACCOUNT_SECONDARY
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _pinned(MODES, self.mode))
         object.__setattr__(self, "status", _pinned(RUN_STATUSES, self.status))
+        object.__setattr__(self, "account_mode", _pinned(ACCOUNT_MODES, self.account_mode))
         if self.mode == MODE_DRY_RUN and (self.post_count or self.outcomes):
             raise harness.SafetyError("a dry-run can never carry a write outcome")
 
@@ -1707,7 +2044,8 @@ class BatchResult:
 
     def __repr__(self) -> str:
         return (
-            f"BatchResult(mode={self.mode!r}, status={self.status!r}, "
+            f"BatchResult(mode={self.mode!r}, account_mode={self.account_mode!r}, "
+            f"status={self.status!r}, "
             f"items={self.item_count!r}, ready={self.ready_count!r}, "
             f"verified={self.verified_count!r}, posts={self.post_count!r})"
         )
@@ -1725,14 +2063,23 @@ def run_batch(
     sleep: Callable[[float], None] | None = None,
     report: "BatchRunReport | None" = None,
     now: Callable[[], datetime] | None = None,
+    account_mode: str = ACCOUNT_SECONDARY,
 ) -> BatchResult:
-    """Run one dry-run, create or update batch. All preflight the WHOLE batch first."""
+    """Run one dry-run, create or update batch. All preflight the WHOLE batch first.
+
+    ``account_mode`` defaults to the frozen secondary/test path. Main-account mode
+    is the explicit Issue #51 opt-in: the label family, the gate, the credential
+    source and the confirmation string all change together, and nothing about the
+    write machinery — whole-batch preflight, one POST per changed item, no retry,
+    immediate authenticated readback, stop-on-failure, no rollback — changes at all.
+    """
     validate_contract()
     chosen = _pinned(MODES, mode)
+    account = _pinned(ACCOUNT_MODES, account_mode)
     if not entries or len(entries) > MAX_BATCH_ITEMS:
         raise harness.SafetyError("the batch size is outside the fixed bounds")
-    label = harness._validate_account_label_shape(account_label)
-    _account_gate(label, credential.fingerprint).validate(credential)
+    label = validate_account_label(account_label, account_mode=account)
+    _account_gate(label, credential.fingerprint, account_mode=account).validate(credential)
     write = emit if emit is not None else _print_line
     writes = chosen in (MODE_CREATE, MODE_UPDATE)
     digest = batch_digest(entries, mode=chosen)
@@ -1743,8 +2090,13 @@ def run_batch(
         sleep=sleep,
     )
 
+    if account == ACCOUNT_MAIN:
+        for line in main_account_warning_lines(chosen):
+            write(line)
     preflight = preflight_batch(guard, entries, credential, mode=chosen)
-    for line in preview_lines(chosen, digest, credential.fingerprint, preflight):
+    for line in preview_lines(
+        chosen, digest, credential.fingerprint, preflight, account_mode=account
+    ):
         write(line)
 
     outcomes: tuple[ItemOutcome, ...] = ()
@@ -1761,6 +2113,7 @@ def run_batch(
             )
         return _finish(
             mode=chosen,
+            account_mode=account,
             status=status,
             digest=digest,
             preflight=preflight,
@@ -1780,6 +2133,7 @@ def run_batch(
         )
         return _finish(
             mode=chosen,
+            account_mode=account,
             status="satisfied",
             digest=digest,
             preflight=preflight,
@@ -1796,6 +2150,7 @@ def run_batch(
         credential_fingerprint=credential.fingerprint,
         entries=entries,
         preflight=preflight,
+        account_mode=account,
     )
     plan.validate(credential)
     for line in confirmation_lines(plan):
@@ -1810,6 +2165,7 @@ def run_batch(
         )
         return _finish(
             mode=chosen,
+            account_mode=account,
             status="blocked",
             digest=digest,
             preflight=preflight,
@@ -1824,6 +2180,7 @@ def run_batch(
     status = "verified" if all(item.verified for item in outcomes) else "stopped"
     return _finish(
         mode=chosen,
+        account_mode=account,
         status=status,
         digest=digest,
         preflight=preflight,
@@ -1846,6 +2203,7 @@ def _finish(
     emit: Callable[[str], None],
     report: "BatchRunReport | None",
     now: Callable[[], datetime] | None,
+    account_mode: str = ACCOUNT_SECONDARY,
 ) -> BatchResult:
     result = BatchResult(
         mode=mode,
@@ -1855,6 +2213,7 @@ def _finish(
         outcomes=outcomes,
         get_count=guard.get_count,
         post_count=guard.post_count,
+        account_mode=account_mode,
     )
     path: Path | None = None
     if report is not None:
@@ -1875,6 +2234,7 @@ def _finish(
         get_count=result.get_count,
         post_count=result.post_count,
         report_path=path,
+        account_mode=result.account_mode,
     )
 
 
@@ -1925,22 +2285,77 @@ def _update_item_lines(item: PreflightItem) -> list[str]:
     return lines
 
 
+MAIN_ACCOUNT_BANNER = "=" * 72
+
+
+def main_account_warning_lines(mode: str) -> list[str]:
+    """The unmistakable main-account banner, shown before the whole-batch preflight.
+
+    It states the four things the operator has to know before a Token is used
+    against their real account: this is main-account mode; this tool cannot prove
+    which account the Token belongs to; the Token must have been obtained while
+    logged into the intended account; and create/update change real data.
+    """
+    chosen = _pinned(MODES, mode)
+    lines = [
+        MAIN_ACCOUNT_BANNER,
+        "MAIN ACCOUNT MODE IS ACTIVE — this run targets the owner's REAL main "
+        "Maimemo account.",
+        "The current Open API gives this importer NO reliable account-identity "
+        "check: it cannot",
+        "prove which account a Token belongs to. That check is the operator's "
+        "responsibility.",
+        "Obtain the Token while logged into the intended main account, and nowhere "
+        "else.",
+    ]
+    if chosen == MODE_DRY_RUN:
+        lines.append(
+            "This mode is dry-run: it reads only and sends 0 POST. create and "
+            "update change real account data."
+        )
+    else:
+        lines.append(
+            f"This mode is {chosen}: it CHANGES REAL ACCOUNT DATA. There is no "
+            "rollback and no delete path."
+        )
+    lines.extend([MAIN_ACCOUNT_BANNER, ""])
+    return lines
+
+
+def main_account_token_notice_lines() -> list[str]:
+    """The short notice printed immediately before the distinct hidden prompt."""
+    return [
+        "MAIN ACCOUNT MODE — the next hidden prompt expects the Token of the "
+        "owner's MAIN Maimemo account.",
+        "Obtain it while logged into that exact account. This importer cannot "
+        "verify a Token's owner, and never prints it.",
+    ]
+
+
 def preview_lines(
     mode: str,
     digest: str,
     credential_fingerprint: str,
     preflight: Sequence[PreflightItem],
+    *,
+    account_mode: str = ACCOUNT_SECONDARY,
 ) -> list[str]:
     """The complete owner-readable batch preview. No raw voc_id or record id, ever."""
     chosen = _pinned(MODES, mode)
+    account = _pinned(ACCOUNT_MODES, account_mode)
     update = chosen == MODE_UPDATE
     ready = sum(1 for item in preflight if item.ready)
+    account_line = (
+        "account [REDACTED] (MAIN ACCOUNT — reviewed main-account label accepted)   "
+        if account == ACCOUNT_MAIN
+        else "account [REDACTED] (secondary/test label accepted)   "
+    )
     lines = [
         f"BATCH INTERPRETATION IMPORTER — mode {chosen}",
         "host "
         f"{harness.PRODUCTION_BASE_URL}   path "
         f"{UPDATE_PATH_TEMPLATE if update else CREATE_PATH}",
-        "account [REDACTED] (secondary/test label accepted)   "
+        f"{account_line}"
         f"token fp {credential_fingerprint}",
         f"tags {' '.join(TAGS)}   status {STATUS}   items {len(preflight)}"
         f" (typical {TYPICAL_BATCH_ITEMS[0]}–{TYPICAL_BATCH_ITEMS[1]}, max {MAX_BATCH_ITEMS})",
@@ -1982,6 +2397,41 @@ def preview_lines(
     return lines
 
 
+def _main_confirmation_lines(plan: BatchPlan) -> list[str]:
+    """The main-account confirmation block. Same bound fields, different gate.
+
+    Everything the short main token does not spell out stays readable here and
+    stays bound by that token's digest, exactly as the reviewed UPDATE form does.
+    """
+    confirmation = plan.expected_confirmation
+    counts = (
+        f"UPDATES: {plan.item_count}   NO-OP: {plan.no_op_count}   "
+        if plan.is_update
+        else f"ITEMS: {plan.item_count}   "
+    )
+    replaced = (
+        f"{plan.item_count} existing custom interpretations replaced"
+        if plan.is_update
+        else f"{plan.item_count} items created"
+    )
+    return [
+        MAIN_ACCOUNT_BANNER,
+        f"MAIN ACCOUNT {'UPDATE' if plan.is_update else 'CREATE'} CONFIRMATION — "
+        f"{replaced}, one POST each, no retry",
+        "THIS WRITES TO THE OWNER'S REAL MAIN MAIMEMO ACCOUNT. No rollback, no delete.",
+        f"batch digest {plan.digest}",
+        f"{counts}TOKEN-FP: {plan.credential_fingerprint}",
+        f"{harness.WRITE_PRICING_TERMS_CLAUSE}   {BATCH_ONE_POST_CLAUSE}",
+        f"MANUAL GATE: {MAIN_PRICING_TERMS_GATE}",
+        "A confirmation from a secondary/test run can never authorize this run.",
+        "Copy the next line exactly into the hidden prompt "
+        f"({len(confirmation)} characters, nothing before or after):",
+        confirmation,
+        MAIN_ACCOUNT_BANNER,
+        "",
+    ]
+
+
 def confirmation_lines(plan: BatchPlan) -> list[str]:
     """The ONE batch-level confirmation block shown before any write.
 
@@ -1990,6 +2440,8 @@ def confirmation_lines(plan: BatchPlan) -> list[str]:
     is displayed must be directly pasteable without the owner editing it.
     """
     confirmation = plan.expected_confirmation
+    if plan.is_main:
+        return _main_confirmation_lines(plan)
     if plan.is_update:
         # Everything the short UPDATE token no longer spells out stays readable
         # here. It is all still bound by the token's digest.
@@ -2112,6 +2564,9 @@ def report_document(
         "version": REPORT_VERSION,
         "operation": OPERATION_UPDATE if update else OPERATION,
         "mode": result.mode,
+        # Which account family this run targeted. It is a closed project-owned
+        # enum, never the account label itself, which is still never persisted.
+        "account_mode": result.account_mode,
         "status": result.status,
         "host": harness.PRODUCTION_BASE_URL,
         "path": UPDATE_PATH_TEMPLATE if update else CREATE_PATH,
@@ -2239,10 +2694,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="explicitly acknowledge that this command may create the locked transport",
     )
+    parser.add_argument(
+        "--allow-main-account",
+        action="store_true",
+        help=(
+            "explicitly opt in to the owner's MAIN account, which also requires a "
+            "reviewed main-account label; without it this importer stays "
+            "secondary/test-account only"
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def _cli_confirm(plan: BatchPlan, prompt: Callable[[str], str]) -> str:
+    if plan.is_main:
+        return harness._hidden_prompt(
+            prompt,
+            MAIN_UPDATE_CONFIRMATION_PROMPT
+            if plan.is_update
+            else MAIN_CONFIRMATION_PROMPT,
+        )
     return harness._hidden_prompt(
         prompt,
         UPDATE_CONFIRMATION_PROMPT if plan.is_update else CONFIRMATION_PROMPT,
@@ -2261,30 +2732,55 @@ def main(
     now: Callable[[], datetime] | None = None,
 ) -> int:
     args = parse_args(argv)
+    # The account mode is decided from argv alone, BEFORE the label is validated,
+    # so a main-account label offered without the opt-in is rejected by the frozen
+    # secondary policy — before any Token prompt and before any transport exists.
+    account_mode = ACCOUNT_MAIN if args.allow_main_account else ACCOUNT_SECONDARY
+    main_account = account_mode == ACCOUNT_MAIN
     try:
         validate_contract()
         if not args.allow_network:
             raise harness.SafetyError("network access was not explicitly enabled")
         mode = _pinned(MODES, args.mode)
-        account_label = harness._validate_account_label_shape(args.account_label)
+        account_label = validate_account_label(
+            args.account_label, account_mode=account_mode
+        )
         entries = load_batch(args.input)
         if not (stdin_isatty or sys.stdin.isatty)():
             raise harness.SafetyError("an interactive terminal is required")
         report = report_factory() if report_factory is not None else BatchRunReport()
         transport = (transport_factory or harness.ProductionHttpTransport)()
+    except MainAccountGateError:
+        print(BLOCKED_MAIN_ACCOUNT_MESSAGE)
+        return 3
     except BatchFormatError as rejected:
         print(f"BLOCKED: {rejected.message}")
         return 3
     except Exception:
         print(BLOCKED_GATE_MESSAGE)
         return 3
+    if main_account:
+        for line in main_account_token_notice_lines():
+            print(line)
+    # The Token is never bound to a local name: it goes straight from the hidden
+    # prompt into the credential, exactly as on the secondary path.
+    build_credential = (
+        MainAccountCredential if main_account else harness.TestAccountCredential
+    )
     try:
-        credential = harness.TestAccountCredential(
-            harness._hidden_prompt(token_prompt or getpass.getpass, TOKEN_PROMPT),
+        credential = build_credential(
+            harness._hidden_prompt(
+                token_prompt or getpass.getpass,
+                MAIN_TOKEN_PROMPT if main_account else TOKEN_PROMPT,
+            ),
             account_label,
         )
     except Exception:
-        print(BLOCKED_CREDENTIAL_MESSAGE)
+        print(
+            BLOCKED_MAIN_CREDENTIAL_MESSAGE
+            if main_account
+            else BLOCKED_CREDENTIAL_MESSAGE
+        )
         return 3
     try:
         result = run_batch(
@@ -2299,6 +2795,7 @@ def main(
             sleep=sleep,
             report=report,
             now=now,
+            account_mode=account_mode,
         )
     except Exception:
         # Nothing server-provided, nothing external and no credential material can

@@ -7,6 +7,8 @@ An independent command-line utility for safer batch publishing of user-curated v
 **兼容的服务：** 本工具通过公开发布的墨墨开放 API（`open.maimemo.com`）与墨墨背单词交互。这里提到该名称只是为了说明兼容对象，它不是本项目的品牌标识——参见[免责声明与商标说明](#免责声明与商标说明)。
 
 > **当前版本：v0.1.0。** 释义批量录入闭环（`dry-run` / `create` / `update`）已经在副账号上完成真实端到端验证，是本版本唯一支持的能力。例句/短语自动化仍被阻断，桌面快速查词尚未开始实现。
+>
+> **未发布（`main` 分支）：** 同一条闭环新增了显式的主账号 opt-in `--allow-main-account`（默认关闭）。不给该开关时行为与 `v0.1.0` 完全一致。见[主账号模式](#4-主账号模式显式-opt-in)与 [#51](https://github.com/davidqyc/momo-moreEfficient/issues/51)。
 
 ## v0.1.0 支持什么
 
@@ -31,10 +33,10 @@ An independent command-line utility for safer batch publishing of user-curated v
 ## 环境要求
 
 - **Python 3.13，仅标准库**。没有第三方依赖，没有安装步骤，不需要虚拟环境。
-- 一个墨墨开放 API Token。**请使用副账号 / 测试账号**，不要使用主账号。
+- 一个墨墨开放 API Token。**默认只接受副账号 / 测试账号**；主账号需要显式 opt-in，见[主账号模式](#4-主账号模式显式-opt-in)。
 - 一个交互式终端（工具会拒绝在非 TTY 环境下运行）。
 
-**推荐并经 CI 验证的运行时是 Python 3.13**：GitHub Actions 在每次 push / PR 上用 Python 3.13 跑完整的 443 个离线测试。
+**推荐并经 CI 验证的运行时是 Python 3.13**：GitHub Actions 在每次 push / PR 上用 Python 3.13 跑完整的 469 个离线测试。
 
 Python 3.9 只作为**遗留兼容性**记录：它曾是本项目早期的验证目标，但已于 2025-10-31 结束生命周期（EOL），不再接收安全更新，因此**不推荐**用它运行本工具。除 3.13 外的其他版本均未经验证，本项目不声称支持某个宽泛的版本区间。
 
@@ -73,9 +75,9 @@ n. 流动性；变现能力
 
 三种模式共用同一条命令，只有 `--mode` 不同。`--allow-network` 是必须显式给出的开关；不给就不会创建任何网络传输层。
 
-`--account-label` 是防止用错账号的人工护栏：标签必须包含 `secondary` / `test` / `副号` / `副账号` / `测试` 之一，且不得包含 `main` / `primary` / `owner` / `prod` / `production` / `主号` / `主账号` / `主账户` / `生产`。
+**默认只允许副账号 / 测试账号。** `--account-label` 是防止用错账号的人工护栏：默认模式下标签必须包含 `secondary` / `test` / `副号` / `副账号` / `测试` 之一，且不得包含 `main` / `primary` / `owner` / `prod` / `production` / `主号` / `主账号` / `主账户` / `生产`。主账号需要单独的显式开关，见[主账号模式](#4-主账号模式显式-opt-in)。
 
-> 该标签只能防止你在操作过程中把凭证拿错，**不能**证明 Token 属于哪个墨墨账号——公开 API 没有账号身份接口。真实运行前请先在墨墨 App 里人工确认你登录的是副账号。
+> 该标签只能防止你在操作过程中把凭证拿错，**不能**证明 Token 属于哪个墨墨账号——公开 API 没有账号身份接口。真实运行前请先在墨墨 App 里人工确认你登录的是目标账号。
 
 ### 1. 预览（不写入，先跑这个）
 
@@ -97,12 +99,56 @@ python3 scripts/interpretation_batch_importer.py --mode create --input examples/
 python3 scripts/interpretation_batch_importer.py --mode update --input examples/sample-batch.md --account-label "secondary-test" --allow-network
 ```
 
+### 4. 主账号模式（显式 opt-in）
+
+> ⚠️ **这会改动你的真实主账号数据。** 默认关闭。只有在你确实要把已经写好的释义批量录入主账号时才使用；先跑 `dry-run`，确认逐条判定和预览无误，再跑 `create` 或 `update`。没有回滚，没有删除路径，中途失败不会自动继续。
+
+主账号必须**同时**给出两个条件，缺任一都会在询问 Token 和创建网络传输层**之前**直接拒绝：
+
+1. `--allow-main-account`（默认 `false`）；
+2. 一个经复核的主账号标签：`主账号` 或 `main-account`。
+
+```bash
+python3 scripts/interpretation_batch_importer.py \
+  --mode <dry-run|create|update> \
+  --input batch.md \
+  --account-label "主账号" \
+  --allow-main-account \
+  --allow-network
+```
+
+规则：
+
+- **不给 `--allow-main-account` 时，一切行为与上面的副账号/测试账号路径完全一致**，包括标签策略、Token 提示和确认串。
+- `prod` / `production` **不是**个人主账号的同义词，不会被当作主账号标签接受。
+- `--allow-main-account` 配副账号/测试标签（例如 `secondary-test`）同样被拒绝——不要用一个误导性的副账号标签去配主账号 Token。
+- 主账号模式使用**不同的**隐藏 Token 提示，并在 preflight 之前打印明确警告。
+- 主账号模式使用**不同的**确认串。副账号的确认串无法授权主账号运行，反之亦然。
+
+**主账号 Token 必须在登录目标主账号的状态下获取**（墨墨 App：我的 → 更多设置 → 实验功能 → 开放 API）。本工具**无法独立判断一个 Token 属于哪个账号**——公开 API 没有账号身份接口，这一条由你自己负责核对。工具会把这一点直接打印出来：
+
+```text
+========================================================================
+MAIN ACCOUNT MODE IS ACTIVE — this run targets the owner's REAL main Maimemo account.
+The current Open API gives this importer NO reliable account-identity check: it cannot
+prove which account a Token belongs to. That check is the operator's responsibility.
+Obtain the Token while logged into the intended main account, and nowhere else.
+This mode is create: it CHANGES REAL ACCOUNT DATA. There is no rollback and no delete path.
+========================================================================
+```
+
 ## Token 输入方式
 
-运行后工具会用**隐藏输入**（`getpass`）询问 Token：
+运行后工具会用**隐藏输入**（`getpass`）询问 Token。默认（副账号/测试账号）：
 
 ```text
 Secondary/test-account Maimemo Token (hidden):
+```
+
+主账号模式下提示明显不同，不会和上面这一条混淆：
+
+```text
+Main-account Maimemo Token (hidden):
 ```
 
 Token 只存在于当前进程内存中。本工具**刻意不支持**其他任何来源：
@@ -156,8 +202,11 @@ Token 永远不会进入 Git、日志、预览、运行报告或审阅包。工�
 
 - `create` 显示一行 `CONFIRM BATCH INTERPRETATION CREATE: ...` 完整确认串。
 - `update` 显示一行 31 字符的短令牌 `CONFIRM UPDATE <16 位小写十六进制>`；短令牌的 16 位十六进制是同一份完整绑定的 SHA-256 前缀，绑定内容一项没少。
+- 主账号模式显示 `CONFIRM MAIN CREATE <16 位小写十六进制>` 或 `CONFIRM MAIN UPDATE <16 位小写十六进制>`；同样是同一份完整绑定的 SHA-256 前缀，并额外绑定了账号模式本身。
 
 把显示的那一行**原样粘贴**进隐藏提示，不要手工增删空格。
+
+**确认串按账号隔离：** 副账号运行的确认串永远无法授权主账号运行，主账号运行的确认串也永远无法授权副账号运行。粘错会在第一个 POST 之前中止整批。
 
 ## 写入安全性
 
@@ -201,7 +250,7 @@ v0.1.0 的**产品接口只有一个命令**：`scripts/interpretation_batch_imp
 
 每次运行会在被 Git 忽略的 `artifacts/private/` 下写一个小的脱敏 JSON 报告。
 
-报告**包含**：模式、状态、批次 digest、时间戳、每条拼写、意图释义、固定标签/状态、preflight 判定、是否尝试 POST、回读结果、`voc_id` 与记录**指纹**，以及 update 的写前正文/标签/状态快照（这是你手工恢复被替换释义所需的本地证据）。
+报告**包含**：模式、账号模式（`secondary` / `main`）、状态、批次 digest、时间戳、每条拼写、意图释义、固定标签/状态、preflight 判定、是否尝试 POST、回读结果、`voc_id` 与记录**指纹**，以及 update 的写前正文/标签/状态快照（这是你手工恢复被替换释义所需的本地证据）。
 
 报告**不包含**：Token、`Authorization`、Cookie、账号标签、原始 `voc_id`、原始记录 ID、原始服务器响应。
 
@@ -232,7 +281,7 @@ guard 会把 `socket.socket`、`socket.create_connection` 和 `urllib.request.ur
 - 写入工具默认 `dry-run`，真实写入前需要明确的批级确认。
 - 不修改墨墨内置词典释义，只处理明确选中的用户自建内容。
 - 每次写入后必须回读并核对；部分失败不得静默继续执行破坏性更新。
-- 开发和测试只使用副账号；同一进程或配置中不得同时存在主账号凭证。
+- 开发和测试只使用副账号；同一进程中不得同时存在副账号和主账号凭证。主账号只能通过显式 `--allow-main-account` 加经复核的主账号标签进入，且仅限本文档描述的释义录入闭环。
 
 ## 文档
 
