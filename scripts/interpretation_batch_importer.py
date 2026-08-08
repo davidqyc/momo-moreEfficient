@@ -106,8 +106,24 @@ MAX_INPUT_BYTES = 262_144
 # A batch-specific write confirmation. It shares wording with neither the
 # read-only nor the single-write confirmation, so no earlier confirmation string
 # can be pasted into this gate.
+#
+# The CREATE form has already been validated end to end against production and is
+# frozen byte for byte. The UPDATE form is deliberately different: Issue #41
+# showed that the 181-character sentence is unreliable to copy out of a terminal
+# by hand, and the run aborted before the first POST on strict equality. Issue
+# #42 therefore renders UPDATE as one short project-owned token whose 16 hex
+# characters are the SAME prefix of the SHA-256 digest over the SAME full
+# `confirmation_binding()`. Nothing that was bound before is unbound now — the
+# long human-readable fields simply stay in the visible confirmation block
+# instead of being retyped inside the pasted string.
 CONFIRMATION_PREFIX = "CONFIRM BATCH INTERPRETATION CREATE"
-UPDATE_CONFIRMATION_PREFIX = "CONFIRM BATCH INTERPRETATION UPDATE"
+UPDATE_CONFIRMATION_PREFIX = "CONFIRM UPDATE"
+# The shared binding-digest width. Both modes have always shown 16 hex chars.
+BINDING_DIGEST_CHARS = 16
+# A product bound on the string the owner copies by hand, so it cannot wrap in an
+# ordinary terminal. Only the UPDATE form is required to satisfy it; the CREATE
+# form predates it and is frozen.
+MAX_COPIED_CONFIRMATION_CHARS = 80
 BATCH_ONE_POST_CLAUSE = "EXACTLY-ONE-POST-PER-ITEM-NO-RETRY-IMMEDIATE-READBACK"
 WRITE_POLICY = "EXACTLY ONE POST PER ITEM / NO RETRY / IMMEDIATE READBACK"
 TOKEN_PROMPT = "Secondary/test-account Maimemo Token (hidden): "
@@ -286,9 +302,13 @@ def validate_contract() -> None:
         or "BATCH" not in CONFIRMATION_PREFIX
         or "CREATE" not in CONFIRMATION_PREFIX
         or "UPDATE" in CONFIRMATION_PREFIX
-        or "BATCH" not in UPDATE_CONFIRMATION_PREFIX
         or "UPDATE" not in UPDATE_CONFIRMATION_PREFIX
         or "CREATE" in UPDATE_CONFIRMATION_PREFIX
+        or UPDATE_CONFIRMATION_PREFIX != UPDATE_CONFIRMATION_PREFIX.strip()
+        or BINDING_DIGEST_CHARS != 16
+        # The pasted UPDATE token must stay short enough to copy in one piece.
+        or len(UPDATE_CONFIRMATION_PREFIX) + 1 + BINDING_DIGEST_CHARS
+        > MAX_COPIED_CONFIRMATION_CHARS
     ):
         raise harness.SafetyError("the fixed batch interpretation write contract changed")
 
@@ -1252,16 +1272,26 @@ class BatchPlan:
         return binding
 
     @property
-    def expected_confirmation(self) -> str:
+    def binding_digest(self) -> str:
+        """The 16 hex characters that stand for the WHOLE confirmation binding.
+
+        Both modes have always shown exactly this value. It is the only part of
+        either confirmation string that can change when anything bound changes,
+        which is why the UPDATE form can shrink to just this token without
+        unbinding a single field.
+        """
         self.revalidate()
-        digest = _digest(self.confirmation_binding())[:16]
+        return _digest(self.confirmation_binding())[:BINDING_DIGEST_CHARS]
+
+    @property
+    def expected_confirmation(self) -> str:
+        digest = self.binding_digest
         if self.is_update:
-            return (
-                f"{UPDATE_CONFIRMATION_PREFIX}: {digest} UPDATES: {self.item_count} "
-                f"NO-OP: {self.no_op_count} "
-                f"TOKEN-FP: {self.credential_fingerprint} "
-                f"{harness.WRITE_PRICING_TERMS_CLAUSE} {BATCH_ONE_POST_CLAUSE}"
-            )
+            # One short token. The counts, Token fingerprint, pricing clause and
+            # write policy stay visible in `confirmation_lines`, and remain bound
+            # by this digest exactly as before — see Issue #42.
+            return f"{UPDATE_CONFIRMATION_PREFIX} {digest}"
+        # Frozen: this exact CREATE string has already been validated live.
         return (
             f"{CONFIRMATION_PREFIX}: {digest} ITEMS: {self.item_count} "
             f"TOKEN-FP: {self.credential_fingerprint} "
@@ -1959,22 +1989,30 @@ def confirmation_lines(plan: BatchPlan) -> list[str]:
     decoration, because `validate_confirmation` demands exact equality: whatever
     is displayed must be directly pasteable without the owner editing it.
     """
+    confirmation = plan.expected_confirmation
     if plan.is_update:
-        headline = (
+        # Everything the short UPDATE token no longer spells out stays readable
+        # here. It is all still bound by the token's digest.
+        return [
             f"UPDATE CONFIRMATION — {plan.item_count} existing custom "
             f"interpretations replaced, one POST each, no retry "
-            f"({plan.no_op_count} already matching, no request)"
-        )
-    else:
-        headline = (
-            f"CREATE CONFIRMATION — {plan.item_count} items, one POST each, no retry"
-        )
+            f"({plan.no_op_count} already matching, no request)",
+            f"batch digest {plan.digest}",
+            f"UPDATES: {plan.item_count}   NO-OP: {plan.no_op_count}   "
+            f"TOKEN-FP: {plan.credential_fingerprint}",
+            f"{harness.WRITE_PRICING_TERMS_CLAUSE}   {BATCH_ONE_POST_CLAUSE}",
+            f"MANUAL GATE: {PRICING_TERMS_GATE}",
+            "Copy the next line exactly into the hidden prompt "
+            f"({len(confirmation)} characters, nothing before or after):",
+            confirmation,
+            "",
+        ]
     return [
-        headline,
+        f"CREATE CONFIRMATION — {plan.item_count} items, one POST each, no retry",
         f"batch digest {plan.digest}",
         f"MANUAL GATE: {PRICING_TERMS_GATE}",
         "Copy the next line exactly into the hidden prompt:",
-        plan.expected_confirmation,
+        confirmation,
         "",
     ]
 

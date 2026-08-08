@@ -599,6 +599,14 @@ update preflight 用与 create 相同的两次 GET，但按 update 语义分类�
 
 update 同样只需要**一次**批级确认，除 create 已绑定的字段外，还额外绑定每个原始目标记录 ID、每条精确的写前快照（正文/标签/状态）、每条精确的更新请求体、更新条数与 no-op 条数。预览后修改任何目标或任何基线快照都会改变摘要并使已输入确认失效。
 
+Issue #41 的真实运行显示 preflight 完全正确（`READY_UPDATE 1` / `ALREADY_MATCHING 2` / `BLOCKED 0`），但那条 181 字符的确认句在人工复制粘贴时仍未通过严格相等，运行在第一个 POST 之前安全中止（GET 6 / POST 0 / retries 0，未改动任何释义）。Issue #42 因此**只改 update 的渲染**：手动粘贴的字符串缩短为一个项目自有短 token
+
+```text
+CONFIRM UPDATE <16 位十六进制绑定摘要>
+```
+
+共 31 字符。那 16 位仍然是同一个 `confirmation_binding()` 的 SHA-256 前缀，绑定内容一字未减；update 条数、no-op 条数、Token 指纹、费用条款子句与写入策略改为留在可见的确认块中显示，不再重复写进要粘贴的那一行。严格相等、不 `.strip()` 用户输入、不接受前缀/部分匹配、不接受 argv/env/文件确认等安全性质全部保持不变。create 的确认字符串已通过真实验证，保持逐字节不变，并新增一条冻结其完整渲染的回归测试。
+
 写入阶段按输入顺序逐条：先按“该序号 + 该精确目标 path”arm 唯一一次 POST 预算并在委托前扣减，再 `POST /interpretations/{record_id}` 一次、绝不重试，随后立即一次鉴权 GET 回读。成功要求回读后仍恰好 1 条自建释义、记录 ID 安全、**且与本轮内部选定的目标 ID 完全相同**、正文逐字一致、标签按集合语义恰好三个、状态精确为 `PUBLISHED`；不依赖 POST 响应体里的 ID。POST 结果不确定时只做同一次 GET 恢复：同一目标上的精确终态记为 `recovered-success`，否则 fail closed 并停止整批剩余项。部分失败不回滚、不删除、不继续后续条目；重跑时已完成的条目会变成 `already-matching`，仍有差异的条目继续是 `ready-update`——这就是 update 模式的幂等模型。
 
 私有报告在原有字段上最小扩展：为更新目标额外保留写前精确正文、写前标签/状态、意图终态与记录指纹，作为**人工**恢复所需的本地证据；仍不写入 Token / Authorization / Cookie / 原始 `voc_id` / 原始记录 ID / 原始响应体，也不新增任何自动回滚或重放机制。
