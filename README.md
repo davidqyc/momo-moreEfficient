@@ -1,8 +1,10 @@
 # momo-moreEfficient
 
-一个基于墨墨开放 API 的**非官方效率增强工具**，目标是减少批量录入自建释义时的重复操作。
+一个**独立的第三方命令行工具**，用于把你自己写好的自建词汇释义批量、安全地发布出去，替代逐条手工录入的重复操作。
 
-An unofficial Maimemo companion for safer batch publishing of user-curated vocabulary interpretations.
+An independent command-line utility for safer batch publishing of user-curated vocabulary interpretations through a supported third-party Open API.
+
+**兼容的服务：** 本工具通过公开发布的墨墨开放 API（`open.maimemo.com`）与墨墨背单词交互。这里提到该名称只是为了说明兼容对象，它不是本项目的品牌标识——参见[免责声明与商标说明](#免责声明与商标说明)。
 
 > **当前状态：v0.1.0 发布准备中。** 释义批量录入闭环（`dry-run` / `create` / `update`）已经在副账号上完成真实端到端验证，是本版本唯一支持的能力。例句/短语自动化仍被阻断，桌面快速查词尚未开始实现。
 
@@ -242,9 +244,9 @@ guard 会把 `socket.socket`、`socket.create_connection` 和 `urllib.request.ur
 - [安全说明](SECURITY.md)
 - [贡献说明](CONTRIBUTING.md)
 
-## 免责声明
+## 免责声明与商标说明
 
-本项目与墨墨背单词及其运营方无官方隶属或背书关系。项目只使用公开提供的接口，并遵守对应 API、内容与账号规则。Maimemo/墨墨相关名称和商标归其权利人所有。
+本项目是一个独立的、非官方的第三方开源工具，与墨墨背单词及其运营方之间不存在任何隶属、赞助或背书关系。「墨墨」「墨墨背单词」「Maimemo」及相关名称与商标，仅在为识别所兼容的服务及其公开发布的 Open API 而确有必要之处被提及（例如获取 Token、端点与设置说明、能力边界、安全规则与历史记录），它们**不构成本项目名称、标识、商标或品牌形象的任何组成部分**；所有此类名称与商标均归其各自权利人所有。本项目只使用公开提供的接口，并遵守对应 API、内容与账号规则。
 
 本项目按 MIT 许可证发布，不提供任何担保。你对自己账号中的内容变更负责；请先在副账号上验证。
 
