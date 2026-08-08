@@ -106,14 +106,16 @@ CHECK_COL_NOT_ARRAY, CHECK_COL_EMPTY = "collection-not-array", "collection-empty
 CHECK_COL_MULTIPLE = "collection-multiple"
 CHECK_RECORD_OBJECT, CHECK_RECORD_ID = "record-not-object", "record-id"
 CHECK_RECORD_STATUS, CHECK_RECORD_CONTENT = "record-status", "record-content"
+CHECK_RECORD_DUPLICATE_ID = "record-duplicate-id"
 CHECK_HIGHLIGHT_SHAPE, CHECK_HIGHLIGHT_RANGE = "highlight-shape", "highlight-range"
 CHECK_LOCAL_SAFETY = "local-safety"
 CHECKPOINTS: tuple[str, ...] = (
     CHECK_NONE, CHECK_VOC_TRANSPORT, CHECK_VOC_HTTP, CHECK_VOC_SCHEMA,
     CHECK_COL_TRANSPORT, CHECK_COL_HTTP, CHECK_COL_BODY, CHECK_COL_WRAPPER,
     CHECK_COL_NOT_ARRAY, CHECK_COL_EMPTY, CHECK_COL_MULTIPLE, CHECK_RECORD_OBJECT,
-    CHECK_RECORD_ID, CHECK_RECORD_STATUS, CHECK_RECORD_CONTENT,
-    CHECK_HIGHLIGHT_SHAPE, CHECK_HIGHLIGHT_RANGE, CHECK_LOCAL_SAFETY,
+    CHECK_RECORD_ID, CHECK_RECORD_STATUS, CHECK_RECORD_DUPLICATE_ID,
+    CHECK_RECORD_CONTENT, CHECK_HIGHLIGHT_SHAPE, CHECK_HIGHLIGHT_RANGE,
+    CHECK_LOCAL_SAFETY,
 )
 # The diagnostic only *completed* when it actually read an authoritative
 # response. A refused transport, a non-2xx status or a contained local failure
@@ -493,10 +495,33 @@ def _classify_collection(report: dict[str, Any], body: Any) -> None:
     if not records:
         report["first_incompatibility"] = CHECK_COL_EMPTY
         return
-    if len(records) > 1:
-        report["first_incompatibility"] = CHECK_COL_MULTIPLE
+    if len(records) == 1:
+        _classify_record(report, records[0])
         return
-    _classify_record(report, records[0])
+    # A multi-record collection is only *ambiguous* once every record is
+    # structurally accepted: the strict parser reaches its own count check after
+    # phrase_records() has already validated the whole list. Reporting
+    # `collection-multiple` first would hide exactly the schema checkpoint the
+    # Issue #29 readback failed on.
+    structural = _first_structural_checkpoint(records)
+    report["first_incompatibility"] = probe._pinned(
+        CHECKPOINTS, CHECK_COL_MULTIPLE if structural is None else structural)
+
+
+def _first_structural_checkpoint(records: list[Any]) -> str | None:
+    """Mirror ``phrase_records()``: per record Mapping/id/status, then duplicates.
+
+    Only the first failing checkpoint is named. No per-record detail and no raw
+    id is emitted, so a duplicate is reported without saying which id repeated.
+    """
+    for record in records:
+        if not isinstance(record, Mapping):
+            return CHECK_RECORD_OBJECT
+        if classify_record_id(_member(record, "id")) != ID_SAFE:
+            return CHECK_RECORD_ID
+        if classify_status(record) == STATUS_INVALID:
+            return CHECK_RECORD_STATUS
+    return CHECK_RECORD_DUPLICATE_ID if duplicate_record_ids(records) else None
 
 
 def _classify_record(report: dict[str, Any], record: Any) -> None:

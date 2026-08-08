@@ -345,13 +345,38 @@ class CollectionTests(DiagnosticFixtures, unittest.TestCase):
     def test_duplicate_ids_are_detected_through_fingerprints_only(self):
         duplicated = self.report_for(records=[self.record(), self.record()])
         self.assertTrue(duplicated["duplicate_record_ids"])
-        self.assertEqual(duplicated["first_incompatibility"], "collection-multiple")
+        self.assertEqual(duplicated["first_incompatibility"], "record-duplicate-id")
         distinct = self.report_for(records=[self.record(),
                                             self.record(id=OTHER_RECORD_ID)])
         self.assertFalse(distinct["duplicate_record_ids"])
         for report in (duplicated, distinct):
             for sentinel in (RECORD_ID, OTHER_RECORD_ID):
                 self.assertNotIn(sentinel, self.rendered(report))
+
+    def test_a_multi_record_collection_keeps_the_strict_parser_order(self):
+        # `phrase_records()` validates every record (Mapping -> safe id ->
+        # documented status) and then duplicate ids; only a fully accepted list
+        # reaches the count check. A structural failure must never be hidden
+        # behind `collection-multiple`, because Issue #29 failed on `schema`.
+        valid = self.record()
+        cases = {
+            "malformed-record": ([valid, SERVER_VALUE], "record-not-object"),
+            "unsafe-id": ([valid, self.record(id=UNSAFE_ID)], "record-id"),
+            "invalid-status": ([valid, self.record(id=OTHER_RECORD_ID, status=SERVER_VALUE)],
+                               "record-status"),
+            "duplicate-id": ([valid, self.record()], "record-duplicate-id"),
+            "structurally-valid": ([valid, self.record(id=OTHER_RECORD_ID,
+                                                       phrase=FOREIGN_PHRASE)],
+                                   "collection-multiple"),
+        }
+        for name, (records, checkpoint) in cases.items():
+            with self.subTest(case=name):
+                report = self.report_for(records=records)
+                self.assertEqual(report["phrase_count_class"], "multiple")
+                self.assertEqual(report["first_incompatibility"], checkpoint)
+                self.assertEqual(report["status"], "completed")
+                for sentinel in SENTINELS:
+                    self.assertNotIn(sentinel, self.rendered(report))
 
     def test_every_record_id_class_is_reported_without_the_id(self):
         cases = {UNSAFE_ID: "invalid-local-policy", "": "invalid-local-policy",
