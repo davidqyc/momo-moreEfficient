@@ -581,6 +581,34 @@ class CreateTests(ImporterFixtures, unittest.TestCase):
         self.assertEqual(shown, shown.strip())
         plan.validate_confirmation(shown)
 
+    def test_the_create_confirmation_string_is_frozen_byte_for_byte(self):
+        """Issue #42 changed UPDATE only. CREATE is already live-validated.
+
+        This freezes the whole rendered CREATE string, not just its shape, so
+        any future edit to the prefix, clause order, counts, Token-fingerprint
+        rendering or the confirmation binding shows up here immediately.
+        """
+        plan = self.plan()
+        self.assertEqual(
+            plan.expected_confirmation,
+            "CONFIRM BATCH INTERPRETATION CREATE: cdbef87c197476cf ITEMS: 2 "
+            "TOKEN-FP: 632caaac01f6049e PRICING-TERMS-CHECKED: YES "
+            "EXACTLY-ONE-POST-PER-ITEM-NO-RETRY-IMMEDIATE-READBACK",
+        )
+        self.assertEqual(len(plan.expected_confirmation), 170)
+        self.assertEqual(plan.binding_digest, "cdbef87c197476cf")
+        # The displayed CREATE block is also unchanged: five lines plus the
+        # trailing blank, with the confirmation on its own undecorated line.
+        lines = importer.confirmation_lines(plan)
+        self.assertEqual(lines, [
+            "CREATE CONFIRMATION — 2 items, one POST each, no retry",
+            f"batch digest {plan.digest}",
+            f"MANUAL GATE: {importer.PRICING_TERMS_GATE}",
+            "Copy the next line exactly into the hidden prompt:",
+            plan.expected_confirmation,
+            "",
+        ])
+
     def test_the_confirmation_binds_every_field_that_could_change_the_outcome(self):
         plan = self.plan()
         baseline = plan.expected_confirmation
@@ -1162,13 +1190,74 @@ class UpdateTests(ImporterFixtures, unittest.TestCase):
         self.assertEqual(shown, shown.strip())
         plan.validate_confirmation(shown)
         self.assertNotIn(importer.CONFIRMATION_PREFIX, shown)
-        self.assertIn("UPDATES: 1", shown)
-        self.assertIn("NO-OP: 1", shown)
-        self.assertIn(f"TOKEN-FP: {self.credential.fingerprint}", shown)
-        self.assertIn(harness.WRITE_PRICING_TERMS_CLAUSE, shown)
-        self.assertIn(importer.BATCH_ONE_POST_CLAUSE, shown)
+        # Issue #42: the pasted token is short; the long human-readable fields
+        # stay visible in the surrounding block and remain bound by the digest.
+        block = "\n".join(lines)
+        self.assertIn("UPDATES: 1   NO-OP: 1   "
+                      f"TOKEN-FP: {self.credential.fingerprint}", block)
+        self.assertIn(harness.WRITE_PRICING_TERMS_CLAUSE, block)
+        self.assertIn(importer.BATCH_ONE_POST_CLAUSE, block)
+        self.assertIn(importer.PRICING_TERMS_GATE, block)
+        self.assertIn(f"({len(shown)} characters", block)
         for raw in RAW_IDS:
             self.assertNotIn(raw, shown)
+            self.assertNotIn(raw, block)
+
+    def test_the_update_confirmation_is_one_short_bound_token(self):
+        """Issue #42: `CONFIRM UPDATE <16 lowercase hex>` and nothing else."""
+        plan = self.update_plan()
+        shown = plan.expected_confirmation
+        self.assertRegex(shown, r"^CONFIRM UPDATE [0-9a-f]{16}$")
+        self.assertLessEqual(len(shown), importer.MAX_COPIED_CONFIRMATION_CHARS)
+        # Short enough that an ordinary terminal cannot wrap it mid-copy, which
+        # is the failure #41 hit with the previous 181-character sentence.
+        self.assertEqual(len(shown), 31)
+        self.assertEqual(shown, shown.strip())
+        self.assertNotIn("\n", shown)
+
+    def test_the_short_update_token_carries_the_unchanged_binding_digest(self):
+        """The 16 hex chars are still the prefix of the full-binding SHA-256."""
+        plan = self.update_plan()
+        expected = importer._digest(plan.confirmation_binding())[:16]
+        self.assertEqual(plan.binding_digest, expected)
+        self.assertEqual(plan.expected_confirmation, f"CONFIRM UPDATE {expected}")
+        # The pre-#42 long form was built from this same digest, so an unchanged
+        # digest here is what proves `confirmation_binding()` did not move.
+        legacy = (
+            f"CONFIRM BATCH INTERPRETATION UPDATE: {expected} "
+            f"UPDATES: {plan.item_count} NO-OP: {plan.no_op_count} "
+            f"TOKEN-FP: {plan.credential_fingerprint} "
+            f"{harness.WRITE_PRICING_TERMS_CLAUSE} {importer.BATCH_ONE_POST_CLAUSE}"
+        )
+        self.assertEqual(len(legacy), 181)
+        self.assertIn(plan.binding_digest, legacy)
+        # And the binding itself still carries every field it bound before.
+        binding = plan.confirmation_binding()
+        for key in ("operation", "mode", "host", "path", "tags", "status",
+                    "item_count", "no_op_count", "batch_digest",
+                    "credential_fingerprint", "items", "account_label",
+                    "vocabulary_ids", "request_bodies", "record_ids",
+                    "write_paths", "write_policy", "pricing_and_terms_checked"):
+            self.assertIn(key, binding)
+        self.assertEqual(binding["record_ids"], [RECORD_A])
+        self.assertEqual(binding["items"][0]["pre_update"]["interpretation"], OLD_A)
+
+    def test_the_short_update_token_still_demands_strict_exact_equality(self):
+        plan = self.update_plan()
+        exact = plan.expected_confirmation
+        plan.validate_confirmation(exact)
+        wrong_digest = f"CONFIRM UPDATE {'0' * 16}"
+        self.assertNotEqual(wrong_digest, exact)
+        for provided in (
+            f" {exact}", f"{exact} ", f"\t{exact}", f"{exact}\n",
+            exact.upper(), exact.lower(),
+            exact.replace(" ", ""), exact[:-1], exact + "0",
+            "CONFIRM UPDATE", wrong_digest, exact.replace("UPDATE", "CREATE"),
+            None, 0, ["CONFIRM UPDATE"],
+        ):
+            with self.subTest(provided=repr(provided)[:28]):
+                with self.assertRaises(harness.ConfirmationError):
+                    plan.validate_confirmation(provided)
 
     def test_the_update_confirmation_binds_the_target_and_the_pre_update_snapshot(self):
         baseline = self.update_plan().expected_confirmation
