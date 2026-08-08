@@ -1409,13 +1409,18 @@ def preview_lines(
 
 
 def confirmation_lines(plan: BatchPlan) -> list[str]:
-    """The ONE batch-level confirmation block shown before any write."""
+    """The ONE batch-level confirmation block shown before any write.
+
+    The confirmation is printed on its own line with no indentation, quoting or
+    decoration, because `validate_confirmation` demands exact equality: whatever
+    is displayed must be directly pasteable without the owner editing it.
+    """
     return [
         f"CREATE CONFIRMATION — {plan.item_count} items, one POST each, no retry",
         f"batch digest {plan.digest}",
         f"MANUAL GATE: {PRICING_TERMS_GATE}",
-        "Copy this run's confirmation exactly into the hidden prompt:",
-        f"  {plan.expected_confirmation}",
+        "Copy the next line exactly into the hidden prompt:",
+        plan.expected_confirmation,
         "",
     ]
 
