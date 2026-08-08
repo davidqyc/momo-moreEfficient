@@ -87,7 +87,13 @@ PRICING_TERMS_GATE = (
 # not arrive as one burst. It is a two-line local mechanism, not a rate limiter,
 # and no correctness rule in this module depends on its value: tests inject a
 # recording no-op sleep.
-PACING_SECONDS = 0.35
+#
+# The floor is chosen so a full batch stays inside the currently published
+# official request windows (20 requests / 10 s, 40 requests / 60 s) without
+# relying on network latency: a CREATE item costs at most 4 requests
+# (2 preflight GET + 1 POST + 1 readback GET), so a 15-item batch sends 60
+# requests. At 1.6 s, 20 intervals span 32 s and 40 intervals span 64 s.
+PACING_SECONDS = 1.6
 
 PARSE_REASONS: tuple[str, ...] = (
     "empty-document",

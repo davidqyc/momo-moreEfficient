@@ -808,6 +808,12 @@ class CreateTests(ImporterFixtures, unittest.TestCase):
         self.assertEqual(len(self.slept), len(transport.calls()) - 1)
         self.assertEqual(set(self.slept), {importer.PACING_SECONDS})
 
+    def test_the_production_pacing_floor_stays_conservative(self):
+        # A 15-item CREATE batch sends up to 60 requests; the fixed pause must
+        # keep it inside the published 10-second and 60-second request windows
+        # without depending on how slow the network happens to be.
+        self.assertGreaterEqual(importer.PACING_SECONDS, 1.6)
+
     def test_the_plan_rejects_anything_that_is_not_a_fully_ready_batch(self):
         entries = self.entries()
         blocked = (
