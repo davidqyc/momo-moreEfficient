@@ -557,6 +557,18 @@ class CreateTests(ImporterFixtures, unittest.TestCase):
         self.assertIn(confirmation, output)
         self.assertIn(importer.PRICING_TERMS_GATE, output)
 
+    def test_the_displayed_confirmation_line_is_pasteable_without_editing(self):
+        plan = self.plan()
+        lines = importer.confirmation_lines(plan)
+        displayed = [line for line in lines if importer.CONFIRMATION_PREFIX in line]
+        self.assertEqual(len(displayed), 1)
+        shown = displayed[0]
+        # What the owner sees is byte-for-byte what validation demands: copying
+        # the line literally must not need trimming, unquoting or unindenting.
+        self.assertEqual(shown, plan.expected_confirmation)
+        self.assertEqual(shown, shown.strip())
+        plan.validate_confirmation(shown)
+
     def test_the_confirmation_binds_every_field_that_could_change_the_outcome(self):
         plan = self.plan()
         baseline = plan.expected_confirmation
