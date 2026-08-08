@@ -27,7 +27,7 @@
 - 副账号标签护栏：标签必须包含 `secondary` / `test` / `副号` / `副账号` / `测试`，且拒绝 `main` / `primary` / `owner` / `prod` / `production` / `主号` / `主账号` / `主账户` / `生产`。
 - 443 个自动化测试，全部在进程级 no-network guard 下离线运行。
 - 合成示例批次 `examples/sample-batch.md`。
-- 最小 GitHub Actions 工作流：无密钥、无网络、运行完整离线测试套件。
+- 最小 GitHub Actions 工作流：单 job、无密钥、无网络，在 **Python 3.13** 上运行完整离线测试套件。
 
 ### Security
 
@@ -35,7 +35,7 @@
 - Token、`Authorization`、Cookie、账号标签、原始 `voc_id`、原始记录 ID 和原始服务器响应，都不会进入预览、日志、运行报告或 Git。
 - 每个待写条目最多一次 POST，任何情况下都不重试；POST 结果未知时只做一次内置 GET 恢复查询。
 - 更新目标记录 ID 只来自鉴权 GET 集合，不接受来自命令行或 Markdown 的记录 ID。
-- 只使用 `GET` 和 `POST`；没有 `PUT` / `PATCH` / `DELETE` 路径，也没有例句/短语请求路径。
+- 受支持的导入器 `scripts/interpretation_batch_importer.py` 只使用 `GET` 和 `POST`；没有 `PUT` / `PATCH` / `DELETE` 路径，且只发出经过复核的词汇/释义请求，其中不含任何例句/短语请求路径。（该表述的范围是这一个受支持命令，不是整个仓库；仓库仍保留历史探针脚本，见 Known limitations。）
 - 请求串行发出、无并发，最小间隔 1.6 秒，对齐官方公布的频控。
 - 中途失败即停止剩余条目；不回滚、不删除，并明确提示不要重发。
 - 不修改墨墨内置词典释义。
@@ -43,13 +43,14 @@
 ### Known limitations
 
 - **例句/短语自动化不可用**，且被刻意阻断：真实验证显示例句创建后鉴权回读拿不到完整的 `MBA` + `BEC` + `GMAT` 标签集，`highlight` 缺失，公开 CREATE 契约也没有可写的 highlight 字段。参见 [#2](https://github.com/davidqyc/momo-moreEfficient/issues/2)、[#4](https://github.com/davidqyc/momo-moreEfficient/issues/4)。
+- 仓库仍保留开发期的历史 API 探针/诊断脚本（`scripts/phrase_create_probe.py`、`scripts/phrase_readback_diagnostic.py`、`scripts/issue2_smoke.py`、冻结的 `scripts/issue9_live_harness.py`）。它们是 **内部 / 非受支持** 的开发工具，**不属于 v0.1.0 产品接口**；其中例句探针 CLI 具备真实联网能力并会请求 `/open/api/v1/phrases`，普通用户不应运行，更不应针对生产账号运行。保留只为不丢失工程验证历史，例句自动化本身仍被阻断。
 - **桌面快速查词未实现**，属于未来工作。参见 [#5](https://github.com/davidqyc/momo-moreEfficient/issues/5)。
 - 没有自动回滚：被替换的释义只能依据本地脱敏报告中的写前快照人工恢复。
 - 没有跨账号标签发现能力——公开 API 未提供该端点。
 - 没有账号身份接口，因此 `--account-label` 只能防止人工过程中拿错凭证，不能证明 Token 属于哪个账号。
 - 单批上限 30 条（典型 8–15 条）。
 - 需要交互式终端；非 TTY 环境会被拒绝。
-- 自动化测试当前只在 Python 3.9 上验证。
+- 自动化测试当前只在 **Python 3.13** 上验证（CI 与推荐运行时）。Python 3.9 仅作为遗留兼容性记录，已于 2025-10-31 EOL、不再接收安全更新，不推荐使用；其他版本未经验证。
 - 真实运行验证均在副账号完成，批次规模为最小的 3 条；主账号接入需要单独评审。
 
 [Unreleased]: https://github.com/davidqyc/momo-moreEfficient/compare/main...HEAD

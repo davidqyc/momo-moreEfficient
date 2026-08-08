@@ -51,6 +51,7 @@ Never paste an Authorization header or raw private payload.
 - The project does not modify Maimemo built-in dictionary interpretations.
 - Write-capable tools must default to dry-run.
 - Phrase/example automation remains blocked until the semantic-position requirements in Issue #2 and Issue #4 are resolved.
+- The only supported v0.1.0 product command is `scripts/interpretation_batch_importer.py`, and it contains no phrase request path. The other files under `scripts/` are internal, unsupported development spike/probe/diagnostic tools kept for engineering history; some are live-capable and target phrase endpoints. Do not treat them as product commands, do not run them against a production account, and scope any "no phrase request path" statement to the supported importer.
 - Do not introduce UI automation, cloud infrastructure, a database, or a cross-platform framework without a confirmed need and Issue-level decision.
 
 ## Commit messages

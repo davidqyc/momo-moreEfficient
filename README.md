@@ -28,11 +28,13 @@ An unofficial Maimemo companion for safer batch publishing of user-curated vocab
 
 ## 环境要求
 
-- **Python 3.9，仅标准库**。没有第三方依赖，没有安装步骤，不需要虚拟环境。
+- **Python 3.13，仅标准库**。没有第三方依赖，没有安装步骤，不需要虚拟环境。
 - 一个墨墨开放 API Token。**请使用副账号 / 测试账号**，不要使用主账号。
 - 一个交互式终端（工具会拒绝在非 TTY 环境下运行）。
 
-自动化测试当前验证于 Python 3.9；更新的 Python 版本很可能可用，但尚未验证。
+**推荐并经 CI 验证的运行时是 Python 3.13**：GitHub Actions 在每次 push / PR 上用 Python 3.13 跑完整的 443 个离线测试。
+
+Python 3.9 只作为**遗留兼容性**记录：它曾是本项目早期的验证目标，但已于 2025-10-31 结束生命周期（EOL），不再接收安全更新，因此**不推荐**用它运行本工具。除 3.13 外的其他版本均未经验证，本项目不声称支持某个宽泛的版本区间。
 
 ## 输入格式
 
@@ -157,15 +159,41 @@ Token 永远不会进入 Git、日志、预览、运行报告或审阅包。工�
 
 ## 写入安全性
 
+以下全部是 v0.1.0 唯一受支持的产品命令 `scripts/interpretation_batch_importer.py` 的行为约定（不是对整个仓库所有历史脚本的陈述，参见[内部/非受支持脚本](#内部非受支持脚本)）：
+
 - 每个待写条目**最多一次 POST**；
 - **任何情况下都不重试** POST；
 - 每次 POST 后立即发起鉴权 GET 回读，逐字段核对正文、三标签集和 `PUBLISHED` 状态；
 - POST 结果未知时只做一次内置 GET 恢复查询，**绝不重发**；
 - 请求串行发出，无并发，最小间隔 1.6 秒（对齐官方公布的频控）；
 - 只使用 `GET` 和 `POST`；没有 `PUT` / `PATCH` / `DELETE` 路径；
-- 没有例句/短语请求路径；
+- **该导入器只发出经过复核的词汇 / 释义请求，其中不存在任何例句/短语请求路径**；
 - 不修改墨墨内置词典释义，只处理本账号自建记录；
 - 中途失败即停止剩余条目，**不回滚、不删除**，并明确提示不要重发。
+
+## 内部/非受支持脚本
+
+v0.1.0 的**产品接口只有一个命令**：`scripts/interpretation_batch_importer.py`。
+
+`scripts/` 下的其余文件是开发期留下的 **API 探针 / 诊断脚本（spike / probe）**，是研究例句语义位置阻断问题时产生的历史验证工具：
+
+| 文件 | 性质 |
+| --- | --- |
+| `scripts/interpretation_batch_importer.py` | **v0.1.0 唯一受支持的产品命令** |
+| `scripts/issue9_live_harness.py` | 冻结的安全原语库，导入器复用它的凭证/传输/校验原语 |
+| `scripts/issue2_smoke.py` | 离线载荷计划工具 |
+| `scripts/phrase_create_probe.py` | 历史例句 CREATE 探针，**可联网**，目标为 `/open/api/v1/phrases` |
+| `scripts/phrase_readback_diagnostic.py` | 历史例句回读诊断，GET-only |
+
+关于这些脚本，必须明确：
+
+- 它们**不属于 v0.1.0 产品接口**，是 **内部 / 非受支持（INTERNAL / UNSUPPORTED）** 的开发工具；
+- 其中的例句探针 CLI **具备真实联网能力**并会请求例句端点；
+- **普通用户不应该运行它们**，尤其不应针对生产账号运行；
+- 保留它们是为了不丢失工程验证历史，不代表例句能力可用；
+- **例句/短语自动化本身仍然被阻断**，见 [#2](https://github.com/davidqyc/momo-moreEfficient/issues/2) 和 [#4](https://github.com/davidqyc/momo-moreEfficient/issues/4)。
+
+因此本文档中"没有例句/短语请求路径"这类表述，**其范围仅限于受支持的导入器**，而不是整个仓库。
 
 ## 运行报告
 

@@ -25,9 +25,11 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # Pinned to the exact interpreter the suite is verified against.
-          # Widening this range needs its own verified change.
-          python-version: '3.9'
+          # Pinned to the exact interpreter the public release is verified
+          # against. 3.13 is a maintained, security-supported CPython; the
+          # previous 3.9 pin reached end of life on 2025-10-31.
+          # Widening this into a matrix needs its own verified change.
+          python-version: '3.13'
 
       - name: Compile all sources
         run: python -m compileall -q scripts tests
