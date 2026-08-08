@@ -9,7 +9,24 @@ Do not submit any of the following in commits, issues, pull requests, screenshot
 - Unredacted API requests/responses containing user content
 - Private keys, certificates, keychain exports, or `.env` files
 
-Use clearly invalid placeholders in examples. Local credentials must come from environment variables or the operating-system keychain.
+Use clearly invalid placeholders in examples.
+
+## How this project accepts a credential
+
+The shipped CLI accepts a real Maimemo token through **one** channel only: a hidden interactive `getpass` prompt. The token is held in process memory for the duration of the run and is never persisted.
+
+The following are deliberately **not** supported, and must not be added without an Issue-level security decision:
+
+- command-line arguments / argv (`--token` is rejected, and argument values are never echoed);
+- environment variables;
+- `.env` or any dotfile;
+- configuration files;
+- clipboard automation;
+- the operating-system keychain (out of scope for v0.1.0).
+
+This is stricter than a general "load secrets from the environment" rule, and it is intentional: an environment variable or `.env` file survives the process, leaks into shell history, subprocess environments, crash dumps and CI logs, whereas a `getpass` prompt does not. Do not relax this boundary to match a more conventional convention.
+
+A token, `Authorization` header, cookie, account label, raw `voc_id`, raw record id or raw server response must never reach Git, logs, previews, run reports, or review bundles. Only a non-sensitive 16-hex SHA-256 fingerprint of the token is ever displayed.
 
 ## Reporting a vulnerability
 
@@ -37,4 +54,6 @@ Such defects should block release until resolved or explicitly disabled.
 
 ## Supported versions
 
-No production release exists yet. Security support begins with the first public tagged release; until then, the repository is experimental and must not be trusted for unattended bulk writes.
+`v0.1.0` is being prepared as the first public release. Until it is tagged, no released version exists and security support is best-effort.
+
+Regardless of version, this tool must not be trusted for unattended bulk writes: every write path requires an interactive terminal and an explicit batch-level confirmation by design.

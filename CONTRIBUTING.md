@@ -9,6 +9,20 @@
 3. Wait for scope confirmation when the change affects API writes, content ownership, public behavior, or project architecture.
 4. Read `AGENTS.md`, `docs/decision-log.md`, and the relevant product document.
 
+## Running the tests
+
+No dependencies, no build step, standard-library `unittest` only. Always run under the process-level no-network guard:
+
+```bash
+MOMO_TEST_NETWORK_DISABLED=1 PYTHONPATH=tests/no_network_guard python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+The guard replaces `socket.socket`, `socket.create_connection` and `urllib.request.urlopen` with raising stubs, so the suite cannot reach the network. A change that needs a real request to pass is a change that needs an Issue first.
+
+## Credential boundary
+
+The CLI accepts a real token only through a hidden interactive `getpass` prompt, held in process memory. Do **not** add loading from argv, environment variables, `.env`, config files, the clipboard, or the OS keychain — see `SECURITY.md` for why this is stricter than the usual convention. A PR that widens this boundary will be rejected without an Issue-level security decision.
+
 ## Pull requests
 
 - Keep each PR focused on one Issue or one coherent fix.

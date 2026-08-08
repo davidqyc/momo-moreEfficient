@@ -1,0 +1,60 @@
+name: tests
+
+# Deliberately one job and no matrix. This project is standard-library only,
+# so there is nothing to install, cache or build.
+#
+# No secrets are used and no Maimemo request is ever made: the suite runs under
+# the same process-level no-network guard used locally, which replaces
+# socket.socket, socket.create_connection and urllib.request.urlopen with
+# raising stubs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Pinned to the exact interpreter the suite is verified against.
+          # Widening this range needs its own verified change.
+          python-version: '3.9'
+
+      - name: Compile all sources
+        run: python -m compileall -q scripts tests
+
+      - name: Run offline test suite
+        env:
+          MOMO_TEST_NETWORK_DISABLED: '1'
+          PYTHONPATH: tests/no_network_guard
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Prove the no-network guard is active
+        env:
+          MOMO_TEST_NETWORK_DISABLED: '1'
+          PYTHONPATH: tests/no_network_guard
+        run: |
+          python - <<'PY'
+          import socket, urllib.request
+          for label, call in (
+              ("socket.socket", lambda: socket.socket()),
+              ("socket.create_connection", lambda: socket.create_connection(("example.invalid", 80))),
+              ("urllib.request.urlopen", lambda: urllib.request.urlopen("http://example.invalid")),
+          ):
+              try:
+                  call()
+              except RuntimeError as blocked:
+                  print(f"BLOCKED {label}: {blocked}")
+              else:
+                  raise SystemExit(f"FAIL: {label} was not blocked")
+          print("no-network guard active")
+          PY
