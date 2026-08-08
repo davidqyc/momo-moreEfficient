@@ -431,7 +431,7 @@ Issue #24 只**准备**这个入口，实现与审阅全程离线。它刻意不
   ```
 
   没有额外字段，没有顶层 `id`，没有 update 语义，没有例句语义。
-- **写后立即回读**：POST 之后恰好一次 `GET /interpretations?voc_id=<resolved-id>`。
+- **写后立即回读**：POST 之后恰好一次 `GET /interpretations?voc_id=<resolved-id>`。只要 POST 计数变成 1，这次回读就一定会发生——包括 POST 之后的私有 journal 过渡失败时；本地 journal 失败可以改变结果能否被报告为成功，但不能取消这次唯一的 GET。
 - **结果未知时只用 GET 恢复**：超时、连接重置、TLS/读失败、正文 I/O 失败、非法 UTF-8、非法 JSON、异常完整响应形状、4xx/5xx——一律**不再 POST**，只做那一次回读。回读是安全的，不是写入重试。
 - **不做 update / delete / 例句写入**：整条命令连 phrases 端点都不读。
 - **主账号 Token 仍完全不受支持**：账号标签必须正向包含副账号语义并拒绝主账号/生产语义，凭证只经交互式隐藏 `getpass` 进入内存。
@@ -444,13 +444,17 @@ preflight 通过后构造一个递归冻结的写入计划。预览、确认摘�
 
 #### 成败判定只看零基线回读
 
-写入结果**不依赖**从 POST 响应里取记录 ID——生产 GET 已经出现过未文档化的 `data` 外层，不应再造一个脆弱的 POST 响应解析依赖。2xx 只当作确认收到。判定成功要求那一次回读同时满足：集合恰好 1 条记录、记录 ID 满足既有安全策略、释义正文逐字相同、标签按**集合语义**恰好为 `MBA`/`BEC`/`GMAT`（长度为 3、每个期望标签恰好一次、允许服务端顺序不同、拒绝重复与多余）、状态恰为 `PUBLISHED`。回读 0 条为 `not-verified`，多条为 `ambiguous`，1 条但不匹配为 `mismatch`，回读本身 transport/schema 失败为 `not-verified`；四种都 fail closed，且都不会再 POST。
+写入结果**不依赖**从 POST 响应里取记录 ID——生产 GET 已经出现过未文档化的 `data` 外层，不应再造一个脆弱的 POST 响应解析依赖。2xx 只当作确认收到。判定成功要求那一次回读同时满足：集合恰好 1 条记录、记录 ID 满足既有安全策略、释义正文逐字相同、标签按**集合语义**恰好为 `MBA`/`BEC`/`GMAT`（长度为 3、每个期望标签恰好一次、允许服务端顺序不同、拒绝重复与多余）、状态恰为 `PUBLISHED`。回读 0 条为 `not-verified`，多条为 `ambiguous`，1 条但不匹配为 `mismatch`，回读本身 transport/schema 失败为 `not-verified`；四种都 fail closed，且都不会再 POST。第五种情况是回读恰好命中 1 条完全匹配的记录、但已验证状态无法安全持久化（POST 之后的 journal 过渡失败），同样 fail closed 为 `not-verified`，详见下面的私有 journal 小节。
+
+非 2xx 的 POST 语义保持不变：只有当零基线回读证明恰好 1 条记录、正文逐字相同、`MBA`/`BEC`/`GMAT` 各出现一次、状态为 `PUBLISHED`、记录 ID 安全、写后释义恰好 1 条时，才可判为 `recovered-succeeded`。清晰 2xx + 精确回读为 `confirmed-success`，不确定/非 2xx + 精确回读为 `recovered-success`；权威判据始终是那次严格回读，而不是 POST 响应体。
 
 失败时只输出项目自有的封闭诊断：`failure_stage`（`transport-init`、`preflight-vocabulary`、`preflight-interpretations`、`confirmation`、`write`、`readback`）、`failure_class`（`transport`、`http-status`、`schema`、`safety`、`confirmation`、`ambiguous`、`mismatch`、`unknown-write-outcome`）、`http_status`，以及 `post_attempted`、`post_count`、`readback_attempted` 和封闭的 `write_outcome`（`not-attempted`、`confirmed-success`、`recovered-success`、`not-verified`、`ambiguous`）。成功输出只含 mode、状态、operation、请求拼写、preflight/写后数量、固定的标签与状态、`voc_id` 指纹、创建记录 ID 指纹、安全可知的 POST 状态和计数器。Token、Authorization、原始 `voc_id`、原始记录 ID、原始响应、服务端键名一律不出现。
 
 #### 私有 journal
 
-复用既有被忽略的 `artifacts/private/` 模型（目录 `0700`、文件 `0600`、`O_EXCL`/`O_NOFOLLOW` 创建、原子替换、敏感键筛查、同一步存在 journal 即禁止重放），只是换成独立的 `issue24-interpretation-create-<n>.json` 命名空间。它保存的是最小写入连续性证据：operation、请求拼写、`voc_id` **指纹**、拟写入的释义/标签/状态、preflight 基线数量、请求体摘要、`post_attempted`、脱敏后的 POST 状态、回读结果，以及创建记录的**指纹**。它不保存 Token、Authorization、Cookie、账号标签、原始 `voc_id` 或原始记录 ID，也不新增任何删除/清理自动化。POST 之后 journal 写入失败只会 fail closed，绝不导致第二次 POST。
+复用既有被忽略的 `artifacts/private/` 模型（目录 `0700`、文件 `0600`、`O_EXCL`/`O_NOFOLLOW` 创建、原子替换、敏感键筛查、同一步存在 journal 即禁止重放），只是换成独立的 `issue24-interpretation-create-<n>.json` 命名空间。它保存的是最小写入连续性证据：operation、请求拼写、`voc_id` **指纹**、拟写入的释义/标签/状态、preflight 基线数量、请求体摘要、`post_attempted`、脱敏后的 POST 状态、回读结果，以及创建记录的**指纹**。它不保存 Token、Authorization、Cookie、账号标签、原始 `voc_id` 或原始记录 ID，也不新增任何删除/清理自动化。
+
+POST 之后的 journal 过渡失败按以下规则处理：POST 已经发出后，journal 不再是最后一道安全边界，那一次 GET-only 回读才是——因为它是唯一还能查明写入是否真的落地的手段。因此 `write-attempted-outcome-unknown` 或 `write-acknowledged-readback-unverified` 过渡失败时，只在内存里记一个项目自有布尔量，**不提前抛出**，仍然照常执行那唯一一次回读；它绝不导致第二次 POST，也绝不重放写入。此时 journal 仍停在 `prepared-not-sent`：不伪装成已到达 acknowledged/unknown，也不为此扩展状态机，而是让这份已存在的文档继续充当重放阻断器。回读若失败（transport/schema/非 2xx/0 条/多条/不匹配）照常 fail closed；即使回读证明恰好 1 条完全匹配的记录，只要安全的已验证状态无法持久化，也**不报告** `succeeded` 或 `recovered-succeeded`，而是以 `failure_stage=readback`、`failure_class=safety`、`write_outcome=not-verified` fail closed，同时 `post_count` 恒为 1、`readback_attempted` 为 `true`。这条路径下操作者应以脱敏诊断为准：诊断如实报告 `post_attempted=true` / `post_count=1` / `readback_attempted=true`，而 journal 因为过渡失败仍是写前快照。
 
 #### 条款与内容要求
 

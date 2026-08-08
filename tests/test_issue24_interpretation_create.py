@@ -1840,33 +1840,6 @@ class JournalTests(InterpretationCreateFixtures, unittest.TestCase):
             outcome["failure"].safe_summary()["write_outcome"], "not-attempted"
         )
 
-    def test_a_journal_failure_after_the_post_never_causes_a_second_post(self) -> None:
-        for method in (
-            "mark_interpretation_create_unknown",
-            "mark_interpretation_create_acknowledged",
-        ):
-            with self.subTest(method=method):
-                _root, store = self.make_store()
-
-                def refuse(*_args: object, **_kwargs: object) -> Path:
-                    raise harness.SafetyError("journal refused")
-
-                setattr(store, method, refuse)
-                responses = self.success_responses()
-                if method == "mark_interpretation_create_unknown":
-                    responses[2] = harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL)
-                outcome = self.run_probe(responses, store=store)
-                self.assertIsNone(outcome["result"])
-                self.assert_single_post(outcome)
-                summary = outcome["failure"].safe_summary()
-                self.assertEqual(summary["failure_stage"], "write")
-                self.assertEqual(summary["failure_class"], "unknown-write-outcome")
-                self.assertEqual(summary["write_outcome"], "not-verified")
-                self.assertFalse(summary["readback_attempted"])
-                # Three requests only: the readback is not attempted and the POST
-                # is never repeated.
-                self.assertEqual(len(outcome["transport"].calls()), 3)
-
     def test_an_existing_journal_blocks_a_replay_before_any_post(self) -> None:
         _root, store = self.make_store()
         first = self.run_probe(self.success_responses(), store=store)
@@ -1917,6 +1890,212 @@ class JournalTests(InterpretationCreateFixtures, unittest.TestCase):
             write_store._destination(1).name,
             "issue24-interpretation-create-1.json",
         )
+
+
+# ---------------------------------------------------------------------------
+# I2. A failed post-POST journal transition still reaches the single readback
+#
+# Once the single POST has been dispatched the private journal is no longer the
+# last safety boundary — the one GET-only readback is. A local journal failure
+# must therefore never suppress that readback, never replay the write and never
+# route execution back into the POST path. It may only downgrade the *reported*
+# result, because a proven record that cannot be durably recorded must not be
+# announced as a success.
+# ---------------------------------------------------------------------------
+
+
+class PostJournalFailureReadbackTests(
+    InterpretationCreateFixtures, unittest.TestCase
+):
+    # The two post-POST transitions: a clear 2xx acknowledges, an uncertain POST
+    # goes to unknown. Both must behave identically when the journal refuses.
+    POST_JOURNAL_TRANSITIONS = (
+        "mark_interpretation_create_acknowledged",
+        "mark_interpretation_create_unknown",
+    )
+
+    def refusing_store(self, method: str) -> harness.PrivateStateStore:
+        """A journal whose single post-POST transition always refuses."""
+        _root, store = self.make_store()
+
+        def refuse(*_args: object, **_kwargs: object) -> Path:
+            raise harness.SafetyError("journal refused")
+
+        setattr(store, method, refuse)
+        return store
+
+    def responses_for(self, method: str, readback: object) -> list[object]:
+        """Preflight plus a POST whose outcome selects the refused transition."""
+        responses = self.success_responses()
+        if method == "mark_interpretation_create_unknown":
+            responses[2] = harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL)
+        responses[3] = readback
+        return responses
+
+    def run_post_journal_failure(
+        self, method: str, readback: object
+    ) -> tuple[dict, Mapping[str, object]]:
+        """Drive the probe with a refusing journal and assert the shared floor.
+
+        Every case must show the same safe sequence: preflight GET, preflight
+        GET, exactly one POST, exactly one readback GET — then a fail-closed,
+        sanitized diagnostic that still proves the readback was attempted.
+        """
+        store = self.refusing_store(method)
+        outcome = self.run_probe(self.responses_for(method, readback), store=store)
+        transport = outcome["transport"]
+
+        # One POST, then one readback GET. Never a second POST.
+        self.assert_single_post(outcome)
+        self.assertEqual(
+            transport.calls(),
+            [
+                ("GET", VOCABULARY_PATH),
+                ("GET", INTERPRETATIONS_PATH),
+                ("POST", CREATE_PATH),
+                ("GET", INTERPRETATIONS_PATH),
+            ],
+        )
+        self.assertEqual({call[0] for call in transport.calls()}, {"GET", "POST"})
+        for _method, path in transport.calls():
+            self.assertNotIn("phrase", path)
+
+        # Fail closed, but with the readback proven and the POST count pinned.
+        self.assertIsNone(outcome["result"])
+        summary = outcome["failure"].safe_summary()
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["failure_stage"], "readback")
+        self.assertTrue(summary["readback_attempted"])
+        self.assertTrue(summary["post_attempted"])
+        self.assertEqual(summary["post_count"], 1)
+        self.assertNotIn(
+            summary["write_outcome"], ("confirmed-success", "recovered-success")
+        )
+        self.assertEqual(summary["requests_attempted"], 4)
+
+        # The refused transition left the journal in its pre-POST state, which
+        # keeps blocking every replay, and it never gained a record fingerprint.
+        journal = outcome["journal"]
+        self.assertEqual(journal["status"], "prepared-not-sent")
+        self.assertIsNone(journal["created_record_id_fingerprint"])
+
+        # Nothing server-owned escapes through the failure or the journal.
+        rendered = self.rendered(outcome["failure"])
+        journal_text = json.dumps(journal, ensure_ascii=False, sort_keys=True)
+        for sentinel in SENTINELS:
+            self.assertNotIn(sentinel, rendered)
+            self.assertNotIn(sentinel, journal_text)
+        return summary, outcome
+
+    def test_case_a_and_b_a_matching_readback_still_runs_but_is_not_a_success(
+        self,
+    ) -> None:
+        """A: clear 2xx + acknowledged failure. B: uncertain POST + unknown
+        failure. Both still read back, and both refuse to claim success while a
+        verified state cannot be persisted."""
+        for method in self.POST_JOURNAL_TRANSITIONS:
+            with self.subTest(method=method):
+                summary, _outcome = self.run_post_journal_failure(
+                    method, self.collection_response([self.created_record()])
+                )
+                self.assertEqual(summary["failure_class"], "safety")
+                self.assertEqual(summary["write_outcome"], "not-verified")
+                self.assertIsNone(summary["http_status"])
+
+    def test_case_c_a_post_journal_failure_with_an_empty_readback_fails_closed(
+        self,
+    ) -> None:
+        for method in self.POST_JOURNAL_TRANSITIONS:
+            with self.subTest(method=method):
+                summary, _outcome = self.run_post_journal_failure(
+                    method, self.collection_response([])
+                )
+                self.assertEqual(summary["failure_class"], "unknown-write-outcome")
+                self.assertEqual(summary["write_outcome"], "not-verified")
+                self.assertEqual(summary["http_status"], 200)
+
+    def test_case_d_a_post_journal_failure_with_a_failed_readback_fails_closed(
+        self,
+    ) -> None:
+        for method in self.POST_JOURNAL_TRANSITIONS:
+            with self.subTest(method=method):
+                summary, _outcome = self.run_post_journal_failure(
+                    method, harness.TransportError(TRANSPORT_EXCEPTION_SENTINEL)
+                )
+                self.assertEqual(summary["failure_class"], "transport")
+                self.assertEqual(summary["write_outcome"], "not-verified")
+                self.assertIsNone(summary["http_status"])
+
+    def test_case_d_a_non_2xx_readback_after_a_post_journal_failure_fails_closed(
+        self,
+    ) -> None:
+        for method in self.POST_JOURNAL_TRANSITIONS:
+            with self.subTest(method=method):
+                summary, _outcome = self.run_post_journal_failure(
+                    method, self.collection_response([], status=500)
+                )
+                self.assertEqual(summary["failure_class"], "http-status")
+                self.assertEqual(summary["write_outcome"], "not-verified")
+                self.assertEqual(summary["http_status"], 500)
+
+    def test_case_e_a_journal_failure_can_never_re_enter_the_post_path(self) -> None:
+        for method in self.POST_JOURNAL_TRANSITIONS:
+            with self.subTest(method=method):
+                _summary, outcome = self.run_post_journal_failure(
+                    method, self.collection_response([self.created_record()])
+                )
+                transport = outcome["transport"]
+                executor = outcome["executor"]
+                plan = outcome["plan"]
+                # Everything the POST was followed by was GET-only.
+                self.assertEqual([call[0] for call in transport.calls()[3:]], ["GET"])
+
+                # The guard has permanently consumed its single POST budget, so
+                # even a direct re-send is structurally refused.
+                with self.assertRaises(harness.SafetyError):
+                    executor._guard.send(plan.write_request(), self.credential())
+                self.assertEqual(len(transport.posts()), 1)
+                self.assertEqual(executor.post_count, 1)
+
+                # A second commit is refused as well, still without a POST.
+                with self.assertRaises(harness.InterpretationCreateFailure) as raised:
+                    executor.commit(
+                        plan,
+                        plan.expected_confirmation,
+                        self.credential(),
+                        state_store=outcome["store"],
+                    )
+                self.assertEqual(len(transport.posts()), 1)
+                self.assertEqual(executor.post_count, 1)
+                self.assertEqual(raised.exception.safe_summary()["post_count"], 1)
+
+                # A fresh executor over the same journal is blocked before any
+                # request, so the refused transition can never become a replay.
+                replay = self.run_probe(
+                    self.success_responses(), store=outcome["store"]
+                )
+                self.assert_no_post(replay)
+                self.assertIsNone(replay["result"])
+
+    def test_a_post_journal_failure_never_updates_or_deletes_anything(self) -> None:
+        for method in self.POST_JOURNAL_TRANSITIONS:
+            with self.subTest(method=method):
+                _summary, outcome = self.run_post_journal_failure(
+                    method, self.collection_response([self.created_record()])
+                )
+                for request in outcome["transport"].requests:
+                    self.assertIn(request.method, ("GET", "POST"))
+                    self.assertNotIn(request.method, ("PUT", "PATCH", "DELETE"))
+                    self.assertTrue(request.path.startswith("/open/api/v1/"))
+                # Only the single create carried a payload at all.
+                self.assertEqual(
+                    [
+                        request.method
+                        for request in outcome["transport"].requests
+                        if request.payload is not None
+                    ],
+                    ["POST"],
+                )
 
 
 # ---------------------------------------------------------------------------

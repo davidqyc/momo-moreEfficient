@@ -4600,6 +4600,13 @@ class InterpretationCreateExecutor:
             # nothing to recover and no readback is performed.
             raise self._progress.failure("safety", None, WRITE_OUTCOME_NOT_ATTEMPTED) from None
 
+        # The single POST has already been dispatched, so the private journal is
+        # no longer the last safety boundary: the one GET-only readback is. A
+        # failed post-POST transition is recorded only as this local boolean and
+        # never re-enters the POST path, never replays the write and — crucially
+        # — never suppresses the readback, because that GET is the only way left
+        # to learn whether the zero-baseline write actually materialized.
+        journal_uncommitted = False
         try:
             if uncertain:
                 state_store.mark_interpretation_create_unknown(
@@ -4613,13 +4620,15 @@ class InterpretationCreateExecutor:
                     write_status=write_status,
                 )
         except Exception:
-            # A journal failure never re-enters the POST path; it fails closed.
-            raise self._progress.failure(
-                "unknown-write-outcome", write_status, WRITE_OUTCOME_NOT_VERIFIED
-            ) from None
+            journal_uncommitted = True
 
         return self._recover_by_readback(
-            plan, credential, state_store, write_status, uncertain
+            plan,
+            credential,
+            state_store,
+            write_status,
+            uncertain,
+            journal_uncommitted=journal_uncommitted,
         )
 
     def _attempt_single_post(
@@ -4659,8 +4668,17 @@ class InterpretationCreateExecutor:
         state_store: PrivateStateStore,
         write_status: int | None,
         uncertain: bool,
+        *,
+        journal_uncommitted: bool = False,
     ) -> "InterpretationCreateResult":
-        """Perform exactly one GET-only readback. This is never a write retry."""
+        """Perform exactly one GET-only readback. This is never a write retry.
+
+        ``journal_uncommitted`` means the post-POST journal transition failed, so
+        the private document is still ``prepared-not-sent``. The readback still
+        runs — it is GET-only and it is the only safe recovery operation — but no
+        verified state can then be persisted, so a matching record fails closed
+        instead of being reported as a success.
+        """
         self._progress.enter("readback")
         self._progress.readback_attempted = True
         try:
@@ -4716,6 +4734,18 @@ class InterpretationCreateExecutor:
             )
             raise self._progress.failure(
                 "mismatch", read_status, WRITE_OUTCOME_NOT_VERIFIED
+            ) from None
+
+        if journal_uncommitted:
+            # The readback proved the record, but the journal never left
+            # ``prepared-not-sent``, so a verified state cannot be persisted and
+            # this run must not be reported as `succeeded` or
+            # `recovered-succeeded`. Fail closed on sanitized project-owned
+            # fields and deliberately leave the prepared document in place: it
+            # keeps blocking any replay. The journal state machine is not
+            # widened to fake a transition it never actually made.
+            raise self._progress.failure(
+                "safety", None, WRITE_OUTCOME_NOT_VERIFIED
             ) from None
 
         outcome = (
