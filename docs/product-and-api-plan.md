@@ -464,6 +464,62 @@ POST 之后的 journal 过渡失败按以下规则处理：POST 已经发出后�
 
 Issue #24 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。第一次真实写入仍需在本 PR 合并并经独立审阅之后，由所有者另开单独 Issue 明确授权，并在执行前重新核对当前官方费用与条款。
 
+### 2.10 Issue #26 首次真实释义 CREATE 成功，Issue #27 准备一次性例句 CREATE
+
+#### 已确认事实：第一次真实副账号写入成功（Issue #26）
+
+所有者授权的一次性 `interpretation-create-probe` 在副账号上真实执行并**成功**。这是**事实**，不是推断：
+
+- 目标词 `acquisition`，写入内容为 `n. 收购；购置；获得`，标签 `MBA` + `BEC` + `GMAT`，状态 `PUBLISHED`；
+- preflight 自建释义数量为 **0**，唯一一次 POST 返回 HTTP **201**；
+- 写后唯一一次权威 GET 回读返回 HTTP **200**，恰好 1 条记录，正文逐字一致、三标签精确命中、状态为 `PUBLISHED`；
+- 没有发生任何重试，没有第二次 POST，GitHub 证据只保留脱敏指纹与计数器。
+
+据此 Issue #2 矩阵第一项「`MBA`、`BEC`、`GMAT` 可同时写入自建释义」**已验证通过**。跨账号标签发现、例句线路的英文高亮与中文位置仍未验证，#2 保持 OPEN。
+
+#### 当前一方文档的例句 CREATE 请求形态
+
+`maimemo/memo-skills` 目前记载：`GET /phrases?voc_id=...` 返回 `{"phrases": [Phrase, ...]}`；`POST /phrases` 的请求字段为 `voc_id`、`phrase`、`interpretation`、`tags`、`origin`，合法标签包含 `MBA`/`BEC`/`GMAT`，最多 3 个；`Phrase` 响应含 `highlight`、`status`、`origin`。
+
+两条**当前公开合同事实**必须原样记录：
+
+1. 文档化的 CREATE 请求**没有**可写的 `highlight` 字段——`highlight` 只出现在响应模型中；
+2. 文档化的 CREATE 请求**没有**任何用于选择中文翻译内部精确字符范围的字段。
+
+因此本项目不猜测、不试探未文档化字段。中文位置在 D-005 中仍是实质阻断项。
+
+#### Issue #27 的一次性例句实验（本轮零真实请求）
+
+新增**一个**独立小脚本 `scripts/phrase_create_probe.py`（约 600 行有效代码），`scripts/issue9_live_harness.py` 保持**冻结未改动**，凭证处理、账号标签策略、生产 transport、`HttpRequest`、已复核 GET path 构造、`data` 外层兼容、vocabulary/状态/记录 ID/highlight 校验等既有原语全部按 import 复用，不复制。
+
+未来真实运行命令（本 Issue **不授权**执行）：
+
+```bash
+/usr/bin/python3 scripts/phrase_create_probe.py --account-label "副账号测试" --allow-network
+```
+
+固定内容由项目锁死，命令行不接受任何内容参数：
+
+| 字段 | 固定值 |
+| --- | --- |
+| spelling | `acquisition` |
+| phrase | `The acquisition strengthened the company's position in the market.` |
+| interpretation | `这次收购加强了公司在市场中的地位。` |
+| tags | `MBA`、`BEC`、`GMAT` |
+| origin | `自编` |
+
+目标词在英文例句中恰好出现一次，半开区间为 `[4, 15)`；该区间只用于**回读观察**，绝不进入请求体。请求体恰好是 `{"phrase": {voc_id, phrase, interpretation, tags, origin}}`，不含 `highlight`、`status`、顶层 `id` 或任何未文档化字段。
+
+网络序列硬上限为 **3 个 GET + 1 个 POST**、0 次重试、0 个 PUT/PATCH/DELETE、0 次释义写入：GET vocabulary → GET phrases → 要求自建例句数**恰好为 0** → 脱敏 WRITE 预览 → 例句专用精确确认 → 唯一一次 POST → 唯一一次 GET 回读。受门禁 transport 在委托请求**之前**先扣减 POST 预算，因此第二次 POST 在结构上不可能发生。
+
+重放保护改用**一次写入即定型**的私有标记 `artifacts/private/issue27-phrase-create-armed-1.json`（目录 `0700`、文件 `0600`、`O_EXCL`/`O_NOFOLLOW`），在确认之后、POST 之前创建，之后**不再有任何状态转换**——既不扩展 `PrivateStateStore`，也不重建 journal 状态机，从而消除上一轮「POST 后 journal 过渡失败」这一类失败。标记已存在或无法安全创建时，本轮 POST 数为 0。
+
+判定成功只看回读：恰好 1 条安全记录，且例句正文、中文翻译、`origin` 逐字一致，标签按集合语义恰好命中三个，`status` 为 `PUBLISHED`。清晰 2xx + 精确回读为 `succeeded`，不确定/非 2xx + 精确回读为 `recovered-succeeded`；0 条、多条、任一字段不符、回读失败一律 fail closed，且绝不再次 POST。
+
+记录本体验证通过后才观察返回的 `highlight`，只输出两个封闭枚举：`highlight_shape`（`integer-pair-array` / `object-range-array` / `empty-array`）与 `highlight_verdict`（`exact-target-span` / `empty` / `other-reviewed-range`）。畸形、混合、负值、倒置或越界的 highlight 按 schema fail closed，**不**存在 `invalid` 这种正常判定。若未来真实运行得到 `exact-target-span`，唯一可下的结论是：**文档化的 CREATE 请求没有发送 highlight，随后的鉴权回读返回了目标区间**；不得据此宣称支持未文档化的调用方可控 highlight。
+
+Issue #27 的实现与复核全部使用明显虚假的 credential 与 fake transport，并由进程级 no-network guard 兜底，**没有发送任何真实墨墨请求，也没有读取任何真实 Token**。真实例句写入仍需所有者另开单独 Issue 明确授权，并在执行前重新核对当前官方费用与条款。
+
 ## 3. 真实用户工作流
 
 ### 3.1 内容准备阶段
