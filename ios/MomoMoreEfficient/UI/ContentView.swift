@@ -144,6 +144,24 @@ struct ContentView: View {
             }
             .font(.subheadline.monospacedDigit())
 
+            if viewModel.isPreviewStale {
+                HStack(spacing: 10) {
+                    Text("需重新预览后才能写入")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("重新预览") {
+                        Task { await viewModel.previewCurrentInput() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .disabled(
+                        !viewModel.isConnected
+                            || !viewModel.localParseState.isValid
+                            || viewModel.isBusy
+                    )
+                }
+            }
+
             feedbackView
 
             LazyVStack(spacing: 0) {

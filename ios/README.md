@@ -1,4 +1,4 @@
-# iOS companion（Issue #63，未发布）
+# iOS companion（Issue #66，未发布）
 
 这是第一版原生 iOS 释义录入 companion。它使用 Swift、SwiftUI、Foundation、CryptoKit 和 XCTest，不含第三方依赖。
 
@@ -6,7 +6,7 @@
 
 - Token 由 `SecureField` 手动输入，保存为产品专用的本设备 Keychain generic-password 项；使用 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` 且不参与同步。
 - 不使用 `UserDefaults`、文件、状态恢复、环境变量、argv、日志、自动剪贴板读取或 URL/query 保存 Token。
-- 进入 inactive/background 会清除瞬态 session credential，并使预览和一次性确认失效，但不删除 Keychain Token；前台解锁后自动恢复连接。
+- 进入 inactive/background 会清除瞬态 session credential、可执行 PreviewSnapshot 和一次性确认，但不删除 Keychain Token；已完成的 PreviewPresentation 只在进程内保留为 stale/read-only，前台恢复连接后仍必须重新预览才能写入。
 - “更换 Token”会替换 Keychain 项并使既有预览/确认失效；“移除 Token”会删除 Keychain 项和瞬态凭证状态。
 - Production transport 只使用 `URLSessionConfiguration.ephemeral`，host 固定为 `https://open.maimemo.com`。
 - Preview 只有 GET；CREATE 与 UPDATE 分开确认，执行前完整 fresh-preflight，严格比较不可变预览快照。

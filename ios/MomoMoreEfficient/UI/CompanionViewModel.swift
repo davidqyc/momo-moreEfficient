@@ -20,6 +20,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var hasExecutionFeedback = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var pendingConfirmation: OperationGroup?
+    @Published private(set) var isPreviewStale = false
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -50,7 +51,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         var candidate = token
         token.removeAll(keepingCapacity: false)
         defer { candidate.removeAll(keepingCapacity: false) }
-        clearTransientCredential()
+        clearTransientCredential(preservingPreviewPresentation: false)
         do {
             try credentialSession.connect(token: candidate)
             try tokenStore.saveToken(candidate)
@@ -86,7 +87,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     func enterBackground() {
-        clearTransientCredential()
+        clearTransientCredential(preservingPreviewPresentation: true)
     }
 
     func enterForeground() {
@@ -95,6 +96,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     func previewCurrentInput() async {
         guard !isBusy else { return }
+        let preserveStalePresentationOnFailure = isPreviewStale && preview != nil
         isBusy = true
         isPreviewing = true
         errorMessage = nil
@@ -128,6 +130,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             }
             snapshot = built
             preview = built.presentation
+            isPreviewStale = false
             expandedRowIDs.removeAll()
             hasExecutionFeedback = false
             finalSummary = FinalSummary(
@@ -137,10 +140,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 failed: 0
             )
         } catch let error as CompanionError {
-            invalidatePreview()
+            invalidatePreviewAfterRefreshFailure(
+                preservingStalePresentation: preserveStalePresentationOnFailure
+            )
             errorMessage = error.description
         } catch {
-            invalidatePreview()
+            invalidatePreviewAfterRefreshFailure(
+                preservingStalePresentation: preserveStalePresentationOnFailure
+            )
             errorMessage = CompanionError.responseRejected.description
         }
     }
@@ -293,7 +300,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     var executionActions: [ExecutionAction] {
-        guard let counts = preview?.counts else { return [] }
+        guard let snapshot,
+              preview != nil,
+              !isPreviewStale,
+              isConnected
+        else { return [] }
+        let counts = snapshot.presentation.counts
         return [
             ExecutionAction(group: .create, count: counts.create),
             ExecutionAction(group: .update, count: counts.update),
@@ -319,10 +331,23 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func invalidatePreview() {
-        snapshot = nil
         preview = nil
         expandedRowIDs.removeAll()
+        invalidateExecutionAuthorization()
+    }
+
+    private func invalidateExecutionAuthorization() {
+        snapshot = nil
+        isPreviewStale = preview != nil
         invalidateArmedApproval()
+    }
+
+    private func invalidatePreviewAfterRefreshFailure(preservingStalePresentation: Bool) {
+        if preservingStalePresentation, preview != nil {
+            invalidateExecutionAuthorization()
+        } else {
+            invalidatePreview()
+        }
     }
 
     private func invalidateArmedApproval() {
@@ -355,12 +380,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
     }
 
-    private func clearTransientCredential() {
+    private func clearTransientCredential(preservingPreviewPresentation: Bool) {
         activeControl?.requestCancellation()
         credentialSession.disconnect()
         sessionID = nil
         isConnected = false
-        invalidatePreview()
+        if preservingPreviewPresentation {
+            invalidateExecutionAuthorization()
+        } else {
+            invalidatePreview()
+        }
     }
 
     private func restoreCredentialIfAvailable() {
@@ -389,4 +418,6 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     nonisolated var debugDescription: String { "CompanionViewModel(<redacted credential>)" }
+
+    var hasExecutablePreview: Bool { snapshot != nil }
 }
