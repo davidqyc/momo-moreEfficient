@@ -26,7 +26,7 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_MAIN_AT_SNAPSHOT=9336a00fa6b9c1c35fd1dd74261b90e91e07bcfe
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#56
+CURRENT_PRIMARY_ISSUE=#60
 OPEN_PRODUCT_PR=none at state update
 ```
 
@@ -37,18 +37,21 @@ OPEN_PRODUCT_PR=none at state update
 - Issue #51 的显式主账号 opt-in 与真实主账号闭环已经完成：dry-run 12 条 / 0 POST、CREATE 9/9、UPDATE 3/3；
 - Issue #54 的 macOS 本地日常 UI 已合并并完成 Owner 真机验收：`.app` 双击启动、native hidden Token prompt、真实主账号 12 条 Preview，结果 `新建 0 / 更新 0 / 已一致 12 / 失败 0`，本次 acceptance 无写入；
 - 当前 macOS UI 的直接聊天复制可能先于解析器丢失行边界，这是非阻断 UX 观察；#54 已关闭，不在该 Issue 内扩成 heuristic parser；
-- Issue #56 的 v1 pre-coding gate 已在 Issue 评论中冻结：iOS Token memory-only/no Keychain、ephemeral URLSession、既有 confirmation binding 语义、fresh-preflight/stale-preview 规则、同仓库 `ios/` 原生 Swift/SwiftUI 结构；
+- Issue #56 的轻量 iOS companion 已完成实现、独立审阅、真机安装与真实主账号 Preview 验收；首个真实 iPhone Preview 结果为 `CREATE 0 / UPDATE 0 / ALREADY_MATCHING 12 / BLOCKED 0 / POST 0`，#56 已关闭；
+- iOS v1 Token 仍为 `SecureField` + process/session memory-only，不使用 Keychain/UserDefaults/文件/自动剪贴板读取；
 - phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_56_IMPLEMENT_IOS_COMPANION_OFFLINE
+ISSUE_60_FIRST_REAL_IPHONE_INTERPRETATION_WRITE_VALIDATION
 ```
 
-Issue #56 已完成 coding 前安全/设计门。当前唯一下一步是在**不读取真实 Token、不发送真实 Maimemo 请求、不执行真实主账号写入**的前提下，实现并离线测试第一版轻量 iOS companion：原生 Swift/SwiftUI、同仓库 `ios/` 目录、设备端直接调用已复核的 HTTPS Open API，并复现现有释义流程的安全语义。
+Issue #60 是当前唯一主线：使用 Owner **确实想录入或更新**的一条释义，在实体 iPhone 上先做真实 Preview，再根据该 Preview 单独获得针对**精确 operation group + item count** 的明确 Owner 写入授权，最后验证一次 iOS CREATE 或 UPDATE 的真实 POST + immediate readback + 墨墨 App 人工复核。
 
-实现评审通过后，第一项真实 iPhone 操作仍只能是 Owner 单独授权的 dry-run/Preview（0 POST）；真实 iPhone CREATE/UPDATE 需要之后再次明确授权。
+不得为了测试而制造无意义主账号数据。若 Owner 当前没有真实待录入/待更新项，就等待，不用 synthetic word 污染账号。
+
+Issue #60 本身不自动授权 POST。真实写入必须在 Preview 完成且结果符合预期后，由 Owner 再次明确授权；此前任何“继续”都不能跨过这个门。
 
 ## 4. Other active routes
 
@@ -81,14 +84,15 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 
 - 现有 CLI 主账号模式仍保持显式 opt-in、整批 preflight、exact preview、one POST per changed item、no POST retry、immediate readback；
 - macOS UI 的主账号 Token 只在本地 UI 进程内存中存在，通过 native hidden prompt 输入，不进入浏览器持久存储、日志或 Git；
-- iOS v1 Token 策略已冻结为 `SecureField` 输入 + process/session memory-only：不使用 Keychain/UserDefaults/文件/自动剪贴板读取，进入 background 即使 credential 与 preview 失效；
+- iOS v1 Token 仍为 `SecureField` 输入 + process/session memory-only：不使用 Keychain/UserDefaults/文件/自动剪贴板读取，进入 background 即使 credential 与 preview 失效；
 - iOS production networking 使用 ephemeral URLSession、ATS 默认安全策略和关闭的 reviewed host/path；
 - iOS Preview 不是授权；任何输入、credential、background 或既有执行变化都会使其失效，写入前必须 fresh preflight 并与原 preview binding 精确一致；
+- iOS destructive confirmation 是绑定当前 preview / operation group / session 的一次性结构门禁；
 - 当前 API 无账号身份端点，Token 实际所属账号仍由操作者负责确认；
 - 不开放 delete；没有自动 rollback；
 - update 只针对唯一明确的用户自建记录；歧义时停止；
 - 不修改墨墨内置释义；phrase/example automation 仍 blocked；
-- 新 iOS 代码路径在独立实现评审和 Owner 授权前不得执行真实主账号写入；
+- Issue #60 的首个真实 iPhone 写入只允许一个 genuine item、一个 operation group；Preview 后仍需新的精确 Owner 授权；
 - 真实写入不得因为换对话、文档更新或新 Agent 接管而自动授权。
 
 ## 6. Maintenance rule
