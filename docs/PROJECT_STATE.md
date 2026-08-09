@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-08-09
-sourceMainSha=e3884c14ecfef9d7e31d626c34be346b6c1b6992
+updatedAt=2026-08-10
+sourceMainSha=8c93a25fff4351293e73a6bf066ab91ad1b15db9
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,10 +24,10 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=e3884c14ecfef9d7e31d626c34be346b6c1b6992
+CURRENT_MAIN_AT_SNAPSHOT=8c93a25fff4351293e73a6bf066ab91ad1b15db9
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#63
-OPEN_PRODUCT_PR=#63 implementation pending Draft PR at state update
+CURRENT_PRIMARY_ISSUE=#66
+OPEN_PRODUCT_PR=#66 implementation pending Draft PR at state update
 ```
 
 当前已完成：
@@ -39,18 +39,19 @@ OPEN_PRODUCT_PR=#63 implementation pending Draft PR at state update
 - 当前 macOS UI 的直接聊天复制可能先于解析器丢失行边界，这是非阻断 UX 观察；#54 已关闭，不在该 Issue 内扩成 heuristic parser；
 - Issue #56 的轻量 iOS companion 已完成实现、独立审阅、真机安装与真实主账号 Preview 验收；首个真实 iPhone Preview 结果为 `CREATE 0 / UPDATE 0 / ALREADY_MATCHING 12 / BLOCKED 0 / POST 0`，#56 已关闭；
 - Issue #60 的真实 12 条 Preview 已观察到 `CREATE 9 / UPDATE 3`，没有点击执行按钮，也没有写入授权；
-- Issue #63 正在把 iOS Token 改为仅本设备 Keychain 持久化，并将长 demo-like 页面修复为紧凑日常界面；
+- Issue #63 的紧凑 iOS 日常界面和仅本设备 Keychain Token 持久化已经完成、合并并经真机确认；
+- Issue #66 是临时 UX/assets 修复门槛：后台保留只读 stale Preview 展示、清除全部执行授权，并加入暂定 AppIcon；
 - phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_63_IOS_COMPACT_KEYCHAIN_REPAIR_GATE
+ISSUE_66_STALE_PREVIEW_APPICON_REPAIR_GATE
 ```
 
-Issue #63 是当前修复门槛：完成紧凑 iOS 日常界面和仅本设备 Keychain Token 持久化，经独立审阅、合并、安装并由 Owner 重新 Preview 验收。
+Issue #66 是当前临时修复门槛：后台只保留进程内只读 Preview 展示，清除快照、session、确认与一次性 approval 等全部执行授权，并加入 Owner 选定的暂定 AppIcon。
 
-Issue #60 保持 OPEN 但暂停。#63 合并并安装后，必须从新的真实 Preview 恢复；此前观察到的 `CREATE 9 / UPDATE 3` 只是证据，不构成写入授权，任何旧授权均不得跨越本次修复。
+Issue #60 保持 OPEN 但暂停。#66 经独立审阅、合并并安装后，必须从新的真实 Preview 恢复；此前观察到的 `CREATE 9 / UPDATE 3` 只是证据，不构成写入授权，任何旧授权均不得跨越本次修复。
 
 ## 4. Other active routes
 
@@ -84,7 +85,7 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 - 现有 CLI 主账号模式仍保持显式 opt-in、整批 preflight、exact preview、one POST per changed item、no POST retry、immediate readback；
 - macOS UI 的主账号 Token 只在本地 UI 进程内存中存在，通过 native hidden prompt 输入，不进入浏览器持久存储、日志或 Git；
 - iOS Token 只保存为本设备 Keychain generic-password 项，使用 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` 且不同步；不进入 `UserDefaults`、文件、状态恢复、环境变量、argv、日志、分析、自动剪贴板读取或 URL/query；
-- iOS 进入 inactive/background 会取消未派发操作、清除瞬态 session credential，并使 Preview/approval 失效，但不删除 Keychain Token；前台解锁后可恢复连接；
+- iOS 进入 inactive/background 会取消未派发操作、清除瞬态 session credential、session ID、可执行 PreviewSnapshot、确认与 approval，但不删除 Keychain Token；已完成的 PreviewPresentation 只可作为进程内 stale/read-only 展示保留，前台解锁后恢复连接本身不能恢复执行授权；
 - iOS production networking 使用 ephemeral URLSession、ATS 默认安全策略和关闭的 reviewed host/path；
 - iOS Preview 不是授权；任何输入、credential、background 或既有执行变化都会使其失效，写入前必须 fresh preflight 并与原 preview binding 精确一致；
 - iOS destructive confirmation 是绑定当前 preview / operation group / session 的一次性结构门禁；
@@ -92,7 +93,7 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 - 不开放 delete；没有自动 rollback；
 - update 只针对唯一明确的用户自建记录；歧义时停止；
 - 不修改墨墨内置释义；phrase/example automation 仍 blocked；
-- Issue #60 在 #63 合并、安装和 fresh Preview 前保持暂停；恢复后首个真实 iPhone 写入仍只允许一个 genuine item、一个 operation group，并需新的精确 Owner 授权；
+- Issue #60 在 #66 合并、安装和 fresh Preview 前保持暂停；恢复后首个真实 iPhone 写入仍只允许一个 genuine item、一个 operation group，并需新的精确 Owner 授权；
 - 真实写入不得因为换对话、文档更新或新 Agent 接管而自动授权。
 
 ## 6. Maintenance rule

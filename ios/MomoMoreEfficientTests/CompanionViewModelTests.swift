@@ -133,44 +133,108 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 1"])
     }
 
-    func testInputEditImmediatelyInvalidatesPreview() async {
+    func testSourceEditClearsStalePreviewPresentation() async {
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
-        XCTAssertNotNil(model.preview)
+        model.enterBackground()
+        XCTAssertTrue(model.isPreviewStale)
+
         model.sourceText += "。"
+
         XCTAssertNil(model.preview)
+        XCTAssertFalse(model.isPreviewStale)
+        XCTAssertFalse(model.hasExecutablePreview)
     }
 
-    func testCredentialChangeImmediatelyInvalidatesPreview() async {
+    func testCredentialReplacementClearsStalePreviewPresentation() async {
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
+        model.enterBackground()
         XCTAssertNotNil(model.preview)
+        XCTAssertTrue(model.isPreviewStale)
+
         var replacement = "FAKE_REPLACEMENT_TOKEN_NOT_VALID"
         model.connect(token: &replacement)
+
         XCTAssertNil(model.preview)
+        XCTAssertFalse(model.isPreviewStale)
+        XCTAssertFalse(model.hasExecutablePreview)
         XCTAssertTrue(replacement.isEmpty)
     }
 
-    func testBackgroundClearsCredentialAndPreview() async {
+    func testBackgroundPreservesExpandedPresentationButClearsExecutionAuthorization() async {
+        let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = "word\nn. 新版"
+        await model.previewCurrentInput()
+        let presentation = model.preview
+        let row = try! XCTUnwrap(model.preview?.rows.first)
+        model.toggleDetails(for: row)
+        model.askToExecute(.update)
+
+        model.enterBackground()
+
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(model.preview, presentation)
+        XCTAssertEqual(model.expandedRowIDs, Set([row.id]))
+        XCTAssertTrue(model.isPreviewStale)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertNil(model.pendingConfirmation)
+        XCTAssertTrue(model.executionActions.isEmpty)
+        XCTAssertNil(model.executeConfirmed(.update))
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 0)
+    }
+
+    func testForegroundCredentialRestoreKeepsPreservedPreviewStaleAndReadOnly() async {
+        let store = FakeTokenStore()
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+        ])
+        let model = connectedModel(factory, tokenStore: store)
+        model.sourceText = "word\nn. 新建"
+        await model.previewCurrentInput()
+        model.enterBackground()
+
+        model.enterForeground()
+
+        XCTAssertTrue(model.isConnected)
+        XCTAssertNotNil(model.preview)
+        XCTAssertTrue(model.isPreviewStale)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertTrue(model.executionActions.isEmpty)
+    }
+
+    func testSuccessfulRepreviewUsesGETOnlyAndRestoresExecutableActions() async {
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
-        model.askToExecute(.create)
         model.enterBackground()
-        XCTAssertFalse(model.isConnected)
-        XCTAssertNil(model.preview)
-        XCTAssertNil(model.pendingConfirmation)
+        model.enterForeground()
+        XCTAssertTrue(model.executionActions.isEmpty)
+
+        await model.previewCurrentInput()
+
+        XCTAssertEqual(factory.transports.count, 2)
+        XCTAssertEqual(factory.transports[1].getCount, 2)
+        XCTAssertEqual(factory.transports[1].postCount, 0)
+        XCTAssertFalse(model.isPreviewStale)
+        XCTAssertTrue(model.hasExecutablePreview)
+        XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 0"])
     }
 
     func testBackgroundCancelsPreviewBeforeItsNextGET() async {
@@ -209,9 +273,14 @@ final class CompanionViewModelTests: XCTestCase {
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.askToExecute(.create)
+        model.enterBackground()
+        XCTAssertTrue(model.isPreviewStale)
+        model.enterForeground()
         model.removeToken()
         XCTAssertFalse(model.isConnected)
         XCTAssertNil(model.preview)
+        XCTAssertFalse(model.isPreviewStale)
+        XCTAssertFalse(model.hasExecutablePreview)
         XCTAssertNil(model.pendingConfirmation)
         XCTAssertFalse(store.hasStoredToken)
         XCTAssertEqual(store.deleteCount, 1)
