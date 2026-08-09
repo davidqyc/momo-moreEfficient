@@ -1,0 +1,45 @@
+{
+  "fake_token": "FAKE_IOS_GOLDEN_TOKEN_NOT_VALID",
+  "credential_fingerprint": "2ef9c6a52c8b19cb",
+  "vectors": [
+    {
+      "name": "main-create-two-items",
+      "group": "create",
+      "items": [
+        {
+          "spelling": "reclaim",
+          "interpretation": "v. 收回；重新获得",
+          "vocabulary_id": "INVALID_IOS_VOC_RECLAIM"
+        },
+        {
+          "spelling": "mass",
+          "interpretation": "adj. 大规模的\nn. 大量",
+          "vocabulary_id": "INVALID_IOS_VOC_MASS"
+        }
+      ],
+      "batch_digest": "e51db0dd441b2ab81fd4ec12418a8f56880963aa3a2ef3fbd2ebb9da187a3da9",
+      "binding_digest": "5be13649eeb778a1",
+      "confirmation": "CONFIRM MAIN CREATE 5be13649eeb778a1"
+    },
+    {
+      "name": "main-update-one-item",
+      "group": "update",
+      "items": [
+        {
+          "spelling": "conclude",
+          "interpretation": "v. 得出结论；结束",
+          "vocabulary_id": "INVALID_IOS_VOC_CONCLUDE",
+          "baseline": {
+            "record_id": "INVALID_IOS_RECORD_CONCLUDE",
+            "interpretation": "v. 结束（旧）",
+            "tags": ["考研"],
+            "status": "PUBLISHED"
+          }
+        }
+      ],
+      "batch_digest": "88c9f7860953cf81dabe8a7e07b72aabc5f76003e6420755b33386a18f54498f",
+      "binding_digest": "ff7d38746829e378",
+      "confirmation": "CONFIRM MAIN UPDATE ff7d38746829e378"
+    }
+  ]
+}
