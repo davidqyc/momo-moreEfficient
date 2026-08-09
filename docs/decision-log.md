@@ -157,3 +157,14 @@ Issue #6 的公开门槛原文写的是"Secrets are loaded only from environment
 - 删除能力仍然不开放；仍然没有自动回滚。
 - **账号身份仍然是操作者的责任**：当前开放 API 没有身份端点，导入器无法证明 Token 属于哪个账号，因此必须在登录目标主账号的前提下获取 Token。
 - `scripts/issue9_live_harness.py` 的副账号门禁不放宽，历史 spike/probe 工具仍然只能用于测试账号。
+
+## D-015：移动端采用轻量 iOS companion，不通过 Mac 局域网代理或云端 relay
+
+**日期：** 2026-08-09
+**状态：** 有效
+
+Issue #54 的 macOS 本地日常 UI 已完成真机验收后，Owner 明确选择“轻量 iOS companion”作为下一产品方向。移动端不把当前 Mac localhost 服务暴露到局域网，也不引入接收或保存 Maimemo Token 的云端 relay；目标是让 iPhone 作为独立 on-device companion，在设备本地完成输入、预览、确认，并直接调用同一开放 API。
+
+该移动端只迁移已经验证过的**产品安全语义**，不借机扩大功能：dry-run/Preview 0 POST、CREATE/UPDATE 分离、fresh preflight、stale preview 必须失效、每个变更项最多一次 POST、无 POST 重试、immediate authenticated readback、UPDATE 只针对唯一明确的用户自建记录、ALREADY_MATCHING 零写入、不开放 delete，phrase/example automation 继续 blocked。
+
+D-013 不能被机械照搬成“iOS 自动使用 Keychain”，也不能因为平台原生提供持久化能力就默认保存 Token。iOS 凭证输入和持久化策略必须先在 Issue #56 中单独确认；在新的 iOS 代码路径完成独立评审并获得 Owner 明确授权前，不得用它执行真实主账号写入。
