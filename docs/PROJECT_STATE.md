@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-09
-sourceMainSha=651259b43a7e15cea9d19eae052a75ca95fcd3c7
+sourceMainSha=8d5112ad3ce2185f34c7759e302d17bb5a1515dc
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,9 +24,9 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=651259b43a7e15cea9d19eae052a75ca95fcd3c7
+CURRENT_MAIN_AT_SNAPSHOT=8d5112ad3ce2185f34c7759e302d17bb5a1515dc
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#51
+CURRENT_PRIMARY_ISSUE=#54
 OPEN_PRODUCT_PR=none at snapshot
 ```
 
@@ -36,26 +36,17 @@ OPEN_PRODUCT_PR=none at snapshot
 - 副账号 create / update / immediate readback 的真实端到端验证已经完成；
 - 仓库已经公开，v0.1.0 release markers 已完成；
 - Issue #51 的**显式主账号 opt-in** 实现已经通过独立 PASS 并合入 `main`；
+- Issue #51 的真实主账号闭环已经完成：dry-run 12 条 / 0 POST、CREATE 9/9、UPDATE 3/3，Owner 在 App 侧复核显示正确；
 - D-014 已进入 `docs/decision-log.md`：主账号必须显式 `--allow-main-account`，并保持 fail-closed 账号标签和原有写入安全模型；
 - `scripts/issue9_live_harness.py` 仍保持副账号/测试账号专用，未被主账号路径放宽。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_51_FIRST_REAL_MAIN_ACCOUNT_BATCH
+ISSUE_54_BUILD_AND_REVIEW_DAILY_LOCAL_UI
 ```
 
-Issue #51 保持 OPEN，直到 Owner 用**真实想录入的主账号批次**完成：
-
-1. 立即执行 fresh terms/pricing check；
-2. 对该真实批次运行 `dry-run`，必须 0 POST；
-3. 独立检查分类、账号标签、preview、数量和准备写入的内容；
-4. 只有 Owner 明确确认安全后，才对**同一真实批次**运行一次匹配的 `create` 或 `update`；
-5. 使用既有 one-POST/no-retry/immediate-readback 机制确认结果。
-
-不要为了验证主账号路径而创建无意义的 synthetic/test vocabulary。
-
-这一步涉及真实主账号 Token 和真实账号写入，**必须由 Owner 在运行时明确参与**；会话接管或文档更新不构成 live-write 授权。
+Issue #51 已完成并关闭。当前唯一下一步是实现、离线验证和审阅 Issue #54 的日常本地 UI：使用 Python 标准库 localhost 适配层和 macOS 双击启动器，保持既有导入器为唯一写入安全权威。该实现 Issue 不读取真实 Token、不发送真实墨墨请求，也不执行真实主账号批次。
 
 ## 4. Other active routes
 
