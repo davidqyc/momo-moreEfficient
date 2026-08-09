@@ -324,19 +324,28 @@ final class BindingAndExecutionTests: XCTestCase {
         XCTAssertEqual(requests.suffix(2).map(\.route.method), [.post, .get])
     }
 
-    func testProductionSourcesContainNoPersistenceOrForbiddenRouteAPIs() throws {
+    func testProductionSourcesContainNoUnreviewedPersistenceOrForbiddenRouteAPIs() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceRoot = testsDirectory.deletingLastPathComponent().appendingPathComponent("MomoMoreEfficient")
         let files = try FileManager.default.subpathsOfDirectory(atPath: sourceRoot.path)
             .filter { $0.hasSuffix(".swift") }
-        let source = try files.map {
-            try String(contentsOf: sourceRoot.appendingPathComponent($0), encoding: .utf8)
-        }.joined(separator: "\n")
+        let sources = try Dictionary(uniqueKeysWithValues: files.map {
+            (
+                $0,
+                try String(contentsOf: sourceRoot.appendingPathComponent($0), encoding: .utf8)
+            )
+        })
+        let source = sources.values.joined(separator: "\n")
         for forbidden in [
-            "UserDefaults", "Keychain", "SecItem", "UIPasteboard", "os_log",
+            "UserDefaults", "UIPasteboard", "os_log", "FileManager.default",
+            "write(to:", "NSUbiquitousKeyValueStore",
             "localStorage", "/open/api/v1/phrases", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
+        }
+        for (path, contents) in sources where path != "Core/TokenStore.swift" {
+            XCTAssertFalse(contents.contains("SecItem"), path)
+            XCTAssertFalse(contents.contains("kSecAttr"), path)
         }
     }
 

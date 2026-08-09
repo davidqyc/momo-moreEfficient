@@ -4,6 +4,31 @@ import XCTest
 
 let fakeToken = "FAKE_IOS_TEST_TOKEN_NOT_VALID"
 
+final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
+    private var token: String?
+    private(set) var saveCount = 0
+    private(set) var deleteCount = 0
+
+    init(token: String? = nil) {
+        self.token = token
+    }
+
+    func loadToken() throws -> String? { token }
+
+    func saveToken(_ token: String) throws {
+        self.token = token
+        saveCount += 1
+    }
+
+    func deleteToken() throws {
+        token = nil
+        deleteCount += 1
+    }
+
+    var hasStoredToken: Bool { token != nil }
+    var debugDescription: String { "FakeTokenStore(<redacted>)" }
+}
+
 enum StubbedResult {
     case response(TransportResponse)
     case failure(CompanionError)

@@ -26,6 +26,7 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
     case transport
     case responseRejected
     case uncertainWriteOutcome
+    case credentialStorageUnavailable
 
     var description: String {
         switch self {
@@ -51,7 +52,31 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
             return "服务返回无法安全确认；操作已停止。"
         case .uncertainWriteOutcome:
             return "写入结果无法确认；不要重试，操作已停止。"
+        case .credentialStorageUnavailable:
+            return "无法安全访问设备上的 Token；请解锁设备后重试。"
         }
+    }
+}
+
+enum LocalParseState: Equatable, Sendable {
+    case empty
+    case valid(count: Int, first: String, last: String)
+    case invalid
+
+    var message: String? {
+        switch self {
+        case .empty:
+            return nil
+        case let .valid(count, first, last):
+            return "已识别 \(count) 条 · \(first) → \(last)"
+        case .invalid:
+            return "无法识别当前输入"
+        }
+    }
+
+    var isValid: Bool {
+        if case .valid = self { return true }
+        return false
     }
 }
 
@@ -67,6 +92,15 @@ enum PreviewClassification: String, Codable, Equatable, Sendable {
     case update = "UPDATE"
     case alreadyMatching = "ALREADY_MATCHING"
     case blocked = "BLOCKED"
+
+    var compactLabel: String {
+        switch self {
+        case .create: return "新建"
+        case .update: return "更新"
+        case .alreadyMatching: return "一致"
+        case .blocked: return "阻断"
+        }
+    }
 }
 
 struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
@@ -78,6 +112,20 @@ struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
     let reason: String?
 
     var id: Int { ordinal }
+
+    var canExpand: Bool {
+        classification == .create || classification == .update
+    }
+
+    var compactBlockedReason: String? {
+        guard classification == .blocked else { return nil }
+        return reason == "AMBIGUOUS" ? "存在多条自建释义" : "无法安全读取"
+    }
+}
+
+struct PreviewRowDetails: Equatable, Sendable {
+    let current: String?
+    let proposed: String
 }
 
 struct PreviewCounts: Codable, Equatable, Sendable {
@@ -95,6 +143,14 @@ struct PreviewPresentation: Codable, Equatable, Sendable {
 enum OperationGroup: String, Equatable, Sendable {
     case create
     case update
+}
+
+struct ExecutionAction: Equatable, Identifiable, Sendable {
+    let group: OperationGroup
+    let count: Int
+
+    var id: String { group.rawValue }
+    var title: String { group == .create ? "新建 \(count)" : "更新 \(count)" }
 }
 
 enum WriteOutcome: String, Equatable, Sendable {

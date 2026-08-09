@@ -70,6 +70,7 @@ final class BatchParserTests: XCTestCase {
     func testCredentialMovesToDedicatedObjectAndEditableStringClears() throws {
         var draft = fakeToken
         let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
             transportFactory: { FakeHTTPTransport([]) },
             sleeperFactory: { RecordingSleeper() }
         )
