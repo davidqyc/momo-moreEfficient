@@ -88,8 +88,13 @@ struct ContentView: View {
                         "新建成功 \(viewModel.finalSummary.created) / "
                             + "更新成功 \(viewModel.finalSummary.updated) / "
                             + "已一致 \(viewModel.finalSummary.alreadyMatching) / "
-                            + "失败 \(viewModel.finalSummary.failed)"
+                            + "失败 \(viewModel.finalSummary.failed) / "
+                            + "未执行 \(viewModel.finalSummary.notAttempted)"
                     )
+                    if let stoppedMessage = viewModel.finalSummary.stoppedMessage {
+                        Text(stoppedMessage)
+                            .foregroundStyle(.orange)
+                    }
                     if let message = viewModel.errorMessage {
                         Text(message).foregroundStyle(.red)
                     }
@@ -137,7 +142,7 @@ struct ContentView: View {
         ) {
             if let group = viewModel.pendingConfirmation {
                 Button(group == .create ? "确认执行新建" : "确认执行更新", role: .destructive) {
-                    Task { await viewModel.executeConfirmed(group) }
+                    viewModel.executeConfirmed(group)
                 }
             }
             Button("取消", role: .cancel) { viewModel.cancelPendingConfirmation() }

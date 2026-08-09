@@ -19,6 +19,7 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
     case credentialRejected
     case notConnected
     case previewRequired
+    case approvalRequired
     case stalePreview
     case blocked
     case cancelled
@@ -36,6 +37,8 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
             return "请先连接主账号。"
         case .previewRequired:
             return "请先预览当前输入。"
+        case .approvalRequired:
+            return "请从当前预览重新发起原生确认；未发送写请求。"
         case .stalePreview:
             return "预览已失效；未发送写请求，请重新预览。"
         case .blocked:
@@ -131,6 +134,15 @@ struct FinalSummary: Equatable, Sendable {
     var updated = 0
     var alreadyMatching = 0
     var failed = 0
+    var notAttempted = 0
+    var stopped = false
+
+    var completedWrites: Int { created + updated }
+
+    var stoppedMessage: String? {
+        guard stopped else { return nil }
+        return "执行已停止：已完成 \(completedWrites) 条，其余 \(notAttempted) 条未执行。"
+    }
 }
 
 struct VocabularyRecord: Equatable, Sendable {
