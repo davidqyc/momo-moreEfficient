@@ -1,0 +1,185 @@
+import Foundation
+
+final class ExecutionControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancellationRequested = false
+    private var postInFlight = false
+
+    func requestCancellation() {
+        lock.lock()
+        cancellationRequested = true
+        lock.unlock()
+    }
+
+    func allowsPreflightRequest() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !cancellationRequested && !postInFlight
+    }
+
+    func beginPostIfAllowed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancellationRequested, !postInFlight else { return false }
+        postInFlight = true
+        return true
+    }
+
+    func allowsInFlightReadback() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return postInFlight
+    }
+
+    func finishPostResolution() {
+        lock.lock()
+        postInFlight = false
+        lock.unlock()
+    }
+
+    var isCancellationRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancellationRequested
+    }
+}
+struct WriteExecutor {
+    let api: MaimemoTransport
+
+    func execute(
+        group: OperationGroup,
+        displayedSnapshot: PreviewSnapshot,
+        approval: NativeApproval,
+        control: ExecutionControl
+    ) async -> ExecutionSummary {
+        do {
+            let expectedApproval = try ConfirmationBinding.makeApproval(
+                snapshot: displayedSnapshot,
+                group: group
+            )
+            guard approval == expectedApproval else {
+                return .stale(group)
+            }
+
+            let entries = displayedSnapshot.items.map(\.entry)
+            let fresh = try await PreflightPlanner(api: api).buildSnapshot(
+                entries: entries,
+                credentialFingerprint: displayedSnapshot.credentialFingerprint,
+                control: control
+            )
+            guard fresh == displayedSnapshot,
+                  try ConfirmationBinding.snapshotIdentity(fresh) == approval.snapshotIdentity
+            else {
+                return .stale(group)
+            }
+            let freshPlan = try ConfirmationBinding.makePlan(snapshot: fresh, group: group)
+            guard freshPlan.bindingDigest == approval.bindingDigest else {
+                return .stale(group)
+            }
+            return await perform(plan: freshPlan, control: control)
+        } catch CompanionError.cancelled {
+            return ExecutionSummary(
+                group: group,
+                succeeded: 0,
+                failed: 0,
+                cancelled: true,
+                stalePreview: false,
+                results: []
+            )
+        } catch {
+            return ExecutionSummary(
+                group: group,
+                succeeded: 0,
+                failed: 1,
+                cancelled: false,
+                stalePreview: false,
+                results: []
+            )
+        }
+    }
+
+    private func perform(
+        plan: ConfirmationPlan,
+        control: ExecutionControl
+    ) async -> ExecutionSummary {
+        var results: [ItemExecutionResult] = []
+        var succeeded = 0
+        var failed = 0
+
+        for item in plan.items {
+            if control.isCancellationRequested {
+                results.append(ItemExecutionResult(spelling: item.spelling, outcome: .notAttempted))
+                break
+            }
+            do {
+                let route: InterpretationRoute
+                switch plan.group {
+                case .create:
+                    route = .createInterpretation
+                case .update:
+                    guard let recordID = item.baseline?.id else {
+                        throw CompanionError.blocked
+                    }
+                    route = .updateInterpretation(recordID: recordID)
+                }
+                let body = try ConfirmationBinding.requestData(item, group: plan.group)
+                let dispatch = await api.post(route: route, body: body, control: control)
+                guard dispatch != .notDispatched else {
+                    results.append(
+                        ItemExecutionResult(spelling: item.spelling, outcome: .notAttempted)
+                    )
+                    break
+                }
+
+                let records: [InterpretationRecord]
+                do {
+                    records = try await api.interpretations(
+                        vocabularyID: item.vocabularyID,
+                        control: control,
+                        readback: true
+                    )
+                } catch {
+                    control.finishPostResolution()
+                    failed += 1
+                    results.append(
+                        ItemExecutionResult(spelling: item.spelling, outcome: .notVerified)
+                    )
+                    break
+                }
+                control.finishPostResolution()
+
+                guard records.count == 1,
+                      records[0].matchesIntendedState(item.interpretation),
+                      plan.group != .update || records[0].id == item.baseline?.id
+                else {
+                    failed += 1
+                    results.append(
+                        ItemExecutionResult(spelling: item.spelling, outcome: .notVerified)
+                    )
+                    break
+                }
+                succeeded += 1
+                results.append(
+                    ItemExecutionResult(
+                        spelling: item.spelling,
+                        outcome: dispatch == .clean ? .confirmed : .recovered
+                    )
+                )
+            } catch {
+                if control.allowsInFlightReadback() { control.finishPostResolution() }
+                failed += 1
+                results.append(ItemExecutionResult(spelling: item.spelling, outcome: .notVerified))
+                break
+            }
+        }
+
+        return ExecutionSummary(
+            group: plan.group,
+            succeeded: succeeded,
+            failed: failed,
+            cancelled: control.isCancellationRequested,
+            stalePreview: false,
+            results: results
+        )
+    }
+}
