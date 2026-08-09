@@ -168,3 +168,14 @@ Issue #54 的 macOS 本地日常 UI 已完成真机验收后，Owner 明确选�
 该移动端只迁移已经验证过的**产品安全语义**，不借机扩大功能：dry-run/Preview 0 POST、CREATE/UPDATE 分离、fresh preflight、stale preview 必须失效、每个变更项最多一次 POST、无 POST 重试、immediate authenticated readback、UPDATE 只针对唯一明确的用户自建记录、ALREADY_MATCHING 零写入、不开放 delete，phrase/example automation 继续 blocked。
 
 D-013 不能被机械照搬成“iOS 自动使用 Keychain”，也不能因为平台原生提供持久化能力就默认保存 Token。iOS 凭证输入和持久化策略必须先在 Issue #56 中单独确认；在新的 iOS 代码路径完成独立评审并获得 Owner 明确授权前，不得用它执行真实主账号写入。
+
+## D-016：iOS Token 改为仅本设备 Keychain 持久化
+
+**日期：** 2026-08-09
+**状态：** 有效
+
+Issue #60 的实体 iPhone 日常体验证明，iOS v1 每次锁屏或进入后台后都必须重新输入 Token，已经不可接受。Owner 在 Issue #63 中明确接受 iOS companion 使用产品专用 Keychain 项保存 Token。
+
+iOS production Keychain 项固定使用 `kSecClassGenericPassword`、项目自有的 service/account、`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，并明确关闭 synchronizable；它只在本设备解锁可用，不通过同步或备份迁移到其他设备。进入后台或锁屏仍会取消未派发操作、使 Preview 与一次性 destructive approval 失效，并清除瞬态 session credential，但不删除已保存 Token；回到前台并解锁后可自动恢复连接。界面必须提供“更换 Token”和“移除 Token”，移除会删除 Keychain 项及瞬态凭证状态。
+
+本决定只取代 D-015 / iOS v1 中 memory-only 的那一部分。D-013 的 CLI `getpass` 契约和 macOS localhost UI 的进程内存凭证策略均不改变；Token 仍不得进入 `UserDefaults`、文件、argv、环境变量、日志、分析、自动剪贴板读取、URL/query 或公开 UI/ViewModel 状态。

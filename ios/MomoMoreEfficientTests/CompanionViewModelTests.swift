@@ -3,6 +3,136 @@ import XCTest
 
 @MainActor
 final class CompanionViewModelTests: XCTestCase {
+    func testTokenStorePersistsAcrossViewModelReconstruction() {
+        let store = FakeTokenStore()
+        var draft = fakeToken
+        let first = CompanionViewModel(tokenStore: store)
+        first.connect(token: &draft)
+
+        let reconstructed = CompanionViewModel(tokenStore: store)
+
+        XCTAssertTrue(first.isConnected)
+        XCTAssertTrue(reconstructed.isConnected)
+        XCTAssertTrue(draft.isEmpty)
+        XCTAssertEqual(store.saveCount, 1)
+    }
+
+    func testBackgroundKeepsPersistedTokenAndForegroundRestoresConnection() {
+        let store = FakeTokenStore()
+        let model = CompanionViewModel(tokenStore: store)
+        var draft = fakeToken
+        model.connect(token: &draft)
+
+        model.enterBackground()
+
+        XCTAssertFalse(model.isConnected)
+        XCTAssertTrue(store.hasStoredToken)
+        XCTAssertEqual(store.deleteCount, 0)
+
+        model.enterForeground()
+
+        XCTAssertTrue(model.isConnected)
+        XCTAssertTrue(store.hasStoredToken)
+    }
+
+    func testLocalParseAcknowledgementReportsCountAndEndpoints() {
+        let model = CompanionViewModel(tokenStore: FakeTokenStore())
+        model.sourceText = "sphere\nn. 球体\nracket\nn. 球拍"
+
+        XCTAssertEqual(
+            model.localParseState,
+            .valid(count: 2, first: "sphere", last: "racket")
+        )
+        XCTAssertEqual(model.localParseState.message, "已识别 2 条 · sphere → racket")
+
+        model.sourceText = "sphere\nnot deterministic"
+        XCTAssertEqual(model.localParseState, .invalid)
+    }
+
+    func testPreviewLoadingStateIsImmediatelyVisibleAndPreventsDuplicateStart() async {
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "word"),
+            interpretationsResponse([]),
+        ])
+        let gate = GateSleeper()
+        let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            transportFactory: { transport },
+            sleeperFactory: { gate }
+        )
+        var draft = fakeToken
+        model.connect(token: &draft)
+        model.sourceText = "word\nn. 新建"
+
+        let task = Task { await model.previewCurrentInput() }
+        await gate.waitUntilEntered()
+
+        XCTAssertTrue(model.isBusy)
+        XCTAssertTrue(model.isPreviewing)
+        XCTAssertTrue(model.isShowingEditor)
+
+        await model.previewCurrentInput()
+        XCTAssertEqual(transport.getCount, 1)
+
+        model.enterBackground()
+        await gate.resume()
+        await task.value
+        XCTAssertFalse(model.isPreviewing)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testSuccessfulPreviewCollapsesEditorAndBuildsCompactHeader() async {
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([])],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = "sphere\nn. 球体"
+
+        await model.previewCurrentInput()
+
+        XCTAssertFalse(model.isShowingEditor)
+        XCTAssertEqual(model.previewHeader, "1 条释义 · sphere → sphere")
+        model.editInput()
+        XCTAssertTrue(model.isShowingEditor)
+    }
+
+    func testCompactRowsHideBodiesUntilExpanded() async {
+        let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = "word\nn. 新版"
+        await model.previewCurrentInput()
+        let row = try! XCTUnwrap(model.preview?.rows.first)
+
+        XCTAssertEqual(row.classification.compactLabel, "更新")
+        XCTAssertNil(model.details(for: row))
+
+        model.toggleDetails(for: row)
+
+        XCTAssertEqual(
+            model.details(for: row),
+            PreviewRowDetails(current: "n. 旧版", proposed: "n. 新版")
+        )
+    }
+
+    func testExecutionControlsRemainSeparateCreateAndUpdateActions() async {
+        let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
+        let factory = SequencedTransportFactory([
+            [
+                vocabularyResponse("INVALID_VOC_A", "create"), interpretationsResponse([]),
+                vocabularyResponse("INVALID_VOC_B", "update"), interpretationsResponse([old]),
+            ],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = "create\nn. 新建\nupdate\nn. 新版"
+        await model.previewCurrentInput()
+
+        XCTAssertEqual(model.executionActions.map(\.group), [.create, .update])
+        XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 1"])
+    }
+
     func testInputEditImmediatelyInvalidatesPreview() async {
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
@@ -50,6 +180,7 @@ final class CompanionViewModelTests: XCTestCase {
         ])
         let gate = GateSleeper()
         let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
             transportFactory: { transport },
             sleeperFactory: { gate }
         )
@@ -69,18 +200,21 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertNil(model.preview)
     }
 
-    func testExplicitDisconnectDoesTheSameImmediately() async {
+    func testExplicitRemoveDeletesCredentialAndPreview() async {
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
         ])
-        let model = connectedModel(factory)
+        let store = FakeTokenStore()
+        let model = connectedModel(factory, tokenStore: store)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.askToExecute(.create)
-        model.disconnect()
+        model.removeToken()
         XCTAssertFalse(model.isConnected)
         XCTAssertNil(model.preview)
         XCTAssertNil(model.pendingConfirmation)
+        XCTAssertFalse(store.hasStoredToken)
+        XCTAssertEqual(store.deleteCount, 1)
     }
 
     func testCompletedCreateInvalidatesExecutablePreview() async {
@@ -344,11 +478,17 @@ final class CompanionViewModelTests: XCTestCase {
         let rendered = String(describing: model.preview)
             + String(describing: model.finalSummary)
             + String(describing: model.errorMessage)
+            + model.debugDescription
+            + FakeTokenStore(token: fakeToken).debugDescription
         XCTAssertFalse(rendered.contains(fakeToken))
     }
 
-    private func connectedModel(_ factory: SequencedTransportFactory) -> CompanionViewModel {
+    private func connectedModel(
+        _ factory: SequencedTransportFactory,
+        tokenStore: FakeTokenStore = FakeTokenStore()
+    ) -> CompanionViewModel {
         let model = CompanionViewModel(
+            tokenStore: tokenStore,
             transportFactory: factory.make,
             sleeperFactory: { RecordingSleeper() }
         )
@@ -361,6 +501,7 @@ final class CompanionViewModelTests: XCTestCase {
     private func connectedModel(transports: [HTTPTransport]) -> CompanionViewModel {
         var remaining = transports
         let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
             transportFactory: { remaining.removeFirst() },
             sleeperFactory: { RecordingSleeper() }
         )

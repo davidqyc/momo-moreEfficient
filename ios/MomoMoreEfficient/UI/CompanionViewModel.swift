@@ -1,20 +1,28 @@
 import Foundation
 
 @MainActor
-final class CompanionViewModel: ObservableObject {
+final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published var sourceText = "" {
         didSet {
-            if sourceText != oldValue { invalidatePreview() }
+            if sourceText != oldValue {
+                updateLocalParseState()
+                invalidatePreview()
+            }
         }
     }
     @Published private(set) var isConnected = false
     @Published private(set) var preview: PreviewPresentation?
     @Published private(set) var finalSummary = FinalSummary()
     @Published private(set) var isBusy = false
-    @Published var errorMessage: String?
+    @Published private(set) var isPreviewing = false
+    @Published private(set) var localParseState: LocalParseState = .empty
+    @Published private(set) var expandedRowIDs = Set<Int>()
+    @Published private(set) var hasExecutionFeedback = false
+    @Published private(set) var errorMessage: String?
     @Published private(set) var pendingConfirmation: OperationGroup?
 
     private let credentialSession = CredentialSession()
+    private let tokenStore: TokenStore
     private let transportFactory: () -> HTTPTransport
     private let sleeperFactory: () -> RequestSleeper
     private var snapshot: PreviewSnapshot?
@@ -28,51 +36,73 @@ final class CompanionViewModel: ObservableObject {
     }
 
     init(
+        tokenStore: TokenStore = KeychainTokenStore(),
         transportFactory: @escaping () -> HTTPTransport = { URLSessionHTTPTransport() },
         sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() }
     ) {
+        self.tokenStore = tokenStore
         self.transportFactory = transportFactory
         self.sleeperFactory = sleeperFactory
+        restoreCredentialIfAvailable()
     }
 
     func connect(token: inout String) {
-        defer { token.removeAll(keepingCapacity: false) }
+        var candidate = token
+        token.removeAll(keepingCapacity: false)
+        defer { candidate.removeAll(keepingCapacity: false) }
+        clearTransientCredential()
         do {
-            activeControl?.requestCancellation()
-            try credentialSession.connect(token: token)
+            try credentialSession.connect(token: candidate)
+            try tokenStore.saveToken(candidate)
             sessionID = UUID()
             isConnected = true
             errorMessage = nil
-            invalidatePreview()
+        } catch let error as CompanionError {
+            credentialSession.disconnect()
+            sessionID = nil
+            isConnected = false
+            errorMessage = error.description
         } catch {
             credentialSession.disconnect()
             sessionID = nil
             isConnected = false
-            invalidatePreview()
-            errorMessage = CompanionError.credentialRejected.description
+            errorMessage = CompanionError.credentialStorageUnavailable.description
         }
     }
 
-    func disconnect() {
+    func removeToken() {
+        guard !isBusy else { return }
         activeControl?.requestCancellation()
-        credentialSession.disconnect()
-        sessionID = nil
-        isConnected = false
         invalidatePreview()
+        do {
+            try tokenStore.deleteToken()
+            credentialSession.disconnect()
+            sessionID = nil
+            isConnected = false
+            errorMessage = nil
+        } catch {
+            errorMessage = CompanionError.credentialStorageUnavailable.description
+        }
     }
 
     func enterBackground() {
-        disconnect()
+        clearTransientCredential()
+    }
+
+    func enterForeground() {
+        restoreCredentialIfAvailable()
     }
 
     func previewCurrentInput() async {
         guard !isBusy else { return }
         isBusy = true
+        isPreviewing = true
         errorMessage = nil
         let control = ExecutionControl()
         activeControl = control
         defer {
             if activeControl === control { activeControl = nil }
+            isPreviewing = false
             isBusy = false
         }
 
@@ -98,6 +128,8 @@ final class CompanionViewModel: ObservableObject {
             }
             snapshot = built
             preview = built.presentation
+            expandedRowIDs.removeAll()
+            hasExecutionFeedback = false
             finalSummary = FinalSummary(
                 created: 0,
                 updated: 0,
@@ -236,6 +268,7 @@ final class CompanionViewModel: ObservableObject {
         succeeded: Int,
         failed: Int
     ) {
+        hasExecutionFeedback = true
         let selectedCount = displayed.items(for: group).count
         let notAttempted = max(0, selectedCount - succeeded - failed)
         if group == .create { finalSummary.created += succeeded }
@@ -249,9 +282,46 @@ final class CompanionViewModel: ObservableObject {
         invalidateArmedApproval()
     }
 
+    var isShowingEditor: Bool { preview == nil }
+
+    var previewHeader: String? {
+        guard let rows = preview?.rows,
+              let first = rows.first?.spelling,
+              let last = rows.last?.spelling
+        else { return nil }
+        return "\(rows.count) 条释义 · \(first) → \(last)"
+    }
+
+    var executionActions: [ExecutionAction] {
+        guard let counts = preview?.counts else { return [] }
+        return [
+            ExecutionAction(group: .create, count: counts.create),
+            ExecutionAction(group: .update, count: counts.update),
+        ]
+    }
+
+    func editInput() {
+        invalidatePreview()
+    }
+
+    func toggleDetails(for row: PreviewRow) {
+        guard row.canExpand else { return }
+        if expandedRowIDs.contains(row.id) {
+            expandedRowIDs.remove(row.id)
+        } else {
+            expandedRowIDs.insert(row.id)
+        }
+    }
+
+    func details(for row: PreviewRow) -> PreviewRowDetails? {
+        guard row.canExpand, expandedRowIDs.contains(row.id) else { return nil }
+        return PreviewRowDetails(current: row.current, proposed: row.proposed)
+    }
+
     private func invalidatePreview() {
         snapshot = nil
         preview = nil
+        expandedRowIDs.removeAll()
         invalidateArmedApproval()
     }
 
@@ -265,4 +335,58 @@ final class CompanionViewModel: ObservableObject {
         invalidateArmedApproval()
         return intent
     }
+
+    private func updateLocalParseState() {
+        guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            localParseState = .empty
+            return
+        }
+        do {
+            let entries = try BatchParser.parseDailyInput(sourceText).entries
+            guard let first = entries.first?.spelling,
+                  let last = entries.last?.spelling
+            else {
+                localParseState = .invalid
+                return
+            }
+            localParseState = .valid(count: entries.count, first: first, last: last)
+        } catch {
+            localParseState = .invalid
+        }
+    }
+
+    private func clearTransientCredential() {
+        activeControl?.requestCancellation()
+        credentialSession.disconnect()
+        sessionID = nil
+        isConnected = false
+        invalidatePreview()
+    }
+
+    private func restoreCredentialIfAvailable() {
+        guard !credentialSession.isConnected else { return }
+        do {
+            guard var token = try tokenStore.loadToken() else {
+                isConnected = false
+                return
+            }
+            defer { token.removeAll(keepingCapacity: false) }
+            try credentialSession.connect(token: token)
+            sessionID = UUID()
+            isConnected = true
+            errorMessage = nil
+        } catch let error as CompanionError {
+            credentialSession.disconnect()
+            sessionID = nil
+            isConnected = false
+            errorMessage = error.description
+        } catch {
+            credentialSession.disconnect()
+            sessionID = nil
+            isConnected = false
+            errorMessage = CompanionError.credentialStorageUnavailable.description
+        }
+    }
+
+    nonisolated var debugDescription: String { "CompanionViewModel(<redacted credential>)" }
 }
