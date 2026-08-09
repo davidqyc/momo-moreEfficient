@@ -9,6 +9,8 @@ An independent command-line utility for safer batch publishing of user-curated v
 > **当前版本：v0.1.0。** 释义批量录入闭环（`dry-run` / `create` / `update`）已经在副账号上完成真实端到端验证，是本版本唯一支持的能力。例句/短语自动化仍被阻断，桌面快速查词尚未开始实现。
 >
 > **未发布（`main` 分支）：** 同一条闭环新增了显式的主账号 opt-in `--allow-main-account`（默认关闭）。不给该开关时行为与 `v0.1.0` 完全一致。见[主账号模式](#4-主账号模式显式-opt-in)与 [#51](https://github.com/davidqyc/momo-moreEfficient/issues/51)。
+>
+> **Issue #54 开发中：** `main` 之上的开发分支正在加入一个 macOS 本地日常 UI。它只是现有导入器的 localhost 适配层，不改变 `v0.1.0`、不增加第二套写入逻辑，也不是 Issue #5 的桌面查词功能。
 
 ## v0.1.0 支持什么
 
@@ -28,15 +30,15 @@ An independent command-line utility for safer batch publishing of user-curated v
 
 - **例句/短语自动化**：不支持，且被刻意阻断。真实验证发现例句创建后，鉴权回读拿不到完整的 `MBA` + `BEC` + `GMAT` 标签集，且 `highlight`（英文目标词位置）缺失，公开 CREATE 契约也没有可写的 highlight 字段。在这些语义位置要求解决前发布例句自动化，会静默产出标注错误的例句。详见 [#2](https://github.com/davidqyc/momo-moreEfficient/issues/2) 和 [#4](https://github.com/davidqyc/momo-moreEfficient/issues/4)。
 - **桌面快速查词**：属于未来工作，**尚未实现、未随本版本发布**。详见 [#5](https://github.com/davidqyc/momo-moreEfficient/issues/5)。
-- 删除能力、自动回滚引擎、GUI、数据库、服务端、通用 Maimemo 客户端库：都不在范围内。
+- 删除能力、自动回滚引擎、数据库、远程服务端、通用 Maimemo 客户端库：都不在范围内。`v0.1.0` 发布包本身不含 GUI；Issue #54 的未发布本地 UI 见下文。
 
 ## 环境要求
 
 - **Python 3.13，仅标准库**。没有第三方依赖，没有安装步骤，不需要虚拟环境。
 - 一个墨墨开放 API Token。**默认只接受副账号 / 测试账号**；主账号需要显式 opt-in，见[主账号模式](#4-主账号模式显式-opt-in)。
-- 一个交互式终端（工具会拒绝在非 TTY 环境下运行）。
+- CLI 使用需要交互式终端（工具会拒绝在非 TTY 环境下运行）；Issue #54 的本地 UI 正常使用不需要打开 Terminal。
 
-**推荐并经 CI 验证的运行时是 Python 3.13**：GitHub Actions 在每次 push / PR 上用 Python 3.13 跑完整的 469 个离线测试。
+**推荐并经 CI 验证的运行时是 Python 3.13**：GitHub Actions 在每次 push / PR 上用 Python 3.13 跑完整离线测试套件。
 
 Python 3.9 只作为**遗留兼容性**记录：它曾是本项目早期的验证目标，但已于 2025-10-31 结束生命周期（EOL），不再接收安全更新，因此**不推荐**用它运行本工具。除 3.13 外的其他版本均未经验证，本项目不声称支持某个宽泛的版本区间。
 
@@ -72,6 +74,30 @@ n. 流动性；变现能力
 - 同一批次中拼写重复会被拒绝（`duplicate-spelling`）。
 
 ## 使用方法
+
+### 未发布：macOS 本地日常 UI（Issue #54）
+
+首次只需在仓库目录运行一次启动器生成命令：
+
+```bash
+python3 scripts/install_macos_launcher.py
+```
+
+它会在 `~/Applications/momo-moreEfficient.app` 创建一个透明的本地 `.app` 包装器；仓库不提交编译后的应用。之后双击该应用即可在后台启动只绑定 `127.0.0.1` 随机端口的本地服务，并用默认浏览器打开一页式界面，不会留下 Terminal 窗口。若仓库被移动或 Python 不可用，启动器会显示 macOS 错误对话框。
+
+日常流程：
+
+```text
+双击应用 → 粘贴释义 → 连接主账号 → 预览
+→ 检查 CREATE / UPDATE / ALREADY_MATCHING / BLOCKED
+→ 分别执行新建和/或更新 → 查看摘要
+```
+
+UI 额外接受两种边界明确的日常粘贴格式。原有格式仍可用空行分隔每个词：第一行是拼写，其余行原样作为释义。紧凑格式可以不留空行，但每条释义行必须以封闭白名单中的词性标记开头（至少包括 `n.`、`v.`、`adj.`、`adv.`、`phr.`；另支持少量已审阅标记），下一个不以词性标记开头的非空行才会开始新词。例如 `reclaim / v. 收回 / mass / adj. 大规模的` 会稳定解析为两条。释义行的字节内容不会被改写；缺少释义、末尾只有拼写或其他含糊输入会 fail closed。也可继续直接粘贴下文的 canonical `## spelling` Markdown。
+
+“连接主账号”会调用静态 `osascript` 隐藏答案对话框。Token 只留在本地 UI Python 进程内存，不进入浏览器、argv、环境变量、文件、钥匙串、剪贴板、日志或浏览器存储。当前本地进程的随机会话能力保留在 URL fragment 中，因此刷新能恢复连接状态，但 fragment 不会随 HTTP 请求发送；页面也不会把它写入任何浏览器存储。仅可见页面发送心跳：页面关闭或长期隐藏后，服务在 5 分钟无活动时清除 Token 和预览授权，之后无法写入；点击“退出”会立即清除并停止服务。Preview 只有 GET、0 POST；执行按钮会 fresh preflight，并仅在完整计划与已显示计划严格一致时，把该计划自己的精确确认值交回既有确认门禁。CREATE 和 UPDATE 仍是两次独立底层操作。
+
+以下三种命令行模式仍是发布版和自动化使用的正式接口：
 
 三种模式共用同一条命令，只有 `--mode` 不同。`--allow-network` 是必须显式给出的开关；不给就不会创建任何网络传输层。
 

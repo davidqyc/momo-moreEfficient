@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>momo-moreEfficient</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">本地工具 · 主账号</p>
+      <h1>momo-moreEfficient</h1>
+      <p class="lede">粘贴你写好的释义，先预览，再分别执行新建或更新。</p>
+    </header>
+
+    <section class="panel input-panel" aria-labelledby="input-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="input-title">批次内容</h2>
+          <p>支持现有 <code>## word</code> Markdown、空行分块，或以 <code>n.</code> / <code>v.</code> / <code>adj.</code> 等词性开头的紧凑粘贴格式。</p>
+        </div>
+        <span id="connection-state" class="status-pill">未连接</span>
+      </div>
+      <label class="sr-only" for="batch-input">词汇释义批次</label>
+      <textarea id="batch-input" spellcheck="false" placeholder="reclaim&#10;v. 收回；重新获得&#10;&#10;mass&#10;adj. 大规模的&#10;n. 大量"></textarea>
+      <div class="toolbar">
+        <button id="connect-button" class="button secondary" type="button">连接主账号</button>
+        <button id="preview-button" class="button primary" type="button" disabled>预览</button>
+        <button id="quit-button" class="button quiet" type="button">退出本地服务</button>
+      </div>
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="preview-panel" class="panel hidden" aria-labelledby="preview-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">只读预览 · 0 POST</p>
+          <h2 id="preview-title">变更计划</h2>
+        </div>
+        <div id="counts" class="counts"></div>
+      </div>
+      <div id="rows" class="rows"></div>
+      <div class="actions">
+        <button id="create-button" class="button create" type="button" disabled>执行新建（0）</button>
+        <button id="update-button" class="button update" type="button" disabled>执行更新（0）</button>
+      </div>
+    </section>
+
+    <section id="result-panel" class="panel result-panel hidden" aria-labelledby="result-title">
+      <p class="eyebrow">本次结果</p>
+      <h2 id="result-title">执行摘要</h2>
+      <p id="result-summary" class="result-summary"></p>
+      <p class="result-note">遇到失败会停止剩余写入；不会自动重试、回滚或删除。</p>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
