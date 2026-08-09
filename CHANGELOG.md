@@ -15,14 +15,21 @@
   - 独立的确认串 `CONFIRM MAIN CREATE <16 位十六进制>` / `CONFIRM MAIN UPDATE <16 位十六进制>`；其摘要覆盖与副账号确认相同的完整绑定，并额外绑定账号模式。副账号确认串无法授权主账号运行，主账号确认串也无法授权副账号运行。
   - 本地脱敏运行报告新增 `account_mode` 字段（`secondary` / `main`）；账号标签本身仍然不落盘。
 - 26 个针对主账号 opt-in 的离线测试，总数由 443 增至 469。
+- macOS 本地日常 UI（Issue #54）：标准库 localhost 适配层 + 双击 `.app` 启动器，复用现有导入器作为唯一写入安全权威；支持 mixed Preview、分离 CREATE/UPDATE、native hidden Token prompt、fresh preflight、stale-preview 失效和 bounded in-memory credential lifecycle。
+- Issue #54 已完成 Owner 真机产品验收：`~/Applications/momo-moreEfficient.app` 双击启动成功且普通使用无 Terminal，真实主账号 12 条批次 Preview 结果为 `新建 0 / 更新 0 / 已一致 12 / 失败 0`，本次 acceptance 未执行写入，渲染内容与预期一致。
 
 ### Unchanged
 
 - 写入安全模型没有任何放宽：整批 preflight、每个待写条目最多一次 POST、不重试、写后立即鉴权回读、任一阻断项都在第一个 POST 之前中止、失败即停止、不回滚、不删除。
-- 凭证策略沿用 D-013：只走隐藏 `getpass`，仅存进程内存，不经 argv、环境变量、`.env`、配置文件、剪贴板或钥匙串。
+- 凭证策略沿用 D-013；macOS UI 通过 native hidden prompt 读取主账号 Token，Token 仅留在本地 UI 进程内存，不进入浏览器持久存储、日志或 Git。
 - `scripts/issue9_live_harness.py` 的副账号门禁未放宽，历史 spike/probe 工具仍然只能用于测试账号。
 - 仍然没有账号身份接口，因此本工具**不能**证明 Token 属于哪个墨墨账号；账号身份由操作者负责。
 - 仍然没有删除路径、没有自动回滚、没有例句/短语请求路径。
+
+### Known limitations
+
+- 从部分聊天/网页渲染直接复制时，源端可能在文本到达本地 UI textarea 前折叠行边界；下载的 text/Markdown 或其他保留换行的来源可正常解析。该现象不作为启用 heuristic parser 的理由。
+- 当前已验收的日常 UI 是 macOS 本地应用路径；iOS companion 作为后续独立产品任务由 Issue #56 跟踪，尚未实现。
 
 ## [0.1.0] - 2026-08-09
 
@@ -65,9 +72,9 @@
 - 没有跨账号标签发现能力——公开 API 未提供该端点。
 - 没有账号身份接口，因此 `--account-label` 只能防止人工过程中拿错凭证，不能证明 Token 属于哪个账号。
 - 单批上限 30 条（典型 8–15 条）。
-- 需要交互式终端；非 TTY 环境会被拒绝。
+- v0.1.0 CLI 需要交互式终端；非 TTY 环境会被拒绝。后续 `main` 已加入通过真机验收的 macOS 本地日常 UI，普通 UI 使用不要求 Terminal。
 - 自动化测试当前只在 **Python 3.13** 上验证（CI 与推荐运行时）。Python 3.9 仅作为遗留兼容性记录，已于 2025-10-31 EOL、不再接收安全更新，不推荐使用；其他版本未经验证。
-- 真实运行验证均在副账号完成，批次规模为最小的 3 条；主账号接入需要单独评审。
+- v0.1.0 发布时的真实运行验证在副账号完成；后续 `main` 已完成单独评审的真实主账号验证：dry-run 12 条 / 0 POST、CREATE 9/9、UPDATE 3/3，并完成 macOS UI 真实主账号 Preview 验收。
 
 [Unreleased]: https://github.com/davidqyc/momo-moreEfficient/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/davidqyc/momo-moreEfficient/releases/tag/v0.1.0

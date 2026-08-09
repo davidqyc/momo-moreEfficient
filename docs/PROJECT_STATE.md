@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-09
-sourceMainSha=8d5112ad3ce2185f34c7759e302d17bb5a1515dc
+sourceMainSha=9336a00fa6b9c1c35fd1dd74261b90e91e07bcfe
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,29 +24,30 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=8d5112ad3ce2185f34c7759e302d17bb5a1515dc
+CURRENT_MAIN_AT_SNAPSHOT=9336a00fa6b9c1c35fd1dd74261b90e91e07bcfe
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#54
-OPEN_PRODUCT_PR=none at snapshot
+CURRENT_PRIMARY_ISSUE=#56
+OPEN_PRODUCT_PR=none at checkpoint snapshot
 ```
 
 当前已完成：
 
 - `v0.1.0` 的核心释义批量录入闭环已经成立：`dry-run / create / update`；
 - 副账号 create / update / immediate readback 的真实端到端验证已经完成；
-- 仓库已经公开，v0.1.0 release markers 已完成；
-- Issue #51 的**显式主账号 opt-in** 实现已经通过独立 PASS 并合入 `main`；
-- Issue #51 的真实主账号闭环已经完成：dry-run 12 条 / 0 POST、CREATE 9/9、UPDATE 3/3，Owner 在 App 侧复核显示正确；
-- D-014 已进入 `docs/decision-log.md`：主账号必须显式 `--allow-main-account`，并保持 fail-closed 账号标签和原有写入安全模型；
-- `scripts/issue9_live_harness.py` 仍保持副账号/测试账号专用，未被主账号路径放宽。
+- Issue #51 的显式主账号 opt-in 与真实主账号闭环已经完成：dry-run 12 条 / 0 POST、CREATE 9/9、UPDATE 3/3；
+- Issue #54 的 macOS 本地日常 UI 已合并并完成 Owner 真机验收：`.app` 双击启动、native hidden Token prompt、真实主账号 12 条 Preview，结果 `新建 0 / 更新 0 / 已一致 12 / 失败 0`，本次 acceptance 无写入；
+- 当前 macOS UI 的直接聊天复制可能先于解析器丢失行边界，这是非阻断 UX 观察；#54 已关闭，不在该 Issue 内扩成 heuristic parser；
+- phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_54_BUILD_AND_REVIEW_DAILY_LOCAL_UI
+ISSUE_56_DEFINE_IOS_COMPANION_SECURITY_AND_PROJECT_SHAPE
 ```
 
-Issue #51 已完成并关闭。当前唯一下一步是实现、离线验证和审阅 Issue #54 的日常本地 UI：使用 Python 标准库 localhost 适配层和 macOS 双击启动器，保持既有导入器为唯一写入安全权威。该实现 Issue 不读取真实 Token、不发送真实墨墨请求，也不执行真实主账号批次。
+Owner 已明确选择**轻量 iOS companion**作为下一产品方向，Issue #56 已建立。当前唯一下一步是在开始 coding 前，把 iOS 端的凭证输入/持久化边界、确认绑定映射、stale-preview/fresh-preflight 机制以及项目/target 结构定死并写入 #56；本 checkpoint 本身不启动实现，也不授权新的真实 iPhone 写入。
+
+已接受的移动端方向是：iPhone 作为独立 on-device companion 直接调用开放 API；不把 Mac localhost 服务暴露到局域网，也不引入接收/保存 Token 的云端 relay。
 
 ## 4. Other active routes
 
@@ -65,7 +66,7 @@ Issue #4 = BLOCKED_BY_ISSUE_2
 Issue #5 = OPEN / NOT_STARTED
 ```
 
-仍是后续独立能力，不得抢在当前主账号释义录入闭环之前扩大技术栈。
+仍是后续独立能力，不得自动并入 iOS companion。
 
 ### Codex for Open Source
 
@@ -77,14 +78,14 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 
 ## 5. Safety boundaries that remain current
 
-- Token 只通过隐藏交互式 `getpass` 输入，memory-only；不从 argv/env/.env/config/clipboard/Keychain 读取；
-- 主账号模式必须显式 `--allow-main-account` + 经复核的主账号标签；
+- 现有 CLI 主账号模式仍保持显式 opt-in、整批 preflight、exact preview、one POST per changed item、no POST retry、immediate readback；
+- macOS UI 的主账号 Token 只在本地 UI 进程内存中存在，通过 native hidden prompt 输入，不进入浏览器持久存储、日志或 Git；
 - 当前 API 无账号身份端点，Token 实际所属账号仍由操作者负责确认；
 - 不开放 delete；没有自动 rollback；
 - update 只针对唯一明确的用户自建记录；歧义时停止；
-- whole-batch preflight、exact preview、one POST per changed item、no POST retry、immediate readback 保持；
-- 不修改墨墨内置释义；
-- phrase/example automation 仍 blocked；
+- 不修改墨墨内置释义；phrase/example automation 仍 blocked；
+- Issue #56 只确定 iOS companion 方向；iOS 凭证持久化策略尚未接受，不得因为平台提供 Keychain 就自动启用；
+- 新 iOS 代码路径在独立评审和 Owner 授权前不得执行真实主账号写入；
 - 真实写入不得因为换对话、文档更新或新 Agent 接管而自动授权。
 
 ## 6. Maintenance rule
