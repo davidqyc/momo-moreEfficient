@@ -62,6 +62,25 @@ struct ContentView: View {
         } message: {
             Text("将重新完整预检；只有结果与当前预览严格一致时才会顺序写入。每项最多一次 POST，不重试。")
         }
+        .confirmationDialog(
+            viewModel.pendingBatchConfirmation?.title ?? "确认执行？",
+            isPresented: Binding(
+                get: { viewModel.pendingBatchConfirmation != nil },
+                set: { if !$0 { viewModel.cancelPendingConfirmation() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pending = viewModel.pendingBatchConfirmation {
+                Button(pending.actionTitle, role: .destructive) {
+                    viewModel.executeConfirmedWholePlan()
+                }
+            }
+            Button("取消", role: .cancel) { viewModel.cancelPendingConfirmation() }
+        } message: {
+            // One approval, stating the total, both memberships and the digest that
+            // commits it to this exact Preview and to both subplans.
+            Text(viewModel.pendingBatchConfirmation?.message ?? "")
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
@@ -255,10 +274,14 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     ForEach(viewModel.executionActions) { action in
                         Button(action.title) {
-                            viewModel.askToExecute(action.group)
+                            if action.coversWholePlan {
+                                viewModel.askToExecuteWholePlan()
+                            } else if let group = action.group {
+                                viewModel.askToExecute(group)
+                            }
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(action.group == .create ? .blue : .orange)
+                        .tint(action.group == .update ? .orange : .blue)
                         .frame(maxWidth: .infinity)
                         .disabled(action.count == 0 || viewModel.isBusy)
                     }

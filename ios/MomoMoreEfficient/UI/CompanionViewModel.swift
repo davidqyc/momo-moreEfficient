@@ -21,6 +21,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var hasExecutionFeedback = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var pendingConfirmation: OperationGroup?
+    @Published private(set) var pendingBatchConfirmation: PendingBatchConfirmation?
     @Published private(set) var isPreviewStale = false
     @Published private(set) var history: [ExecutionReceipt] = []
     @Published private(set) var completionAcknowledgement: String?
@@ -40,6 +41,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private var activeControl: ExecutionControl?
     private var sessionID: UUID?
     private var armedApproval: ArmedApprovalIntent?
+    private var armedBatchApproval: ArmedBatchApprovalIntent?
     /// Set when the app left the foreground while an authorized batch or an active
     /// Preview was running. The transient credential teardown is owed but
     /// deliberately postponed until that work resolves, so that scene changes
@@ -52,6 +54,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     private struct ArmedApprovalIntent {
         let approval: NativeApproval
+        let sessionID: UUID
+    }
+
+    /// One native confirmation covering the whole displayed plan (#76). The armed
+    /// value is the only authorization the run ever uses; it is consumed once and
+    /// is never re-minted, broadened or re-derived on the Owner's behalf.
+    private struct ArmedBatchApprovalIntent {
+        let approval: BatchPlanApproval
         let sessionID: UUID
     }
 
@@ -285,6 +295,288 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
     }
 
+    /// Arms the single whole-plan approval a mixed batch is executed with (#76).
+    ///
+    /// Exactly one native confirmation is prepared here. Nothing later mints a
+    /// second one, and nothing reuses the CREATE portion as UPDATE permission:
+    /// the armed value records each phase's own binding digest, and each phase is
+    /// admitted only by reproducing its own digest from a fresh authenticated read.
+    func askToExecuteWholePlan() {
+        invalidateArmedApproval()
+        guard let snapshot,
+              let sessionID,
+              isConnected,
+              !isBusy
+        else { return }
+        do {
+            let plan = try ConfirmationBinding.makeBatchPlan(snapshot: snapshot)
+            armedBatchApproval = ArmedBatchApprovalIntent(
+                approval: try ConfirmationBinding.makeBatchApproval(snapshot: snapshot),
+                sessionID: sessionID
+            )
+            pendingBatchConfirmation = PendingBatchConfirmation(
+                createSpellings: plan.plan(for: .create)?.items.map(\.spelling) ?? [],
+                updateSpellings: plan.plan(for: .update)?.items.map(\.spelling) ?? [],
+                bindingDigest: plan.bindingDigest
+            )
+            errorMessage = nil
+        } catch let error as CompanionError {
+            errorMessage = error.description
+        } catch {
+            errorMessage = CompanionError.responseRejected.description
+        }
+    }
+
+    /// Runs the whole approved plan: CREATE phase, then UPDATE phase, with no
+    /// second user gesture between them.
+    @discardableResult
+    func executeConfirmedWholePlan() -> Task<Void, Never>? {
+        guard !isBusy else { return nil }
+        let intent = consumeArmedBatchApproval()
+        guard let displayed = snapshot,
+              let currentSessionID = sessionID,
+              let intent,
+              intent.sessionID == currentSessionID
+        else {
+            errorMessage = CompanionError.approvalRequired.description
+            return nil
+        }
+        do {
+            guard intent.approval
+                == (try ConfirmationBinding.makeBatchApproval(snapshot: displayed))
+            else {
+                errorMessage = CompanionError.stalePreview.description
+                return nil
+            }
+        } catch let error as CompanionError {
+            errorMessage = error.description
+            return nil
+        } catch {
+            errorMessage = CompanionError.responseRejected.description
+            return nil
+        }
+        isBusy = true
+        isExecuting = true
+        // Visible immediately, before the first await. The whole-batch preflight
+        // that follows is a real network pass over every approved item; it is only
+        // its *presentation* that is collapsed to one compact stage.
+        executionStage = .securing
+        errorMessage = nil
+        historyErrorMessage = nil
+        let control = ExecutionControl()
+        activeControl = control
+
+        // One finite assertion for the whole orchestration. The UPDATE phase does
+        // not lose protection merely because CREATE handed over to it.
+        let assertion = backgroundAssertionFactory()
+        assertion.begin(reason: "momo-interpretation-write-plan") {
+            control.requestCancellation()
+        }
+
+        return Task {
+            await executeAuthorizedPlan(
+                displayed: displayed,
+                intent: intent,
+                control: control,
+                assertion: assertion
+            )
+        }
+    }
+
+    private func executeAuthorizedPlan(
+        displayed: PreviewSnapshot,
+        intent: ArmedBatchApprovalIntent,
+        control: ExecutionControl,
+        assertion: BackgroundExecutionAssertion
+    ) async {
+        var receipts: [ExecutionReceipt] = []
+        var fullySucceeded = false
+        let progress = ExecutionProgressReporter { [weak self] stage in
+            Task { @MainActor [weak self] in
+                guard let self, self.isExecuting else { return }
+                self.executionStage = stage
+            }
+        }
+        do {
+            let lease = try credentialSession.makeOperationLease()
+            defer { lease.clear() }
+            // One transport for the whole run, so pacing carries across phases.
+            let api = MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                sleeper: sleeperFactory()
+            )
+            let result = await WriteExecutor(api: api).executeBatchPlan(
+                displayedSnapshot: displayed,
+                approval: intent.approval,
+                control: control,
+                progress: progress
+            )
+            if result.outcome == .stale {
+                errorMessage = CompanionError.stalePreview.description
+            } else {
+                receipts = recordBatchExecution(
+                    displayed: displayed,
+                    plannedPhases: intent.approval.phases.map(\.group),
+                    result: result
+                )
+                fullySucceeded = result.isFullSuccess
+                errorMessage = batchErrorMessage(for: result)
+            }
+        } catch let error as CompanionError {
+            if control.isCancellationRequested, let first = intent.approval.phases.first {
+                receipts = recordBatchExecution(
+                    displayed: displayed,
+                    plannedPhases: intent.approval.phases.map(\.group),
+                    result: BatchRunResult(
+                        outcome: .stoppedBeforeRemainingPhase(
+                            group: first.group,
+                            reason: .interrupted
+                        ),
+                        phases: []
+                    )
+                )
+            } else {
+                errorMessage = error.description
+            }
+        } catch {
+            errorMessage = CompanionError.responseRejected.description
+        }
+        assertion.end()
+        activeControl = nil
+        isBusy = false
+        isExecuting = false
+        executionStage = nil
+        invalidatePreview()
+        if !receipts.isEmpty,
+           let document = recoverableSourceDocument(
+               after: receipts,
+               plannedPhases: intent.approval.phases.map(\.group),
+               in: displayed,
+               fullySucceeded: fullySucceeded
+           ) {
+            // Replacing the draft detaches the inline feedback, which is right for
+            // a fresh start but must not erase the outcome of the run that just
+            // produced this remainder.
+            let carried = (
+                historyError: historyErrorMessage,
+                error: errorMessage,
+                hasFeedback: hasExecutionFeedback,
+                summary: finalSummary
+            )
+            sourceText = document
+            historyErrorMessage = carried.historyError
+            errorMessage = carried.error
+            hasExecutionFeedback = carried.hasFeedback
+            finalSummary = carried.summary
+        }
+        if fullySucceeded, !receipts.isEmpty {
+            completionAcknowledgement = acknowledgement(forBatch: receipts)
+        }
+        if owesBackgroundTeardown {
+            owesBackgroundTeardown = false
+            clearTransientCredential(preservingPreviewPresentation: true)
+        }
+    }
+
+    /// Receipts stay per phase, so CREATE and UPDATE remain distinguishable in
+    /// History even though the Owner initiated one run. A phase that never
+    /// started gets no receipt at all — there is never a fake success.
+    private func recordBatchExecution(
+        displayed: PreviewSnapshot,
+        plannedPhases: [OperationGroup],
+        result: BatchRunResult
+    ) -> [ExecutionReceipt] {
+        var receipts = result.phases.map {
+            appendReceipt(group: $0.group, displayed: displayed, result: $0)
+        }
+        if case let .stoppedBeforeRemainingPhase(group, reason) = result.outcome,
+           reason == .interrupted,
+           result.phases.isEmpty {
+            // Interrupted before the first phase could start: the existing
+            // all-items-not-attempted receipt, unchanged.
+            receipts = [
+                appendReceipt(
+                    group: group,
+                    displayed: displayed,
+                    result: cancelledSummary(for: group)
+                ),
+            ]
+        }
+
+        let created = receipts.first { $0.operationGroup == .create }?.succeeded ?? 0
+        let updated = receipts.first { $0.operationGroup == .update }?.succeeded ?? 0
+        let attempted = Set(receipts.map(\.operationGroup))
+        let neverStarted = plannedPhases
+            .filter { !attempted.contains($0) }
+            .reduce(0) { $0 + displayed.items(for: $1).count }
+        let fullySucceeded = result.isFullSuccess && neverStarted == 0
+
+        if fullySucceeded {
+            hasExecutionFeedback = false
+            finalSummary = FinalSummary()
+        } else {
+            hasExecutionFeedback = true
+            finalSummary = FinalSummary(
+                created: created,
+                updated: updated,
+                alreadyMatching: 0,
+                failed: receipts.reduce(0) { $0 + $1.failed },
+                notAttempted: receipts.reduce(0) { $0 + $1.notAttempted } + neverStarted,
+                stopped: true
+            )
+        }
+        return receipts
+    }
+
+    private func batchErrorMessage(for result: BatchRunResult) -> String? {
+        if case let .stoppedBeforeRemainingPhase(_, reason) = result.outcome {
+            switch reason {
+            case .remainingPhaseChanged:
+                return CompanionError.remainingPhaseChanged.description
+            case .interrupted:
+                return result.phases.isEmpty ? nil : CompanionError.cancelled.description
+            case .earlierPhaseIncomplete:
+                break
+            }
+        }
+        return result.phases.contains { $0.failed > 0 }
+            ? CompanionError.uncertainWriteOutcome.description
+            : nil
+    }
+
+    /// What may safely be left in the editor for a later, freshly previewed
+    /// attempt.
+    ///
+    /// `nil` leaves the draft exactly as the Owner typed it. Trimming happens only
+    /// where an earlier phase committed completely, so nothing that might still be
+    /// pending is ever dropped.
+    private func recoverableSourceDocument(
+        after receipts: [ExecutionReceipt],
+        plannedPhases: [OperationGroup],
+        in displayed: PreviewSnapshot,
+        fullySucceeded: Bool
+    ) -> String? {
+        if fullySucceeded { return "" }
+        let firstIncomplete = plannedPhases.firstIndex { group in
+            receipts.first { $0.operationGroup == group }?.isFullSuccess != true
+        }
+        guard let firstIncomplete, firstIncomplete > 0 else { return nil }
+        let remaining = plannedPhases[firstIncomplete...]
+            .flatMap { displayed.items(for: $0).map(\.entry) }
+            .sorted { $0.ordinal < $1.ordinal }
+        return BatchParser.canonicalDocument(for: remaining)
+    }
+
+    private func acknowledgement(forBatch receipts: [ExecutionReceipt]) -> String {
+        guard receipts.count > 1 else {
+            return receipts.first.map { acknowledgement(for: $0) } ?? ""
+        }
+        let created = receipts.first { $0.operationGroup == .create }?.succeeded ?? 0
+        let updated = receipts.first { $0.operationGroup == .update }?.succeeded ?? 0
+        return "已完成 \(created + updated) 条 · 新建 \(created) · 更新 \(updated)"
+    }
+
     @discardableResult
     func executeConfirmed(_ group: OperationGroup) -> Task<Void, Never>? {
         guard !isBusy else { return nil }
@@ -318,7 +610,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         isExecuting = true
         // Visible immediately, before the first await, so the UI never sits in an
         // unexplained disabled state.
-        executionStage = .preflight(group: group, entry: 1, total: displayed.items.count)
+        executionStage = .securing
         errorMessage = nil
         historyErrorMessage = nil
         let control = ExecutionControl()
@@ -430,7 +722,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     @discardableResult
-    private func recordExecution(
+    private func appendReceipt(
         group: OperationGroup,
         displayed: PreviewSnapshot,
         result: ExecutionSummary
@@ -448,7 +740,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         } catch {
             historyErrorMessage = "历史记录保存失败"
         }
+        return receipt
+    }
 
+    @discardableResult
+    private func recordExecution(
+        group: OperationGroup,
+        displayed: PreviewSnapshot,
+        result: ExecutionSummary
+    ) -> ExecutionReceipt {
+        let receipt = appendReceipt(group: group, displayed: displayed, result: result)
         if receipt.isFullSuccess {
             hasExecutionFeedback = false
             finalSummary = FinalSummary()
@@ -510,6 +811,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
               isConnected
         else { return [] }
         let counts = snapshot.presentation.counts
+        // A mixed actionable batch offers exactly one primary action covering the
+        // whole displayed plan (#76). Single-group batches keep the original
+        // controls unchanged and gain no extra step.
+        if counts.create > 0, counts.update > 0 {
+            return [ExecutionAction(createCount: counts.create, updateCount: counts.update)]
+        }
         return [
             ExecutionAction(group: .create, count: counts.create),
             ExecutionAction(group: .update, count: counts.update),
@@ -570,10 +877,18 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func invalidateArmedApproval() {
         armedApproval = nil
         pendingConfirmation = nil
+        armedBatchApproval = nil
+        pendingBatchConfirmation = nil
     }
 
     private func consumeArmedApproval() -> ArmedApprovalIntent? {
         let intent = armedApproval
+        invalidateArmedApproval()
+        return intent
+    }
+
+    private func consumeArmedBatchApproval() -> ArmedBatchApprovalIntent? {
+        let intent = armedBatchApproval
         invalidateArmedApproval()
         return intent
     }
