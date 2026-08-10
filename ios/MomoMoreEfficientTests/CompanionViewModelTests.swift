@@ -323,6 +323,217 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(historyStore.saveCount, 1)
     }
 
+    func testMixedCreateSuccessPreservesOnlyUpdateUntilFreshPreviewThenFinalSuccessClears() async throws {
+        let createBodyA = "n. 新建一  \n\n   缩进保留"
+        let updateBody = "v. 更新正文  \n\n   原样缩进\nn. 第二行"
+        let createBodyB = "adj. 新建二\n  尾行"
+        let source = [
+            "## Create-First\n\(createBodyA)",
+            "## UpDate.Exact\n\(updateBody)",
+            "## create-last\n\(createBodyB)",
+        ].joined(separator: "\n\n")
+        let expectedRemainder = "## UpDate.Exact\n\(updateBody)"
+        let oldUpdate = interpretation("INVALID_RECORD_UPDATE", "v. 旧版", tags: ["考研"])
+        let fullPreflight: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_CREATE_A", "Create-First"),
+            interpretationsResponse([]),
+            vocabularyResponse("INVALID_VOC_UPDATE", "UpDate.Exact"),
+            interpretationsResponse([oldUpdate]),
+            vocabularyResponse("INVALID_VOC_CREATE_B", "create-last"),
+            interpretationsResponse([]),
+        ]
+        let historyStore = InMemoryHistoryStore()
+        let factory = SequencedTransportFactory([
+            fullPreflight,
+            fullPreflight + [
+                jsonResponse([:], status: 201),
+                interpretationsResponse([
+                    interpretation("INVALID_RECORD_CREATE_A", createBodyA),
+                ]),
+                jsonResponse([:], status: 201),
+                interpretationsResponse([
+                    interpretation("INVALID_RECORD_CREATE_B", createBodyB),
+                ]),
+            ],
+            [
+                vocabularyResponse("INVALID_VOC_UPDATE", "UpDate.Exact"),
+                interpretationsResponse([oldUpdate]),
+            ],
+            [
+                vocabularyResponse("INVALID_VOC_UPDATE", "UpDate.Exact"),
+                interpretationsResponse([oldUpdate]),
+                jsonResponse([:]),
+                interpretationsResponse([
+                    interpretation("INVALID_RECORD_UPDATE", updateBody),
+                ]),
+            ],
+        ])
+        let model = connectedModel(factory, historyStore: historyStore)
+        model.sourceText = source
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+
+        await model.executeConfirmed(.create)?.value
+
+        XCTAssertEqual(factory.transports.count, 2)
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 2)
+        XCTAssertEqual(model.sourceText, expectedRemainder)
+        let preserved = try BatchParser.parseDailyInput(model.sourceText).entries
+        XCTAssertEqual(preserved.map(\.spelling), ["UpDate.Exact"])
+        XCTAssertEqual(preserved.map(\.interpretation), [updateBody])
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(historyStore.saveCount, 1)
+        XCTAssertEqual(model.history.first?.operationGroup, .create)
+        XCTAssertEqual(
+            model.history.first?.items.map(\.spelling),
+            ["Create-First", "create-last"]
+        )
+        XCTAssertEqual(model.completionAcknowledgement, "已新建 2 条")
+        XCTAssertNil(model.preview)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertTrue(model.executionActions.isEmpty)
+        XCTAssertNil(model.pendingConfirmation)
+        XCTAssertNil(model.executeConfirmed(.update))
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 2)
+
+        await model.previewCurrentInput()
+
+        XCTAssertEqual(factory.transports.count, 3)
+        XCTAssertEqual(factory.transports[2].getCount, 2)
+        XCTAssertEqual(factory.transports[2].postCount, 0)
+        XCTAssertEqual(model.preview?.counts, PreviewCounts(
+            create: 0,
+            update: 1,
+            alreadyMatching: 0,
+            blocked: 0
+        ))
+        XCTAssertTrue(model.hasExecutablePreview)
+        XCTAssertEqual(model.executionActions.first { $0.group == .update }?.count, 1)
+        XCTAssertNil(model.pendingConfirmation)
+        model.askToExecute(.update)
+
+        await model.executeConfirmed(.update)?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 3)
+        XCTAssertEqual(model.history.count, 2)
+        XCTAssertEqual(historyStore.saveCount, 2)
+        XCTAssertEqual(model.history.map(\.operationGroup), [.update, .create])
+        XCTAssertEqual(model.sourceText, "")
+        XCTAssertEqual(model.localParseState, .empty)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertEqual(model.completionAcknowledgement, "已更新 1 条 · UpDate.Exact")
+    }
+
+    func testMixedUpdateSuccessPreservesCreateEntriesInOriginalOrderAndExactBodies() async throws {
+        let createBodyA = "n. 第一条  \n\n   缩进 A"
+        let updateBody = "v. 更新目标"
+        let createBodyB = "phr. 第二条\n  缩进 B  "
+        let source = [
+            "## Zeta.Create\n\(createBodyA)",
+            "## Middle-UPDATE\n\(updateBody)",
+            "## alpha.Create\n\(createBodyB)",
+        ].joined(separator: "\n\n")
+        let expectedRemainder = [
+            "## Zeta.Create\n\(createBodyA)",
+            "## alpha.Create\n\(createBodyB)",
+        ].joined(separator: "\n\n")
+        let oldUpdate = interpretation("INVALID_RECORD_UPDATE", "v. 旧目标", tags: ["考研"])
+        let fullPreflight: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_CREATE_A", "Zeta.Create"),
+            interpretationsResponse([]),
+            vocabularyResponse("INVALID_VOC_UPDATE", "Middle-UPDATE"),
+            interpretationsResponse([oldUpdate]),
+            vocabularyResponse("INVALID_VOC_CREATE_B", "alpha.Create"),
+            interpretationsResponse([]),
+        ]
+        let historyStore = InMemoryHistoryStore()
+        let factory = SequencedTransportFactory([
+            fullPreflight,
+            fullPreflight + [
+                jsonResponse([:]),
+                interpretationsResponse([
+                    interpretation("INVALID_RECORD_UPDATE", updateBody),
+                ]),
+            ],
+            [
+                vocabularyResponse("INVALID_VOC_CREATE_A", "Zeta.Create"),
+                interpretationsResponse([]),
+                vocabularyResponse("INVALID_VOC_CREATE_B", "alpha.Create"),
+                interpretationsResponse([]),
+            ],
+        ])
+        let model = connectedModel(factory, historyStore: historyStore)
+        model.sourceText = source
+        await model.previewCurrentInput()
+        model.askToExecute(.update)
+
+        await model.executeConfirmed(.update)?.value
+
+        XCTAssertEqual(factory.transports.count, 2)
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.sourceText, expectedRemainder)
+        let preserved = try BatchParser.parseDailyInput(model.sourceText).entries
+        XCTAssertEqual(preserved.map(\.spelling), ["Zeta.Create", "alpha.Create"])
+        XCTAssertEqual(preserved.map(\.interpretation), [createBodyA, createBodyB])
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(historyStore.saveCount, 1)
+        XCTAssertEqual(model.history.first?.operationGroup, .update)
+        XCTAssertEqual(model.history.first?.items.map(\.spelling), ["Middle-UPDATE"])
+        XCTAssertEqual(model.completionAcknowledgement, "已更新 1 条 · Middle-UPDATE")
+        XCTAssertNil(model.preview)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertTrue(model.executionActions.isEmpty)
+        XCTAssertNil(model.pendingConfirmation)
+
+        await model.previewCurrentInput()
+
+        XCTAssertEqual(factory.transports.count, 3)
+        XCTAssertEqual(factory.transports[2].getCount, 4)
+        XCTAssertEqual(factory.transports[2].postCount, 0)
+        XCTAssertEqual(model.preview?.counts, PreviewCounts(
+            create: 2,
+            update: 0,
+            alreadyMatching: 0,
+            blocked: 0
+        ))
+        XCTAssertEqual(model.executionActions.first { $0.group == .create }?.count, 2)
+    }
+
+    func testFailedMixedExecutionKeepsOriginalDraftAndInterruptedFeedback() async {
+        let source = "create\nn. 新建\nupdate\nn. 更新"
+        let oldUpdate = interpretation("INVALID_RECORD_UPDATE", "n. 旧", tags: ["考研"])
+        let fullPreflight: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_CREATE", "create"),
+            interpretationsResponse([]),
+            vocabularyResponse("INVALID_VOC_UPDATE", "update"),
+            interpretationsResponse([oldUpdate]),
+        ]
+        let historyStore = InMemoryHistoryStore()
+        let factory = SequencedTransportFactory([
+            fullPreflight,
+            fullPreflight + [
+                jsonResponse([:], status: 201),
+                interpretationsResponse([]),
+            ],
+        ])
+        let model = connectedModel(factory, historyStore: historyStore)
+        model.sourceText = source
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+
+        await model.executeConfirmed(.create)?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.sourceText, source)
+        XCTAssertTrue(model.hasExecutionFeedback)
+        XCTAssertEqual(model.finalSummary.failed, 1)
+        XCTAssertEqual(model.errorMessage, CompanionError.uncertainWriteOutcome.description)
+        XCTAssertNil(model.completionAcknowledgement)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(historyStore.saveCount, 1)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notVerified])
+    }
+
     func testDirectConfirmedExecutionWithoutArmedIntentSendsZeroPOST() async {
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],

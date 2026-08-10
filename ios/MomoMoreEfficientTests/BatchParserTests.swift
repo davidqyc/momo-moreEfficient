@@ -60,6 +60,23 @@ final class BatchParserTests: XCTestCase {
         XCTAssertEqual(entry.interpretation, body)
     }
 
+    func testCanonicalDocumentRoundTripPreservesEntryOrderSpellingAndBodies() throws {
+        let firstBody = "n. 原文尾空格  \n\n   缩进保留"
+        let secondBody = "v. 第二条\nn. 最后一行"
+        let source = [
+            "## MiXeD-First\n\(firstBody)",
+            "## second.EXACT\n\(secondBody)",
+        ].joined(separator: "\n\n")
+        let entries = try BatchParser.parseCanonical(source)
+
+        let rebuilt = BatchParser.canonicalDocument(for: entries)
+        let roundTripped = try BatchParser.parseDailyInput(rebuilt).entries
+
+        XCTAssertEqual(roundTripped.map(\.spelling), ["MiXeD-First", "second.EXACT"])
+        XCTAssertEqual(roundTripped.map(\.interpretation), entries.map(\.interpretation))
+        XCTAssertEqual(roundTripped, entries)
+    }
+
     func testBatchAndInterpretationBoundsFailClosed() {
         let tooMany = (0...30).map { "## w\($0)\nn. x" }.joined(separator: "\n\n")
         XCTAssertThrowsError(try BatchParser.parseCanonical(tooMany))
