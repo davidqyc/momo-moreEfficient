@@ -289,7 +289,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         invalidatePreview()
         if let completedReceipt, completedReceipt.isFullSuccess {
             let localHistoryError = historyErrorMessage
-            sourceText = ""
+            sourceText = remainingSourceDocument(
+                afterCompleting: group,
+                in: displayed
+            )
             completionAcknowledgement = acknowledgement(for: completedReceipt)
             historyErrorMessage = localHistoryError
         }
@@ -462,6 +465,15 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             return "\(verb) \(receipt.succeeded) 条"
         }
         return "\(verb) 1 条 · \(spelling)"
+    }
+
+    private func remainingSourceDocument(
+        afterCompleting completedGroup: OperationGroup,
+        in displayed: PreviewSnapshot
+    ) -> String {
+        let remainingGroup: OperationGroup = completedGroup == .create ? .update : .create
+        let remainingEntries = displayed.items(for: remainingGroup).map(\.entry)
+        return BatchParser.canonicalDocument(for: remainingEntries)
     }
 
     private func restoreHistory() {

@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-10
-sourceMainSha=265e09c9c54f0210f2a13f02927cf1fb506be025
+sourceMainSha=3057bbe52af3e087b8d2d4a47e6dbe558877e8c6
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,10 +24,10 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=265e09c9c54f0210f2a13f02927cf1fb506be025
+CURRENT_MAIN_AT_SNAPSHOT=3057bbe52af3e087b8d2d4a47e6dbe558877e8c6
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#69
-OPEN_PRODUCT_PR=#69 implementation pending Draft PR at state update
+CURRENT_PRIMARY_ISSUE=#73
+OPEN_PRODUCT_PR=#73 implementation pending Draft PR at state update
 ```
 
 当前已完成：
@@ -42,18 +42,19 @@ OPEN_PRODUCT_PR=#69 implementation pending Draft PR at state update
 - Issue #68 的单条 `incentive` CREATE canary 已完成真实写入与鉴权回读；
 - Issue #63 的紧凑 iOS 日常界面和仅本设备 Keychain Token 持久化已经完成、合并并经真机确认；
 - Issue #66 的 stale Preview 与 AppIcon 修复已经合并并安装；
-- Issue #69 是当前 UX/history 门槛：将不可变执行回执与新草稿分离，并加入仅本设备的非敏感执行历史；
+- Issue #69 的不可变执行回执、活动草稿分离和仅本设备非敏感 History 已完成；
+- Issue #73 是临时 mixed-batch 生命周期门槛；真实 10 条批次暂停在 Preview：`CREATE 8 / UPDATE 2 / MATCHING 0 / BLOCKED 0`，该批次 `0 POST`；
 - phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_69_EXECUTION_RECEIPT_HISTORY_GATE
+ISSUE_73_MIXED_BATCH_REMAINDER_GATE
 ```
 
-Issue #69 是当前唯一实施门槛：成功执行后把不可变、非敏感回执归档到本地 History，并让活动工作流回到干净草稿；部分、失败或停止时保留原草稿供检查和恢复。
+Issue #73 是当前临时门槛：mixed Preview 的一个操作组全成功后，只保留另一操作组仍可执行条目的无损 source remainder，并要求重新 Preview 与授权；部分、失败或停止继续保留原草稿。
 
-剩余 genuine batch 在 #69 完成审阅、合并和真机安装前继续等待。既有 `sphere` / `incentive` canary 不回填 History，也不构成任何后续批次授权。
+真实 10 条 batch 在 #73 完成审阅、合并和真机安装前继续等待；当前只有 Preview `CREATE 8 / UPDATE 2 / MATCHING 0 / BLOCKED 0`，从该 batch 发出的 POST 数仍为 0。既有 `sphere` / `incentive` canary 不构成任何后续批次授权。
 
 ## 4. Other active routes
 
@@ -95,7 +96,7 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 - 不开放 delete；没有自动 rollback；
 - update 只针对唯一明确的用户自建记录；歧义时停止；
 - 不修改墨墨内置释义；phrase/example automation 仍 blocked；
-- 剩余真实批次在 #69 审阅、合并和安装前保持暂停；之后任何真实 iPhone 写入仍需新的 Preview、原生确认和精确 Owner 授权；
+- 剩余真实批次在 #73 审阅、合并和安装前保持暂停；之后任何真实 iPhone 写入仍需新的 Preview、原生确认和精确 Owner 授权；
 - 真实写入不得因为换对话、文档更新或新 Agent 接管而自动授权。
 
 ## 6. Maintenance rule

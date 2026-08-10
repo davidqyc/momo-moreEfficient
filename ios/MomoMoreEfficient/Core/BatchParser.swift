@@ -127,6 +127,12 @@ enum BatchParser {
         return entries
     }
 
+    static func canonicalDocument(for entries: [BatchEntry]) -> String {
+        entries.map { entry in
+            "## \(entry.spelling)\n\(entry.interpretation)"
+        }.joined(separator: "\n\n")
+    }
+
     private static func compactItems(_ block: [String]) throws -> [[String]] {
         guard block.count >= 2, posMarker(for: block[0]) == nil else {
             throw CompanionError.inputRejected
