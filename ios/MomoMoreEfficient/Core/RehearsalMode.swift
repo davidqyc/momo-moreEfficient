@@ -55,14 +55,51 @@ extension RehearsalMode {
 
 extension CompanionViewModel {
     @MainActor
-    static func makeRehearsal() -> CompanionViewModel {
-        let transport = RehearsalTransport()
+    static func makeRehearsal(
+        perRequestDelaySeconds: Double = RehearsalMode.perRequestDelaySeconds,
+        sleeperFactory: @escaping () -> RequestSleeper = { RehearsalSleeper() },
+        backgroundAssertionFactory: @escaping @MainActor () -> BackgroundExecutionAssertion
+            = { makeDefaultBackgroundExecutionAssertion() }
+    ) -> CompanionViewModel {
+        let transport = RehearsalTransport(perRequestDelaySeconds: perRequestDelaySeconds)
         return CompanionViewModel(
             tokenStore: RehearsalTokenStore(),
-            historyStore: FileHistoryStore(),
+            // Never FileHistoryStore: rehearsal receipts must not reach the
+            // Owner's real local History.
+            historyStore: RehearsalHistoryStore(),
             transportFactory: { transport },
-            sleeperFactory: { RehearsalSleeper() }
+            sleeperFactory: sleeperFactory,
+            backgroundAssertionFactory: backgroundAssertionFactory
         )
+    }
+}
+
+/// History for a rehearsal run: fully in memory, so the History screen behaves
+/// normally during the rehearsal and nothing survives the process.
+///
+/// It never resolves the application-support directory and never opens the
+/// production `history-v1.json`, so a rehearsal cannot read, overwrite, append to
+/// or delete real receipts.
+final class RehearsalHistoryStore: HistoryStore {
+    private let lock = NSLock()
+    private var receipts: [ExecutionReceipt] = []
+
+    func loadReceipts() throws -> [ExecutionReceipt] {
+        lock.lock()
+        defer { lock.unlock() }
+        return receipts.sorted { $0.timestamp > $1.timestamp }
+    }
+
+    func saveReceipts(_ receipts: [ExecutionReceipt]) throws {
+        lock.lock()
+        self.receipts = receipts
+        lock.unlock()
+    }
+
+    func clearReceipts() throws {
+        lock.lock()
+        receipts.removeAll()
+        lock.unlock()
     }
 }
 

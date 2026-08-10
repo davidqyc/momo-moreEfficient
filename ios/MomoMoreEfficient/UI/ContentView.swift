@@ -277,7 +277,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(viewModel.executionProgressLabel ?? "正在执行…")
                     .font(.subheadline.weight(.semibold).monospacedDigit())
-                Text("请勿强制退出应用；离开应用不会取消已授权的执行。")
+                Text("短暂切换应用不会取消；若系统回收后台时间，将安全停止。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

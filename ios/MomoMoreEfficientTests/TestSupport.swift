@@ -100,6 +100,24 @@ final class FakeBackgroundExecutionAssertion: BackgroundExecutionAssertion {
     var isHeld: Bool { onExpiration != nil }
 }
 
+/// Captures every `ExecutionStage` an executor reports, in order.
+final class StageRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [ExecutionStage] = []
+
+    func record(_ stage: ExecutionStage) {
+        lock.lock()
+        recorded.append(stage)
+        lock.unlock()
+    }
+
+    var stages: [ExecutionStage] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+}
+
 enum StubbedResult {
     case response(TransportResponse)
     case failure(CompanionError)

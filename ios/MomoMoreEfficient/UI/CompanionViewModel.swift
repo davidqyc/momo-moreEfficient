@@ -243,7 +243,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         isExecuting = true
         // Visible immediately, before the first await, so the UI never sits in an
         // unexplained disabled state.
-        executionStage = .preflight(group: group, completed: 0, total: displayed.items.count)
+        executionStage = .preflight(group: group, entry: 1, total: displayed.items.count)
         errorMessage = nil
         historyErrorMessage = nil
         let control = ExecutionControl()

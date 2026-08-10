@@ -246,7 +246,7 @@ final class ExecutionLifecycleTests: XCTestCase {
         XCTAssertTrue(model.isExecuting)
         XCTAssertEqual(
             model.executionStage,
-            .preflight(group: .create, completed: 0, total: 2)
+            .preflight(group: .create, entry: 1, total: 2)
         )
         XCTAssertEqual(model.executionProgressLabel, "正在预检 1/2")
 
@@ -294,7 +294,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             "正在更新 1/2 · manning"
         )
         XCTAssertEqual(
-            ExecutionStage.preflight(group: .update, completed: 2, total: 2).label,
+            ExecutionStage.preflight(group: .update, entry: 2, total: 2).label,
             "正在预检 2/2"
         )
         XCTAssertEqual(ExecutionStage.finishing(group: .update).label, "正在收尾…")
@@ -333,6 +333,66 @@ final class ExecutionLifecycleTests: XCTestCase {
         await execution?.value
     }
 
+    // MARK: - Preflight progress counts exactly 1/N … N/N
+
+    func testPreflightProgressCountsEachEntryExactlyOnceForTwoEntries() async throws {
+        let labels = try await preflightLabels(
+            document: "one\nn. 一\ntwo\nn. 二",
+            spellings: ["one", "two"]
+        )
+        XCTAssertEqual(labels, ["正在预检 1/2", "正在预检 2/2"])
+    }
+
+    func testPreflightProgressCountsEachEntryExactlyOnceForThreeEntries() async throws {
+        let labels = try await preflightLabels(
+            document: "one\nn. 一\ntwo\nn. 二\nthree\nn. 三",
+            spellings: ["one", "two", "three"]
+        )
+        XCTAssertEqual(labels, ["正在预检 1/3", "正在预检 2/3", "正在预检 3/3"])
+    }
+
+    func testPreflightNeverReportsAnEntryBeyondWhatItHasReached() async throws {
+        let stages = try await recordedStages(
+            document: "one\nn. 一\ntwo\nn. 二",
+            spellings: ["one", "two"]
+        )
+        // Entry 2 must never appear before entry 1 has been reported.
+        let firstTwo = stages.firstIndex { $0 == .preflight(group: .create, entry: 2, total: 2) }
+        let firstOne = stages.firstIndex { $0 == .preflight(group: .create, entry: 1, total: 2) }
+        XCTAssertNotNil(firstOne)
+        XCTAssertNotNil(firstTwo)
+        XCTAssertLessThan(firstOne ?? .max, firstTwo ?? .min)
+        // No entry index may exceed the total.
+        for stage in stages {
+            if case let .preflight(_, entry, total) = stage {
+                XCTAssertGreaterThanOrEqual(entry, 1)
+                XCTAssertLessThanOrEqual(entry, total)
+            }
+        }
+    }
+
+    func testViewModelPreflightLabelStartsAtEntryOne() async {
+        let assertion = FakeBackgroundExecutionAssertion()
+        let factory = SequencedTransportFactory([
+            previewRun(["one", "two"]),
+            previewRun(["one", "two"]) + [
+                jsonResponse([:], status: 201),
+                interpretationsResponse([interpretation("INVALID_RECORD_A", "n. 一")]),
+                jsonResponse([:], status: 201),
+                interpretationsResponse([interpretation("INVALID_RECORD_B", "n. 二")]),
+            ],
+        ])
+        let model = connectedModel(factory, assertion: assertion)
+        model.sourceText = "one\nn. 一\ntwo\nn. 二"
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+
+        let execution = model.executeConfirmed(.create)
+        XCTAssertEqual(model.executionStage, .preflight(group: .create, entry: 1, total: 2))
+        XCTAssertEqual(model.executionProgressLabel, "正在预检 1/2")
+        await execution?.value
+    }
+
     // MARK: - The DEBUG rehearsal harness the Owner runs on the device
 
     func testRehearsalModeIsOffUnlessExplicitlyLaunchedIntoIt() {
@@ -340,13 +400,72 @@ final class ExecutionLifecycleTests: XCTestCase {
         XCTAssertFalse(RehearsalMode.isEnabled)
     }
 
+    func testRehearsalHistoryStoreIsInMemoryAndSupportsLoadSaveClear() throws {
+        let store = RehearsalHistoryStore()
+        XCTAssertTrue(try store.loadReceipts().isEmpty)
+
+        let receipt = ExecutionReceipt(
+            operationGroup: .create,
+            selectedSpellings: ["collapse"],
+            result: ExecutionSummary(
+                group: .create,
+                succeeded: 1,
+                failed: 0,
+                cancelled: false,
+                stalePreview: false,
+                results: [ItemExecutionResult(spelling: "collapse", outcome: .confirmed)]
+            )
+        )
+        try store.saveReceipts([receipt])
+        XCTAssertEqual(try store.loadReceipts().count, 1)
+
+        try store.clearReceipts()
+        XCTAssertTrue(try store.loadReceipts().isEmpty)
+
+        // Nothing survives into a new store: the rehearsal leaves no trace.
+        XCTAssertTrue(try RehearsalHistoryStore().loadReceipts().isEmpty)
+    }
+
+    func testRehearsalReceiptsNeverReachPersistentApplicationSupportHistory() async throws {
+        // A production-shaped store over a temporary application-support root,
+        // seeded so any contamination would be detectable as a change.
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("rehearsal-isolation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistent = FileHistoryStore(applicationSupportDirectory: root)
+        try persistent.saveReceipts([])
+        let before = try persistent.loadReceipts()
+
+        // The real rehearsal wiring, only made fast.
+        let model = CompanionViewModel.makeRehearsal(
+            perRequestDelaySeconds: 0,
+            sleeperFactory: { RecordingSleeper() },
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+        )
+        model.sourceText = "collapse\nn. 崩塌"
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+        await model.executeConfirmed(.create)?.value
+
+        // The rehearsal receipt is visible in the History UI …
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.succeeded, 1)
+        XCTAssertNil(model.historyErrorMessage)
+        // … and nothing was written to persistent history.
+        XCTAssertEqual(try persistent.loadReceipts(), before)
+        XCTAssertTrue(try persistent.loadReceipts().isEmpty)
+        // A production store built the way the app builds it is also untouched
+        // by the rehearsal: no rehearsal spelling can appear in it.
+        let productionReceipts = (try? FileHistoryStore().loadReceipts()) ?? []
+        XCTAssertFalse(
+            productionReceipts.contains { $0.items.contains { $0.spelling == "collapse" } }
+        )
+    }
+
     func testRehearsalHarnessDrivesTheRealPipelineToFullSuccessOffline() async {
-        let transport = RehearsalTransport(perRequestDelaySeconds: 0)
         let assertion = FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
-            tokenStore: RehearsalTokenStore(),
-            historyStore: InMemoryHistoryStore(),
-            transportFactory: { transport },
+        let model = CompanionViewModel.makeRehearsal(
+            perRequestDelaySeconds: 0,
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { assertion }
         )
@@ -376,12 +495,9 @@ final class ExecutionLifecycleTests: XCTestCase {
     }
 
     func testRehearsalHarnessStopsDeterministicallyOnBackgroundTimeExpiry() async {
-        let transport = RehearsalTransport(perRequestDelaySeconds: 0)
         let assertion = FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
-            tokenStore: RehearsalTokenStore(),
-            historyStore: InMemoryHistoryStore(),
-            transportFactory: { transport },
+        let model = CompanionViewModel.makeRehearsal(
+            perRequestDelaySeconds: 0,
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { assertion }
         )
@@ -401,6 +517,62 @@ final class ExecutionLifecycleTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// Runs a real `WriteExecutor` and returns every stage it reported, in order.
+    private func recordedStages(
+        document: String,
+        spellings: [String]
+    ) async throws -> [ExecutionStage] {
+        let results = previewRun(spellings)
+        let (shown, _, _) = try await makeSnapshot(document: document, results: results)
+        let transport = FakeHTTPTransport(
+            results + spellings.enumerated().flatMap { index, _ in
+                [
+                    jsonResponse([:], status: 201),
+                    interpretationsResponse([
+                        interpretation("INVALID_RECORD_\(index)", proposedText(document, index)),
+                    ]),
+                ]
+            }
+        )
+        let lease = try credentialLease()
+        defer { lease.clear() }
+        let recorder = StageRecorder()
+        _ = await WriteExecutor(
+            api: MaimemoTransport(
+                transport: transport,
+                credential: lease,
+                sleeper: RecordingSleeper()
+            )
+        ).execute(
+            group: .create,
+            displayedSnapshot: shown,
+            approval: try ConfirmationBinding.makeApproval(snapshot: shown, group: .create),
+            control: ExecutionControl(),
+            progress: ExecutionProgressReporter { recorder.record($0) }
+        )
+        return recorder.stages
+    }
+
+    /// Every preflight label reported, in order and *not* de-duplicated: for N
+    /// entries there must be exactly N reports, one per entry. Collapsing repeats
+    /// would hide the off-by-one this guards against, where an extra report made
+    /// `N/N` appear while entry N had not been reached.
+    private func preflightLabels(
+        document: String,
+        spellings: [String]
+    ) async throws -> [String] {
+        try await recordedStages(document: document, spellings: spellings)
+            .compactMap { stage -> String? in
+                guard case .preflight = stage else { return nil }
+                return stage.label
+            }
+    }
+
+    private func proposedText(_ document: String, _ index: Int) -> String {
+        let lines = document.split(separator: "\n").map(String.init)
+        return lines[index * 2 + 1]
+    }
 
     private func previewRun(_ spellings: [String]) -> [StubbedResult] {
         spellings.enumerated().flatMap { index, spelling in

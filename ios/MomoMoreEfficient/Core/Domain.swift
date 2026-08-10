@@ -190,15 +190,18 @@ struct ExecutionSummary: Equatable, Sendable {
 /// Every value is derived from real executor state — a completed readback, a
 /// dispatched item — never from a timer. Only the Owner's own spelling is carried;
 /// no identifier, fingerprint, payload or credential material appears here.
+/// Both `preflight` and `writing` use the same current-entry semantics: `entry`
+/// and `item` are 1-based indexes of the unit being worked on right now, so the
+/// visible sequence is exactly 1/N, 2/N, … N/N with no compensating arithmetic.
 enum ExecutionStage: Equatable, Sendable {
-    case preflight(group: OperationGroup, completed: Int, total: Int)
+    case preflight(group: OperationGroup, entry: Int, total: Int)
     case writing(group: OperationGroup, item: Int, total: Int, spelling: String)
     case finishing(group: OperationGroup)
 
     var label: String {
         switch self {
-        case let .preflight(_, completed, total):
-            return "正在预检 \(min(completed + 1, total))/\(total)"
+        case let .preflight(_, entry, total):
+            return "正在预检 \(entry)/\(total)"
         case let .writing(group, item, total, spelling):
             let verb = group == .create ? "正在新建" : "正在更新"
             return "\(verb) \(item)/\(total) · \(spelling)"

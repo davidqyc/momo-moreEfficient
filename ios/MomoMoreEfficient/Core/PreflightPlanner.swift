@@ -7,15 +7,16 @@ struct PreflightPlanner {
         entries: [BatchEntry],
         credentialFingerprint: String,
         control: ExecutionControl? = nil,
-        onEntryResolved: (@Sendable (_ completed: Int, _ total: Int) -> Void)? = nil
+        onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PreviewSnapshot {
         guard !entries.isEmpty, entries.count <= CompanionConstants.maxBatchItems else {
             throw CompanionError.inputRejected
         }
 
         var planned: [PrivatePreflightItem] = []
-        for entry in entries {
-            defer { onEntryResolved?(planned.count, entries.count) }
+        for (index, entry) in entries.enumerated() {
+            // 1-based index of the entry about to be preflighted.
+            onEntryStarted?(index + 1, entries.count)
             do {
                 let vocabulary = try await api.vocabulary(
                     spelling: entry.spelling,

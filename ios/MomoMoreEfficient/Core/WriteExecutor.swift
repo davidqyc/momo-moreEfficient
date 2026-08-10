@@ -63,15 +63,12 @@ struct WriteExecutor {
             }
 
             let entries = displayedSnapshot.items.map(\.entry)
-            progress?.report(.preflight(group: group, completed: 0, total: entries.count))
             let fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: entries,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control,
-                onEntryResolved: { completed, total in
-                    progress?.report(
-                        .preflight(group: group, completed: completed, total: total)
-                    )
+                onEntryStarted: { entry, total in
+                    progress?.report(.preflight(group: group, entry: entry, total: total))
                 }
             )
             guard fresh == displayedSnapshot,
