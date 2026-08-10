@@ -6,10 +6,11 @@ final class CompanionViewModelTests: XCTestCase {
     func testTokenStorePersistsAcrossViewModelReconstruction() {
         let store = FakeTokenStore()
         var draft = fakeToken
-        let first = CompanionViewModel(tokenStore: store)
+        let historyStore = InMemoryHistoryStore()
+        let first = CompanionViewModel(tokenStore: store, historyStore: historyStore)
         first.connect(token: &draft)
 
-        let reconstructed = CompanionViewModel(tokenStore: store)
+        let reconstructed = CompanionViewModel(tokenStore: store, historyStore: historyStore)
 
         XCTAssertTrue(first.isConnected)
         XCTAssertTrue(reconstructed.isConnected)
@@ -19,7 +20,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testBackgroundKeepsPersistedTokenAndForegroundRestoresConnection() {
         let store = FakeTokenStore()
-        let model = CompanionViewModel(tokenStore: store)
+        let model = CompanionViewModel(tokenStore: store, historyStore: InMemoryHistoryStore())
         var draft = fakeToken
         model.connect(token: &draft)
 
@@ -36,7 +37,10 @@ final class CompanionViewModelTests: XCTestCase {
     }
 
     func testLocalParseAcknowledgementReportsCountAndEndpoints() {
-        let model = CompanionViewModel(tokenStore: FakeTokenStore())
+        let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore()
+        )
         model.sourceText = "sphere\nn. 球体\nracket\nn. 球拍"
 
         XCTAssertEqual(
@@ -57,6 +61,7 @@ final class CompanionViewModelTests: XCTestCase {
         let gate = GateSleeper()
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             sleeperFactory: { gate }
         )
@@ -82,16 +87,19 @@ final class CompanionViewModelTests: XCTestCase {
     }
 
     func testSuccessfulPreviewCollapsesEditorAndBuildsCompactHeader() async {
+        let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([])],
         ])
-        let model = connectedModel(factory)
+        let model = connectedModel(factory, historyStore: historyStore)
         model.sourceText = "sphere\nn. 球体"
 
         await model.previewCurrentInput()
 
         XCTAssertFalse(model.isShowingEditor)
         XCTAssertEqual(model.previewHeader, "1 条释义 · sphere → sphere")
+        XCTAssertTrue(model.history.isEmpty)
+        XCTAssertEqual(historyStore.saveCount, 0)
         model.editInput()
         XCTAssertTrue(model.isShowingEditor)
     }
@@ -245,6 +253,7 @@ final class CompanionViewModelTests: XCTestCase {
         let gate = GateSleeper()
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             sleeperFactory: { gate }
         )
@@ -287,6 +296,7 @@ final class CompanionViewModelTests: XCTestCase {
     }
 
     func testCompletedCreateInvalidatesExecutablePreview() async {
+        let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
             [
@@ -295,7 +305,7 @@ final class CompanionViewModelTests: XCTestCase {
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
             ],
         ])
-        let model = connectedModel(factory)
+        let model = connectedModel(factory, historyStore: historyStore)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         XCTAssertNotNil(model.preview)
@@ -303,7 +313,14 @@ final class CompanionViewModelTests: XCTestCase {
         let execution = model.executeConfirmed(.create)
         await execution?.value
         XCTAssertNil(model.preview)
-        XCTAssertEqual(model.finalSummary.created, 1)
+        XCTAssertEqual(model.sourceText, "")
+        XCTAssertEqual(model.localParseState, .empty)
+        XCTAssertEqual(model.completionAcknowledgement, "已新建 1 条 · word")
+        XCTAssertFalse(model.hasExecutionFeedback)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.operationGroup, .create)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.confirmed])
+        XCTAssertEqual(historyStore.saveCount, 1)
     }
 
     func testDirectConfirmedExecutionWithoutArmedIntentSendsZeroPOST() async {
@@ -378,10 +395,11 @@ final class CompanionViewModelTests: XCTestCase {
 
         XCTAssertNil(replay)
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
-        XCTAssertEqual(model.finalSummary.created, 1)
+        XCTAssertEqual(model.history.count, 1)
     }
 
     func testArmedApprovalStillRequiresFreshMatchingPreflight() async {
+        let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
             [
@@ -391,7 +409,7 @@ final class CompanionViewModelTests: XCTestCase {
                 ]),
             ],
         ])
-        let model = connectedModel(factory)
+        let model = connectedModel(factory, historyStore: historyStore)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.askToExecute(.create)
@@ -403,6 +421,8 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(factory.transports[1].getCount, 2)
         XCTAssertEqual(factory.transports[1].postCount, 0)
         XCTAssertEqual(model.errorMessage, CompanionError.stalePreview.description)
+        XCTAssertTrue(model.history.isEmpty)
+        XCTAssertEqual(historyStore.saveCount, 0)
     }
 
     func testInputEditInvalidatesArmedApproval() async {
@@ -441,6 +461,7 @@ final class CompanionViewModelTests: XCTestCase {
     }
 
     func testPartialCreateCancellationPreservesSuccessAndShowsNotAttempted() async {
+        let historyStore = InMemoryHistoryStore()
         let oldPreviewResults: [StubbedResult] = [
             vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
             vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
@@ -450,7 +471,10 @@ final class CompanionViewModelTests: XCTestCase {
             jsonResponse([:], status: 201),
             interpretationsResponse([interpretation("INVALID_RECORD_A", "n. 一")]),
         ])
-        let model = connectedModel(transports: [previewTransport, executionTransport])
+        let model = connectedModel(
+            transports: [previewTransport, executionTransport],
+            historyStore: historyStore
+        )
         model.sourceText = "one\nn. 一\ntwo\nn. 二"
         await model.previewCurrentInput()
         model.askToExecute(.create)
@@ -474,13 +498,18 @@ final class CompanionViewModelTests: XCTestCase {
             model.finalSummary.stoppedMessage,
             "执行已停止：已完成 1 条，其余 1 条未执行。"
         )
+        XCTAssertEqual(model.sourceText, "one\nn. 一\ntwo\nn. 二")
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.confirmed, .notAttempted])
+        XCTAssertEqual(historyStore.saveCount, 1)
     }
 
     func testBackgroundImmediatelyAfterNativeConfirmShowsAllItemsNotAttempted() async {
+        let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
         ])
-        let model = connectedModel(factory)
+        let model = connectedModel(factory, historyStore: historyStore)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.askToExecute(.create)
@@ -499,9 +528,12 @@ final class CompanionViewModelTests: XCTestCase {
             model.finalSummary.stoppedMessage,
             "执行已停止：已完成 0 条，其余 1 条未执行。"
         )
+        XCTAssertEqual(model.sourceText, "word\nn. 新建")
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notAttempted])
     }
 
     func testPartialUpdateCancellationUsesSameStoppedPresentation() async {
+        let historyStore = InMemoryHistoryStore()
         let oldA = interpretation("INVALID_RECORD_A", "n. 旧一", tags: ["考研"])
         let oldB = interpretation("INVALID_RECORD_B", "n. 旧二", tags: ["考研"])
         let previewResults: [StubbedResult] = [
@@ -513,7 +545,10 @@ final class CompanionViewModelTests: XCTestCase {
             jsonResponse([:]),
             interpretationsResponse([interpretation("INVALID_RECORD_A", "n. 新一")]),
         ])
-        let model = connectedModel(transports: [previewTransport, executionTransport])
+        let model = connectedModel(
+            transports: [previewTransport, executionTransport],
+            historyStore: historyStore
+        )
         model.sourceText = "one\nn. 新一\ntwo\nn. 新二"
         await model.previewCurrentInput()
         model.askToExecute(.update)
@@ -535,6 +570,123 @@ final class CompanionViewModelTests: XCTestCase {
             model.finalSummary.stoppedMessage,
             "执行已停止：已完成 1 条，其余 1 条未执行。"
         )
+        XCTAssertEqual(model.sourceText, "one\nn. 新一\ntwo\nn. 新二")
+        XCTAssertEqual(model.history.first?.operationGroup, .update)
+        XCTAssertEqual(model.history.first?.succeeded, 1)
+        XCTAssertEqual(model.history.first?.notAttempted, 1)
+    }
+
+    func testSuccessfulUpdateCreatesExactlyOneReceiptAndReturnsCleanEditor() async {
+        let old = interpretation("INVALID_RECORD", "n. 旧", tags: ["考研"])
+        let historyStore = InMemoryHistoryStore()
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([old])],
+            [
+                vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([old]),
+                jsonResponse([:]),
+                interpretationsResponse([interpretation("INVALID_RECORD", "n. 球体")]),
+            ],
+        ])
+        let model = connectedModel(factory, historyStore: historyStore)
+        model.sourceText = "sphere\nn. 球体"
+        await model.previewCurrentInput()
+        model.askToExecute(.update)
+
+        await model.executeConfirmed(.update)?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(historyStore.saveCount, 1)
+        XCTAssertEqual(model.history.first?.operationGroup, .update)
+        XCTAssertEqual(model.history.first?.succeeded, 1)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.confirmed])
+        XCTAssertEqual(model.sourceText, "")
+        XCTAssertEqual(model.localParseState, .empty)
+        XCTAssertTrue(model.isShowingEditor)
+        XCTAssertEqual(model.completionAcknowledgement, "已更新 1 条 · sphere")
+    }
+
+    func testStartingNewDraftClearsAcknowledgementButPreservesHistory() async {
+        let historyStore = InMemoryHistoryStore()
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [
+                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                jsonResponse([:], status: 201),
+                interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
+            ],
+        ])
+        let model = connectedModel(factory, historyStore: historyStore)
+        model.sourceText = "word\nn. 新建"
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+        await model.executeConfirmed(.create)?.value
+        XCTAssertNotNil(model.completionAcknowledgement)
+
+        model.sourceText = "next\nn. 下一条"
+
+        XCTAssertNil(model.completionAcknowledgement)
+        XCTAssertFalse(model.hasExecutionFeedback)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(historyStore.receipts.count, 1)
+        XCTAssertEqual(model.sourceText, "next\nn. 下一条")
+    }
+
+    func testClearHistoryDoesNotAlterTokenOrCurrentDraft() {
+        let receipt = ExecutionReceipt(
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            operationGroup: .create,
+            selectedSpellings: ["word"],
+            result: ExecutionSummary(
+                group: .create,
+                succeeded: 1,
+                failed: 0,
+                cancelled: false,
+                stalePreview: false,
+                results: [ItemExecutionResult(spelling: "word", outcome: .confirmed)]
+            )
+        )
+        let historyStore = InMemoryHistoryStore(receipts: [receipt])
+        let tokenStore = FakeTokenStore(token: fakeToken)
+        let model = CompanionViewModel(tokenStore: tokenStore, historyStore: historyStore)
+        model.sourceText = "draft\nn. 草稿"
+
+        model.clearHistory()
+
+        XCTAssertTrue(model.history.isEmpty)
+        XCTAssertEqual(historyStore.clearCount, 1)
+        XCTAssertTrue(model.isConnected)
+        XCTAssertTrue(tokenStore.hasStoredToken)
+        XCTAssertEqual(tokenStore.deleteCount, 0)
+        XCTAssertEqual(model.sourceText, "draft\nn. 草稿")
+    }
+
+    func testHistorySaveFailureDoesNotChangeSuccessfulWriteOrRetryPOST() async {
+        let historyStore = InMemoryHistoryStore()
+        historyStore.failSave = true
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [
+                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                jsonResponse([:], status: 201),
+                interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
+            ],
+        ])
+        let model = connectedModel(factory, historyStore: historyStore)
+        model.sourceText = "word\nn. 新建"
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+
+        await model.executeConfirmed(.create)?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(historyStore.saveCount, 1)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.succeeded, 1)
+        XCTAssertEqual(model.sourceText, "")
+        XCTAssertEqual(model.completionAcknowledgement, "已新建 1 条 · word")
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.historyErrorMessage, "历史记录保存失败")
     }
 
     func testPublicStateAndErrorsNeverExposeFakeToken() async {
@@ -554,10 +706,12 @@ final class CompanionViewModelTests: XCTestCase {
 
     private func connectedModel(
         _ factory: SequencedTransportFactory,
-        tokenStore: FakeTokenStore = FakeTokenStore()
+        tokenStore: FakeTokenStore = FakeTokenStore(),
+        historyStore: HistoryStore = InMemoryHistoryStore()
     ) -> CompanionViewModel {
         let model = CompanionViewModel(
             tokenStore: tokenStore,
+            historyStore: historyStore,
             transportFactory: factory.make,
             sleeperFactory: { RecordingSleeper() }
         )
@@ -567,10 +721,14 @@ final class CompanionViewModelTests: XCTestCase {
         return model
     }
 
-    private func connectedModel(transports: [HTTPTransport]) -> CompanionViewModel {
+    private func connectedModel(
+        transports: [HTTPTransport],
+        historyStore: HistoryStore = InMemoryHistoryStore()
+    ) -> CompanionViewModel {
         var remaining = transports
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
+            historyStore: historyStore,
             transportFactory: { remaining.removeFirst() },
             sleeperFactory: { RecordingSleeper() }
         )

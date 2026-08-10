@@ -337,11 +337,14 @@ final class BindingAndExecutionTests: XCTestCase {
         })
         let source = sources.values.joined(separator: "\n")
         for forbidden in [
-            "UserDefaults", "UIPasteboard", "os_log", "FileManager.default",
-            "write(to:", "NSUbiquitousKeyValueStore",
+            "UserDefaults", "UIPasteboard", "os_log", "NSUbiquitousKeyValueStore",
             "localStorage", "/open/api/v1/phrases", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
+        }
+        for (path, contents) in sources where path != "Core/ExecutionHistory.swift" {
+            XCTAssertFalse(contents.contains("FileManager.default"), path)
+            XCTAssertFalse(contents.contains("write(to:"), path)
         }
         for (path, contents) in sources where path != "Core/TokenStore.swift" {
             XCTAssertFalse(contents.contains("SecItem"), path)

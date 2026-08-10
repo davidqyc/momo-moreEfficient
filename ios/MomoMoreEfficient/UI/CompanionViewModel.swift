@@ -5,6 +5,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published var sourceText = "" {
         didSet {
             if sourceText != oldValue {
+                detachInlineExecutionFeedback()
                 updateLocalParseState()
                 invalidatePreview()
             }
@@ -21,11 +22,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var errorMessage: String?
     @Published private(set) var pendingConfirmation: OperationGroup?
     @Published private(set) var isPreviewStale = false
+    @Published private(set) var history: [ExecutionReceipt] = []
+    @Published private(set) var completionAcknowledgement: String?
+    @Published private(set) var historyErrorMessage: String?
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
+    private let historyStore: HistoryStore
     private let transportFactory: () -> HTTPTransport
     private let sleeperFactory: () -> RequestSleeper
+    private let dateProvider: () -> Date
     private var snapshot: PreviewSnapshot?
     private var activeControl: ExecutionControl?
     private var sessionID: UUID?
@@ -38,12 +44,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     init(
         tokenStore: TokenStore = KeychainTokenStore(),
+        historyStore: HistoryStore = FileHistoryStore(),
         transportFactory: @escaping () -> HTTPTransport = { URLSessionHTTPTransport() },
-        sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() }
+        sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() },
+        dateProvider: @escaping () -> Date = Date.init
     ) {
         self.tokenStore = tokenStore
+        self.historyStore = historyStore
         self.transportFactory = transportFactory
         self.sleeperFactory = sleeperFactory
+        self.dateProvider = dateProvider
+        restoreHistory()
         restoreCredentialIfAvailable()
     }
 
@@ -205,6 +216,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
         isBusy = true
         errorMessage = nil
+        historyErrorMessage = nil
         let control = ExecutionControl()
         activeControl = control
 
@@ -224,6 +236,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         intent: ArmedApprovalIntent,
         control: ExecutionControl
     ) async {
+        var completedReceipt: ExecutionReceipt?
         do {
             let lease = try credentialSession.makeOperationLease()
             defer { lease.clear() }
@@ -241,11 +254,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
             } else {
-                recordExecutionCounts(
+                completedReceipt = recordExecution(
                     group: group,
                     displayed: displayed,
-                    succeeded: result.succeeded,
-                    failed: result.failed
+                    result: result
                 )
                 if result.failed > 0 {
                     errorMessage = CompanionError.uncertainWriteOutcome.description
@@ -253,13 +265,21 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             }
         } catch let error as CompanionError {
             if control.isCancellationRequested {
-                recordExecutionCounts(group: group, displayed: displayed, succeeded: 0, failed: 0)
+                completedReceipt = recordExecution(
+                    group: group,
+                    displayed: displayed,
+                    result: cancelledSummary(for: group)
+                )
             } else {
                 errorMessage = error.description
             }
         } catch {
             if control.isCancellationRequested {
-                recordExecutionCounts(group: group, displayed: displayed, succeeded: 0, failed: 0)
+                completedReceipt = recordExecution(
+                    group: group,
+                    displayed: displayed,
+                    result: cancelledSummary(for: group)
+                )
             } else {
                 errorMessage = CompanionError.responseRejected.description
             }
@@ -267,22 +287,60 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         activeControl = nil
         isBusy = false
         invalidatePreview()
+        if let completedReceipt, completedReceipt.isFullSuccess {
+            let localHistoryError = historyErrorMessage
+            sourceText = ""
+            completionAcknowledgement = acknowledgement(for: completedReceipt)
+            historyErrorMessage = localHistoryError
+        }
     }
 
-    private func recordExecutionCounts(
+    @discardableResult
+    private func recordExecution(
         group: OperationGroup,
         displayed: PreviewSnapshot,
-        succeeded: Int,
-        failed: Int
-    ) {
-        hasExecutionFeedback = true
-        let selectedCount = displayed.items(for: group).count
-        let notAttempted = max(0, selectedCount - succeeded - failed)
-        if group == .create { finalSummary.created += succeeded }
-        if group == .update { finalSummary.updated += succeeded }
-        finalSummary.failed += failed
-        finalSummary.notAttempted += notAttempted
-        finalSummary.stopped = finalSummary.stopped || notAttempted > 0
+        result: ExecutionSummary
+    ) -> ExecutionReceipt {
+        let selectedSpellings = displayed.items(for: group).map { $0.entry.spelling }
+        let receipt = ExecutionReceipt(
+            timestamp: dateProvider(),
+            operationGroup: group,
+            selectedSpellings: selectedSpellings,
+            result: result
+        )
+        history.insert(receipt, at: 0)
+        do {
+            try historyStore.saveReceipts(history)
+        } catch {
+            historyErrorMessage = "历史记录保存失败"
+        }
+
+        if receipt.isFullSuccess {
+            hasExecutionFeedback = false
+            finalSummary = FinalSummary()
+        } else {
+            hasExecutionFeedback = true
+            finalSummary = FinalSummary(
+                created: group == .create ? receipt.succeeded : 0,
+                updated: group == .update ? receipt.succeeded : 0,
+                alreadyMatching: 0,
+                failed: receipt.failed,
+                notAttempted: receipt.notAttempted,
+                stopped: receipt.stopped
+            )
+        }
+        return receipt
+    }
+
+    private func cancelledSummary(for group: OperationGroup) -> ExecutionSummary {
+        ExecutionSummary(
+            group: group,
+            succeeded: 0,
+            failed: 0,
+            cancelled: true,
+            stalePreview: false,
+            results: []
+        )
     }
 
     func cancelPendingConfirmation() {
@@ -314,6 +372,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     func editInput() {
         invalidatePreview()
+    }
+
+    func clearHistory() {
+        do {
+            try historyStore.clearReceipts()
+            history.removeAll()
+            historyErrorMessage = nil
+        } catch {
+            historyErrorMessage = "历史记录清空失败"
+        }
     }
 
     func toggleDetails(for row: PreviewRow) {
@@ -377,6 +445,31 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             localParseState = .valid(count: entries.count, first: first, last: last)
         } catch {
             localParseState = .invalid
+        }
+    }
+
+    private func detachInlineExecutionFeedback() {
+        completionAcknowledgement = nil
+        hasExecutionFeedback = false
+        finalSummary = FinalSummary()
+        historyErrorMessage = nil
+        errorMessage = nil
+    }
+
+    private func acknowledgement(for receipt: ExecutionReceipt) -> String {
+        let verb = receipt.operationGroup == .create ? "已新建" : "已更新"
+        guard receipt.items.count == 1, let spelling = receipt.items.first?.spelling else {
+            return "\(verb) \(receipt.succeeded) 条"
+        }
+        return "\(verb) 1 条 · \(spelling)"
+    }
+
+    private func restoreHistory() {
+        do {
+            history = try historyStore.loadReceipts().sorted { $0.timestamp > $1.timestamp }
+        } catch {
+            history = []
+            historyErrorMessage = "历史记录读取失败"
         }
     }
 

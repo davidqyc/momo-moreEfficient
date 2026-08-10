@@ -179,3 +179,12 @@ Issue #60 的实体 iPhone 日常体验证明，iOS v1 每次锁屏或进入后�
 iOS production Keychain 项固定使用 `kSecClassGenericPassword`、项目自有的 service/account、`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，并明确关闭 synchronizable；它只在本设备解锁可用，不通过同步或备份迁移到其他设备。进入后台或锁屏仍会取消未派发操作、使 Preview 与一次性 destructive approval 失效，并清除瞬态 session credential，但不删除已保存 Token；回到前台并解锁后可自动恢复连接。界面必须提供“更换 Token”和“移除 Token”，移除会删除 Keychain 项及瞬态凭证状态。
 
 本决定只取代 D-015 / iOS v1 中 memory-only 的那一部分。D-013 的 CLI `getpass` 契约和 macOS localhost UI 的进程内存凭证策略均不改变；Token 仍不得进入 `UserDefaults`、文件、argv、环境变量、日志、分析、自动剪贴板读取、URL/query 或公开 UI/ViewModel 状态。
+
+## D-017：iOS 执行历史只保存本地非敏感回执
+
+**日期：** 2026-08-10
+**状态：** 有效
+
+Issue #69 将活动草稿与已完成执行结果分离。每次非 stale 的已授权 CREATE/UPDATE 执行生成一条不可变回执，使用 Foundation Codable 原子写入应用自己的 Application Support 版本化文件，并尽力排除 iCloud 备份；不使用 `UserDefaults`、数据库、后端或云同步。
+
+回执只保存时间、操作组、汇总计数、停止状态、拼写和最终结果。Token、Authorization、凭证指纹、词汇/记录 ID、binding/batch digest、请求体、原始响应/API 路径和释义正文均不得进入 History。History 保存失败只作为本地辅助记录错误展示，不得改变已经完成的墨墨写入/回读结果、不得重试 POST。清空 History 只删除本地回执，不影响 Token、草稿或墨墨数据。
