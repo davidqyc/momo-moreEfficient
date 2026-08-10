@@ -199,19 +199,25 @@ final class ExecutionLifecycleTests: XCTestCase {
         let model = connectedModel(factory, assertion: assertion)
         model.sourceText = "one\nn. 一"
         await model.previewCurrentInput()
-        XCTAssertEqual(assertion.beginCount, 0)
+        // The Preview took and released one of its own (#78); execution's is
+        // measured as the delta from there.
+        let afterPreview = assertion.beginCount
+        XCTAssertEqual(assertion.endCount, afterPreview)
+        XCTAssertFalse(assertion.isHeld)
         model.askToExecute(.create)
 
         let execution = model.executeConfirmed(.create)
-        XCTAssertEqual(assertion.beginCount, 1)
+        XCTAssertEqual(assertion.beginCount, afterPreview + 1)
         XCTAssertTrue(assertion.isHeld)
         await execution?.value
 
-        XCTAssertEqual(assertion.endCount, 1)
+        XCTAssertEqual(assertion.endCount, afterPreview + 1)
         XCTAssertFalse(assertion.isHeld)
     }
 
-    func testPreviewDoesNotTakeABackgroundAssertion() async {
+    /// #78: a Preview is a user-initiated read and takes the same finite assertion
+    /// as an authorized write batch, released as soon as the read resolves.
+    func testPreviewTakesAndReleasesABackgroundAssertion() async {
         let assertion = FakeBackgroundExecutionAssertion()
         let factory = SequencedTransportFactory([previewRun(["one"])])
         let model = connectedModel(factory, assertion: assertion)
@@ -219,7 +225,9 @@ final class ExecutionLifecycleTests: XCTestCase {
 
         await model.previewCurrentInput()
 
-        XCTAssertEqual(assertion.beginCount, 0)
+        XCTAssertEqual(assertion.beginCount, 1)
+        XCTAssertEqual(assertion.endCount, 1)
+        XCTAssertFalse(assertion.isHeld)
     }
 
     // MARK: - Progress

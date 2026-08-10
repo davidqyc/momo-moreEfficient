@@ -185,6 +185,38 @@ actor GateSleeper: RequestSleeper {
     }
 }
 
+/// Blocks the first paced request until `resume()`, then lets every later request
+/// through. `GateSleeper` holds a single continuation, so it can only gate a
+/// one-entry run; this variant lets a multi-entry Preview be interrupted part-way
+/// and then continue to completion.
+actor FirstPauseGateSleeper: RequestSleeper {
+    private var entered = false
+    private var released = false
+    private var sleepContinuation: CheckedContinuation<Void, Never>?
+    private var observers: [CheckedContinuation<Void, Never>] = []
+
+    func sleep(seconds: Double) async throws {
+        if released { return }
+        await withCheckedContinuation { continuation in
+            sleepContinuation = continuation
+            entered = true
+            observers.forEach { $0.resume() }
+            observers.removeAll()
+        }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { observers.append($0) }
+    }
+
+    func resume() {
+        released = true
+        sleepContinuation?.resume()
+        sleepContinuation = nil
+    }
+}
+
 func jsonResponse(_ object: Any, status: Int = 200) -> StubbedResult {
     .response(
         TransportResponse(
