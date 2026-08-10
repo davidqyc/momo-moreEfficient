@@ -27,6 +27,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var historyErrorMessage: String?
     @Published private(set) var isExecuting = false
     @Published private(set) var executionStage: ExecutionStage?
+    @Published private(set) var previewProgress: PreviewProgress?
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -39,14 +40,25 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private var activeControl: ExecutionControl?
     private var sessionID: UUID?
     private var armedApproval: ArmedApprovalIntent?
-    /// Set when the app left the foreground while an authorized batch was running.
-    /// The transient credential teardown is owed but deliberately postponed until
-    /// the batch resolves, so that scene changes cannot disturb a run in progress.
+    /// Set when the app left the foreground while an authorized batch or an active
+    /// Preview was running. The transient credential teardown is owed but
+    /// deliberately postponed until that work resolves, so that scene changes
+    /// cannot disturb it.
     private var owesBackgroundTeardown = false
+    /// A Preview that finished while the app was away and whose transient
+    /// credential was then torn down. It is deliberately NOT executable in this
+    /// state; `enterForeground()` revalidates it before restoring it.
+    private var suspendedPreview: SuspendedPreview?
 
     private struct ArmedApprovalIntent {
         let approval: NativeApproval
         let sessionID: UUID
+    }
+
+    private struct SuspendedPreview {
+        let snapshot: PreviewSnapshot
+        /// The exact document the snapshot was built from.
+        let document: String
     }
 
     init(
@@ -112,13 +124,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// Before execution starts this keeps the existing stale-Preview safety: the
     /// transient credential is dropped and the executable Preview is invalidated.
     ///
-    /// Once the Owner has completed the native confirmation and the batch has
-    /// actually started, a scene change is NOT an instruction to cancel. App
-    /// switching and call interruptions leave the authorized run alone; only the
-    /// system reclaiming our background assertion stops it, through the ordinary
-    /// cancellation path.
+    /// Once an authorized batch has actually started — or a read-only Preview is
+    /// already part-way through its reads — a scene change is NOT an instruction
+    /// to cancel. App switching and call interruptions leave that work alone; only
+    /// the system reclaiming our background assertion stops it, through the
+    /// ordinary cancellation path.
     func enterBackground() {
-        guard !isExecuting else {
+        guard !isExecuting, !isPreviewing else {
             owesBackgroundTeardown = true
             return
         }
@@ -128,6 +140,29 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     func enterForeground() {
         owesBackgroundTeardown = false
         restoreCredentialIfAvailable()
+        restoreSuspendedPreviewIfStillValid()
+    }
+
+    /// A Preview that completed during a short interruption is usable again only
+    /// if the document it was built from is still the current one and the restored
+    /// credential is the very same one that produced it. Anything else drops it,
+    /// leaving the presentation read-only exactly as a stale Preview would be.
+    ///
+    /// This restores read state only. No approval is persisted or revived, and
+    /// execution still performs its own fresh authenticated preflight before any
+    /// POST.
+    private func restoreSuspendedPreviewIfStillValid() {
+        guard let suspended = suspendedPreview else { return }
+        suspendedPreview = nil
+        guard !isBusy,
+              isConnected,
+              suspended.document == sourceText,
+              let fingerprint = credentialSession.fingerprint,
+              fingerprint == suspended.snapshot.credentialFingerprint
+        else { return }
+        snapshot = suspended.snapshot
+        preview = suspended.snapshot.presentation
+        isPreviewStale = false
     }
 
     func previewCurrentInput() async {
@@ -136,12 +171,23 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         isBusy = true
         isPreviewing = true
         errorMessage = nil
+        previewProgress = nil
         let control = ExecutionControl()
         activeControl = control
+
+        // Preview is a user-initiated read. Taken while still frontmost, it lets an
+        // ordinary app switch or call interruption pass without discarding reads
+        // that already completed. Expiry stops it cleanly; nothing is ever written.
+        let assertion = backgroundAssertionFactory()
+        assertion.begin(reason: "momo-interpretation-preview") {
+            control.requestCancellation()
+        }
         defer {
+            assertion.end()
             if activeControl === control { activeControl = nil }
             isPreviewing = false
             isBusy = false
+            previewProgress = nil
         }
 
         do {
@@ -157,8 +203,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let built = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: batch.entries,
                 credentialFingerprint: lease.fingerprint,
-                control: control
+                control: control,
+                onEntryStarted: { [weak self] entry, total in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isPreviewing else { return }
+                        self.previewProgress = PreviewProgress(entry: entry, total: total)
+                    }
+                }
             )
+            // Unchanged: the teardown owed to a background transition is postponed
+            // until this function returns, so the session is still the one that
+            // produced the lease and this check keeps its original strength.
             guard document == sourceText,
                   credentialSession.fingerprint == lease.fingerprint
             else {
@@ -179,13 +234,33 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             invalidatePreviewAfterRefreshFailure(
                 preservingStalePresentation: preserveStalePresentationOnFailure
             )
-            errorMessage = error.description
+            errorMessage = control.isCancellationRequested
+                ? CompanionError.previewInterrupted.description
+                : error.description
         } catch {
             invalidatePreviewAfterRefreshFailure(
                 preservingStalePresentation: preserveStalePresentationOnFailure
             )
             errorMessage = CompanionError.responseRejected.description
         }
+
+        settleBackgroundTeardownOwedByPreview(document: sourceText)
+    }
+
+    /// Runs the transient-credential teardown that a background transition asked
+    /// for while this Preview was still reading.
+    ///
+    /// Token hygiene is unchanged — the credential is dropped exactly as it would
+    /// have been at the moment of the transition. What is preserved is the *read*
+    /// result, held aside as non-executable until `enterForeground()` revalidates
+    /// it, so a short interruption does not force the Owner to re-read every item.
+    private func settleBackgroundTeardownOwedByPreview(document: String) {
+        guard owesBackgroundTeardown else { return }
+        owesBackgroundTeardown = false
+        let completed = snapshot
+        clearTransientCredential(preservingPreviewPresentation: true)
+        guard let completed else { return }
+        suspendedPreview = SuspendedPreview(snapshot: completed, document: document)
     }
 
     func askToExecute(_ group: OperationGroup) {
@@ -416,6 +491,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         return "\(rows.count) 条释义 · \(first) → \(last)"
     }
 
+    /// Non-nil only while a Preview is reading.
+    var previewProgressLabel: String? {
+        guard isPreviewing else { return nil }
+        return previewProgress?.label
+    }
+
     /// Non-nil only while an authorized batch is running.
     var executionProgressLabel: String? {
         guard isExecuting else { return nil }
@@ -471,6 +552,9 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     private func invalidateExecutionAuthorization() {
         snapshot = nil
+        // A source edit, token change or explicit invalidation also discards any
+        // Preview held aside across an interruption.
+        suspendedPreview = nil
         isPreviewStale = preview != nil
         invalidateArmedApproval()
     }

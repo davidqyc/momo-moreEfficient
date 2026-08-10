@@ -26,6 +26,7 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
     case transport
     case responseRejected
     case uncertainWriteOutcome
+    case previewInterrupted
     case credentialStorageUnavailable
 
     var description: String {
@@ -52,6 +53,8 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
             return "服务返回无法安全确认；操作已停止。"
         case .uncertainWriteOutcome:
             return "写入结果无法确认；不要重试，操作已停止。"
+        case .previewInterrupted:
+            return "预览被系统中断；未写入任何数据，可重新预览。"
         case .credentialStorageUnavailable:
             return "无法安全访问设备上的 Token；请解锁设备后重试。"
         }
@@ -209,6 +212,15 @@ enum ExecutionStage: Equatable, Sendable {
             return "正在收尾…"
         }
     }
+}
+
+/// Read progress of an ordinary Preview, using the same 1-based current-entry
+/// semantics as `ExecutionStage`. Carries no credential or identifier material.
+struct PreviewProgress: Equatable, Sendable {
+    let entry: Int
+    let total: Int
+
+    var label: String { "正在预览 \(entry)/\(total)" }
 }
 
 /// A `Sendable` sink the executor can report through without knowing about the UI.

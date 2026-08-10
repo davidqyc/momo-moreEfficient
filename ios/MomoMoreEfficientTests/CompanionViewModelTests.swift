@@ -59,11 +59,13 @@ final class CompanionViewModelTests: XCTestCase {
             interpretationsResponse([]),
         ])
         let gate = GateSleeper()
+        let assertion = FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
-            sleeperFactory: { gate }
+            sleeperFactory: { gate },
+            backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
         model.connect(token: &draft)
@@ -245,17 +247,19 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 0"])
     }
 
-    func testBackgroundCancelsPreviewBeforeItsNextGET() async {
+    func testBackgroundTimeExpiryCancelsPreviewBeforeItsNextGET() async {
         let transport = FakeHTTPTransport([
             vocabularyResponse("INVALID_VOC", "word"),
             interpretationsResponse([]),
         ])
         let gate = GateSleeper()
+        let assertion = FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
-            sleeperFactory: { gate }
+            sleeperFactory: { gate },
+            backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
         model.connect(token: &draft)
@@ -263,14 +267,15 @@ final class CompanionViewModelTests: XCTestCase {
 
         let previewTask = Task { await model.previewCurrentInput() }
         await gate.waitUntilEntered()
-        model.enterBackground()
+        assertion.expire()
         await gate.resume()
         await previewTask.value
 
         XCTAssertEqual(transport.getCount, 1)
         XCTAssertEqual(transport.postCount, 0)
-        XCTAssertFalse(model.isConnected)
         XCTAssertNil(model.preview)
+        XCTAssertFalse(model.isPreviewing)
+        XCTAssertFalse(model.isBusy)
     }
 
     func testExplicitRemoveDeletesCredentialAndPreview() async {

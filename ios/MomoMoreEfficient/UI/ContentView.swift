@@ -345,6 +345,8 @@ struct ContentView: View {
     }
 
     private var previewLoadingTitle: String {
+        // Real per-entry read progress once the first entry has been reached.
+        if let progress = viewModel.previewProgressLabel { return progress }
         if case let .valid(count, _, _) = viewModel.localParseState {
             return "正在预览 \(count) 条…"
         }
