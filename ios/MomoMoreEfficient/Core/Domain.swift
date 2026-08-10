@@ -185,6 +185,40 @@ struct ExecutionSummary: Equatable, Sendable {
     }
 }
 
+/// What an authorized execution is doing right now.
+///
+/// Every value is derived from real executor state — a completed readback, a
+/// dispatched item — never from a timer. Only the Owner's own spelling is carried;
+/// no identifier, fingerprint, payload or credential material appears here.
+enum ExecutionStage: Equatable, Sendable {
+    case preflight(group: OperationGroup, completed: Int, total: Int)
+    case writing(group: OperationGroup, item: Int, total: Int, spelling: String)
+    case finishing(group: OperationGroup)
+
+    var label: String {
+        switch self {
+        case let .preflight(_, completed, total):
+            return "正在预检 \(min(completed + 1, total))/\(total)"
+        case let .writing(group, item, total, spelling):
+            let verb = group == .create ? "正在新建" : "正在更新"
+            return "\(verb) \(item)/\(total) · \(spelling)"
+        case .finishing:
+            return "正在收尾…"
+        }
+    }
+}
+
+/// A `Sendable` sink the executor can report through without knowing about the UI.
+struct ExecutionProgressReporter: Sendable {
+    private let handler: @Sendable (ExecutionStage) -> Void
+
+    init(_ handler: @escaping @Sendable (ExecutionStage) -> Void) {
+        self.handler = handler
+    }
+
+    func report(_ stage: ExecutionStage) { handler(stage) }
+}
+
 struct FinalSummary: Equatable, Sendable {
     var created = 0
     var updated = 0

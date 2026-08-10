@@ -50,7 +50,8 @@ struct WriteExecutor {
         group: OperationGroup,
         displayedSnapshot: PreviewSnapshot,
         approval: NativeApproval,
-        control: ExecutionControl
+        control: ExecutionControl,
+        progress: ExecutionProgressReporter? = nil
     ) async -> ExecutionSummary {
         do {
             let expectedApproval = try ConfirmationBinding.makeApproval(
@@ -62,10 +63,16 @@ struct WriteExecutor {
             }
 
             let entries = displayedSnapshot.items.map(\.entry)
+            progress?.report(.preflight(group: group, completed: 0, total: entries.count))
             let fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: entries,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
-                control: control
+                control: control,
+                onEntryResolved: { completed, total in
+                    progress?.report(
+                        .preflight(group: group, completed: completed, total: total)
+                    )
+                }
             )
             guard fresh == displayedSnapshot,
                   try ConfirmationBinding.snapshotIdentity(fresh) == approval.snapshotIdentity
@@ -76,7 +83,7 @@ struct WriteExecutor {
             guard freshPlan.bindingDigest == approval.bindingDigest else {
                 return .stale(group)
             }
-            return await perform(plan: freshPlan, control: control)
+            return await perform(plan: freshPlan, control: control, progress: progress)
         } catch CompanionError.cancelled {
             return ExecutionSummary(
                 group: group,
@@ -100,17 +107,28 @@ struct WriteExecutor {
 
     private func perform(
         plan: ConfirmationPlan,
-        control: ExecutionControl
+        control: ExecutionControl,
+        progress: ExecutionProgressReporter?
     ) async -> ExecutionSummary {
         var results: [ItemExecutionResult] = []
         var succeeded = 0
         var failed = 0
 
-        for item in plan.items {
+        defer { progress?.report(.finishing(group: plan.group)) }
+
+        for (index, item) in plan.items.enumerated() {
             if control.isCancellationRequested {
                 results.append(ItemExecutionResult(spelling: item.spelling, outcome: .notAttempted))
                 break
             }
+            progress?.report(
+                .writing(
+                    group: plan.group,
+                    item: index + 1,
+                    total: plan.items.count,
+                    spelling: item.spelling
+                )
+            )
             do {
                 let route: InterpretationRoute
                 switch plan.group {

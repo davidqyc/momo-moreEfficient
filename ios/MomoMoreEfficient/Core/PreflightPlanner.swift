@@ -6,7 +6,8 @@ struct PreflightPlanner {
     func buildSnapshot(
         entries: [BatchEntry],
         credentialFingerprint: String,
-        control: ExecutionControl? = nil
+        control: ExecutionControl? = nil,
+        onEntryResolved: (@Sendable (_ completed: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PreviewSnapshot {
         guard !entries.isEmpty, entries.count <= CompanionConstants.maxBatchItems else {
             throw CompanionError.inputRejected
@@ -14,6 +15,7 @@ struct PreflightPlanner {
 
         var planned: [PrivatePreflightItem] = []
         for entry in entries {
+            defer { onEntryResolved?(planned.count, entries.count) }
             do {
                 let vocabulary = try await api.vocabulary(
                     spelling: entry.spelling,

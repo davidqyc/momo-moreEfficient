@@ -673,6 +673,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testPartialCreateCancellationPreservesSuccessAndShowsNotAttempted() async {
         let historyStore = InMemoryHistoryStore()
+        let assertion = FakeBackgroundExecutionAssertion()
         let oldPreviewResults: [StubbedResult] = [
             vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
             vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
@@ -684,7 +685,8 @@ final class CompanionViewModelTests: XCTestCase {
         ])
         let model = connectedModel(
             transports: [previewTransport, executionTransport],
-            historyStore: historyStore
+            historyStore: historyStore,
+            assertion: assertion
         )
         model.sourceText = "one\nn. 一\ntwo\nn. 二"
         await model.previewCurrentInput()
@@ -693,7 +695,7 @@ final class CompanionViewModelTests: XCTestCase {
         let execution = model.executeConfirmed(.create)
         XCTAssertNotNil(execution)
         await executionTransport.waitUntilPOSTDispatched()
-        model.enterBackground()
+        assertion.expire()
         await executionTransport.resumePOST()
         await execution?.value
 
@@ -715,19 +717,20 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(historyStore.saveCount, 1)
     }
 
-    func testBackgroundImmediatelyAfterNativeConfirmShowsAllItemsNotAttempted() async {
+    func testBackgroundTimeExpiryImmediatelyAfterConfirmShowsAllItemsNotAttempted() async {
         let historyStore = InMemoryHistoryStore()
+        let assertion = FakeBackgroundExecutionAssertion()
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
         ])
-        let model = connectedModel(factory, historyStore: historyStore)
+        let model = connectedModel(factory, historyStore: historyStore, assertion: assertion)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.askToExecute(.create)
 
         let execution = model.executeConfirmed(.create)
         XCTAssertNotNil(execution)
-        model.enterBackground()
+        assertion.expire()
         await execution?.value
 
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 0)
@@ -745,6 +748,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testPartialUpdateCancellationUsesSameStoppedPresentation() async {
         let historyStore = InMemoryHistoryStore()
+        let assertion = FakeBackgroundExecutionAssertion()
         let oldA = interpretation("INVALID_RECORD_A", "n. 旧一", tags: ["考研"])
         let oldB = interpretation("INVALID_RECORD_B", "n. 旧二", tags: ["考研"])
         let previewResults: [StubbedResult] = [
@@ -758,7 +762,8 @@ final class CompanionViewModelTests: XCTestCase {
         ])
         let model = connectedModel(
             transports: [previewTransport, executionTransport],
-            historyStore: historyStore
+            historyStore: historyStore,
+            assertion: assertion
         )
         model.sourceText = "one\nn. 新一\ntwo\nn. 新二"
         await model.previewCurrentInput()
@@ -767,7 +772,7 @@ final class CompanionViewModelTests: XCTestCase {
         let execution = model.executeConfirmed(.update)
         XCTAssertNotNil(execution)
         await executionTransport.waitUntilPOSTDispatched()
-        model.enterBackground()
+        assertion.expire()
         await executionTransport.resumePOST()
         await execution?.value
 
@@ -918,13 +923,16 @@ final class CompanionViewModelTests: XCTestCase {
     private func connectedModel(
         _ factory: SequencedTransportFactory,
         tokenStore: FakeTokenStore = FakeTokenStore(),
-        historyStore: HistoryStore = InMemoryHistoryStore()
+        historyStore: HistoryStore = InMemoryHistoryStore(),
+        assertion: FakeBackgroundExecutionAssertion? = nil
     ) -> CompanionViewModel {
+        let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
             tokenStore: tokenStore,
             historyStore: historyStore,
             transportFactory: factory.make,
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
         model.connect(token: &draft)
@@ -934,66 +942,23 @@ final class CompanionViewModelTests: XCTestCase {
 
     private func connectedModel(
         transports: [HTTPTransport],
-        historyStore: HistoryStore = InMemoryHistoryStore()
+        historyStore: HistoryStore = InMemoryHistoryStore(),
+        assertion: FakeBackgroundExecutionAssertion? = nil
     ) -> CompanionViewModel {
+        let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         var remaining = transports
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
             historyStore: historyStore,
             transportFactory: { remaining.removeFirst() },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
         model.connect(token: &draft)
         XCTAssertTrue(draft.isEmpty)
         return model
     }
-}
-
-private actor PausingPOSTTransport: HTTPTransport {
-    private var results: [StubbedResult]
-    private var requests: [TransportRequest] = []
-    private var postWasDispatched = false
-    private var postWaiters: [CheckedContinuation<Void, Never>] = []
-    private var postContinuation: CheckedContinuation<Void, Never>?
-
-    init(_ results: [StubbedResult]) {
-        self.results = results
-    }
-
-    func send(
-        _ request: TransportRequest,
-        credential: OperationCredentialLease
-    ) async throws -> TransportResponse {
-        requests.append(request)
-        if request.route.method == .post {
-            postWasDispatched = true
-            postWaiters.forEach { $0.resume() }
-            postWaiters.removeAll()
-            await withCheckedContinuation { postContinuation = $0 }
-        }
-        guard !results.isEmpty else {
-            XCTFail("unexpected pausing transport request")
-            throw CompanionError.transport
-        }
-        switch results.removeFirst() {
-        case let .response(response): return response
-        case let .failure(error): throw error
-        }
-    }
-
-    func waitUntilPOSTDispatched() async {
-        if postWasDispatched { return }
-        await withCheckedContinuation { postWaiters.append($0) }
-    }
-
-    func resumePOST() {
-        postContinuation?.resume()
-        postContinuation = nil
-    }
-
-    var postCount: Int { requests.filter { $0.route.method == .post }.count }
-    var getCount: Int { requests.filter { $0.route.method == .get }.count }
 }
 
 final class SequencedTransportFactory: @unchecked Sendable {
