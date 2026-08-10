@@ -25,17 +25,24 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var history: [ExecutionReceipt] = []
     @Published private(set) var completionAcknowledgement: String?
     @Published private(set) var historyErrorMessage: String?
+    @Published private(set) var isExecuting = false
+    @Published private(set) var executionStage: ExecutionStage?
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
     private let historyStore: HistoryStore
     private let transportFactory: () -> HTTPTransport
     private let sleeperFactory: () -> RequestSleeper
+    private let backgroundAssertionFactory: @MainActor () -> BackgroundExecutionAssertion
     private let dateProvider: () -> Date
     private var snapshot: PreviewSnapshot?
     private var activeControl: ExecutionControl?
     private var sessionID: UUID?
     private var armedApproval: ArmedApprovalIntent?
+    /// Set when the app left the foreground while an authorized batch was running.
+    /// The transient credential teardown is owed but deliberately postponed until
+    /// the batch resolves, so that scene changes cannot disturb a run in progress.
+    private var owesBackgroundTeardown = false
 
     private struct ArmedApprovalIntent {
         let approval: NativeApproval
@@ -47,12 +54,15 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         historyStore: HistoryStore = FileHistoryStore(),
         transportFactory: @escaping () -> HTTPTransport = { URLSessionHTTPTransport() },
         sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() },
+        backgroundAssertionFactory: @escaping @MainActor () -> BackgroundExecutionAssertion
+            = { makeDefaultBackgroundExecutionAssertion() },
         dateProvider: @escaping () -> Date = Date.init
     ) {
         self.tokenStore = tokenStore
         self.historyStore = historyStore
         self.transportFactory = transportFactory
         self.sleeperFactory = sleeperFactory
+        self.backgroundAssertionFactory = backgroundAssertionFactory
         self.dateProvider = dateProvider
         restoreHistory()
         restoreCredentialIfAvailable()
@@ -97,11 +107,26 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
     }
 
+    /// `.inactive` or `.background`.
+    ///
+    /// Before execution starts this keeps the existing stale-Preview safety: the
+    /// transient credential is dropped and the executable Preview is invalidated.
+    ///
+    /// Once the Owner has completed the native confirmation and the batch has
+    /// actually started, a scene change is NOT an instruction to cancel. App
+    /// switching and call interruptions leave the authorized run alone; only the
+    /// system reclaiming our background assertion stops it, through the ordinary
+    /// cancellation path.
     func enterBackground() {
+        guard !isExecuting else {
+            owesBackgroundTeardown = true
+            return
+        }
         clearTransientCredential(preservingPreviewPresentation: true)
     }
 
     func enterForeground() {
+        owesBackgroundTeardown = false
         restoreCredentialIfAvailable()
     }
 
@@ -215,17 +240,30 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             return nil
         }
         isBusy = true
+        isExecuting = true
+        // Visible immediately, before the first await, so the UI never sits in an
+        // unexplained disabled state.
+        executionStage = .preflight(group: group, entry: 1, total: displayed.items.count)
         errorMessage = nil
         historyErrorMessage = nil
         let control = ExecutionControl()
         activeControl = control
+
+        // Taken while we are still frontmost, which is the only time UIKit allows it.
+        let assertion = backgroundAssertionFactory()
+        assertion.begin(reason: "momo-interpretation-write-batch") {
+            // Expiry means fail closed: stop dispatching further items. It never
+            // retries, never resumes and never issues a second POST for an item.
+            control.requestCancellation()
+        }
 
         return Task {
             await executeAuthorized(
                 group: group,
                 displayed: displayed,
                 intent: intent,
-                control: control
+                control: control,
+                assertion: assertion
             )
         }
     }
@@ -234,9 +272,18 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         group: OperationGroup,
         displayed: PreviewSnapshot,
         intent: ArmedApprovalIntent,
-        control: ExecutionControl
+        control: ExecutionControl,
+        assertion: BackgroundExecutionAssertion
     ) async {
         var completedReceipt: ExecutionReceipt?
+        let progress = ExecutionProgressReporter { [weak self] stage in
+            Task { @MainActor [weak self] in
+                // A report that lands after the batch resolved must not resurrect
+                // a progress label on a finished run.
+                guard let self, self.isExecuting else { return }
+                self.executionStage = stage
+            }
+        }
         do {
             let lease = try credentialSession.makeOperationLease()
             defer { lease.clear() }
@@ -249,7 +296,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 group: group,
                 displayedSnapshot: displayed,
                 approval: intent.approval,
-                control: control
+                control: control,
+                progress: progress
             )
             if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
@@ -284,8 +332,11 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 errorMessage = CompanionError.responseRejected.description
             }
         }
+        assertion.end()
         activeControl = nil
         isBusy = false
+        isExecuting = false
+        executionStage = nil
         invalidatePreview()
         if let completedReceipt, completedReceipt.isFullSuccess {
             let localHistoryError = historyErrorMessage
@@ -295,6 +346,11 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             )
             completionAcknowledgement = acknowledgement(for: completedReceipt)
             historyErrorMessage = localHistoryError
+        }
+        // The scene change we postponed while the batch was authorized and running.
+        if owesBackgroundTeardown {
+            owesBackgroundTeardown = false
+            clearTransientCredential(preservingPreviewPresentation: true)
         }
     }
 
@@ -358,6 +414,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
               let last = rows.last?.spelling
         else { return nil }
         return "\(rows.count) 条释义 · \(first) → \(last)"
+    }
+
+    /// Non-nil only while an authorized batch is running.
+    var executionProgressLabel: String? {
+        guard isExecuting else { return nil }
+        return executionStage?.label
     }
 
     var executionActions: [ExecutionAction] {

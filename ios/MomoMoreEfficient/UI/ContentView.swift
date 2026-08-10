@@ -2,13 +2,18 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var viewModel = CompanionViewModel()
+    @StateObject private var viewModel: CompanionViewModel
     @State private var showingTokenSheet = false
     @State private var tokenDraft = ""
+
+    init(viewModel: @autoclosure @escaping () -> CompanionViewModel) {
+        _viewModel = StateObject(wrappedValue: viewModel())
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                rehearsalBanner
                 accountRow
                 Divider()
                 ScrollView {
@@ -32,7 +37,7 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !viewModel.executionActions.isEmpty {
+                if !viewModel.executionActions.isEmpty || viewModel.isExecuting {
                     executionBar
                 }
             }
@@ -66,6 +71,18 @@ struct ContentView: View {
             @unknown default:
                 viewModel.enterBackground()
             }
+        }
+    }
+
+    @ViewBuilder
+    private var rehearsalBanner: some View {
+        if RehearsalMode.isEnabled {
+            Text("演练模式 · 无真实 Token · 不访问墨墨 · 不产生真实写入")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(Color.purple)
         }
     }
 
@@ -147,6 +164,7 @@ struct ContentView: View {
                 Spacer()
                 Button("编辑") { viewModel.editInput() }
                     .font(.subheadline)
+                    .disabled(viewModel.isBusy)
             }
 
             HStack(spacing: 14) {
@@ -228,22 +246,46 @@ struct ContentView: View {
         .padding(.vertical, 10)
     }
 
+    @ViewBuilder
     private var executionBar: some View {
-        HStack(spacing: 12) {
-            ForEach(viewModel.executionActions) { action in
-                Button(action.title) {
-                    viewModel.askToExecute(action.group)
+        Group {
+            if viewModel.isExecuting {
+                executionProgressRow
+            } else {
+                HStack(spacing: 12) {
+                    ForEach(viewModel.executionActions) { action in
+                        Button(action.title) {
+                            viewModel.askToExecute(action.group)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(action.group == .create ? .blue : .orange)
+                        .frame(maxWidth: .infinity)
+                        .disabled(action.count == 0 || viewModel.isBusy)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(action.group == .create ? .blue : .orange)
-                .frame(maxWidth: .infinity)
-                .disabled(action.count == 0 || viewModel.isBusy)
             }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    private var executionProgressRow: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(viewModel.executionProgressLabel ?? "正在执行…")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                Text("短暂切换应用不会取消；若系统回收后台时间，将安全停止。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(viewModel.executionProgressLabel ?? "正在执行")
     }
 
     @ViewBuilder
@@ -375,7 +417,7 @@ private struct HistoryListView: View {
                 Button("清空历史", role: .destructive) {
                     showingClearConfirmation = true
                 }
-                .disabled(viewModel.history.isEmpty)
+                .disabled(viewModel.history.isEmpty || viewModel.isBusy)
             }
         }
         .confirmationDialog(

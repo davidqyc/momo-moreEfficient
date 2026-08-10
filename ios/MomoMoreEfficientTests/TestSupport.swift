@@ -72,6 +72,52 @@ final class InMemoryHistoryStore: HistoryStore {
     }
 }
 
+/// Stands in for the OS background-time assertion so lifecycle behaviour can be
+/// driven deterministically: `expire()` is the system reclaiming the app.
+@MainActor
+final class FakeBackgroundExecutionAssertion: BackgroundExecutionAssertion {
+    private(set) var beginCount = 0
+    private(set) var endCount = 0
+    private(set) var reasons: [String] = []
+    private var onExpiration: (@Sendable () -> Void)?
+
+    func begin(reason: String, onExpiration: @escaping @Sendable () -> Void) {
+        beginCount += 1
+        reasons.append(reason)
+        self.onExpiration = onExpiration
+    }
+
+    func end() {
+        endCount += 1
+        onExpiration = nil
+    }
+
+    /// Simulates iOS reclaiming the granted background time.
+    func expire() {
+        onExpiration?()
+    }
+
+    var isHeld: Bool { onExpiration != nil }
+}
+
+/// Captures every `ExecutionStage` an executor reports, in order.
+final class StageRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [ExecutionStage] = []
+
+    func record(_ stage: ExecutionStage) {
+        lock.lock()
+        recorded.append(stage)
+        lock.unlock()
+    }
+
+    var stages: [ExecutionStage] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+}
+
 enum StubbedResult {
     case response(TransportResponse)
     case failure(CompanionError)
@@ -236,4 +282,50 @@ struct GoldenBaseline: Decodable {
         case interpretation, tags, status
         case recordID = "record_id"
     }
+}
+
+actor PausingPOSTTransport: HTTPTransport {
+    private var results: [StubbedResult]
+    private var requests: [TransportRequest] = []
+    private var postWasDispatched = false
+    private var postWaiters: [CheckedContinuation<Void, Never>] = []
+    private var postContinuation: CheckedContinuation<Void, Never>?
+
+    init(_ results: [StubbedResult]) {
+        self.results = results
+    }
+
+    func send(
+        _ request: TransportRequest,
+        credential: OperationCredentialLease
+    ) async throws -> TransportResponse {
+        requests.append(request)
+        if request.route.method == .post {
+            postWasDispatched = true
+            postWaiters.forEach { $0.resume() }
+            postWaiters.removeAll()
+            await withCheckedContinuation { postContinuation = $0 }
+        }
+        guard !results.isEmpty else {
+            XCTFail("unexpected pausing transport request")
+            throw CompanionError.transport
+        }
+        switch results.removeFirst() {
+        case let .response(response): return response
+        case let .failure(error): throw error
+        }
+    }
+
+    func waitUntilPOSTDispatched() async {
+        if postWasDispatched { return }
+        await withCheckedContinuation { postWaiters.append($0) }
+    }
+
+    func resumePOST() {
+        postContinuation?.resume()
+        postContinuation = nil
+    }
+
+    var postCount: Int { requests.filter { $0.route.method == .post }.count }
+    var getCount: Int { requests.filter { $0.route.method == .get }.count }
 }
