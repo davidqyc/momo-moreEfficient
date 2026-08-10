@@ -140,7 +140,7 @@ struct PreviewPresentation: Codable, Equatable, Sendable {
     let counts: PreviewCounts
 }
 
-enum OperationGroup: String, Equatable, Sendable {
+enum OperationGroup: String, Codable, Equatable, Sendable {
     case create
     case update
 }
@@ -153,7 +153,7 @@ struct ExecutionAction: Equatable, Identifiable, Sendable {
     var title: String { group == .create ? "新建 \(count)" : "更新 \(count)" }
 }
 
-enum WriteOutcome: String, Equatable, Sendable {
+enum WriteOutcome: String, Codable, Equatable, Sendable {
     case confirmed
     case recovered
     case notVerified

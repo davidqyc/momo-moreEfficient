@@ -29,6 +29,49 @@ final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     var debugDescription: String { "FakeTokenStore(<redacted>)" }
 }
 
+enum FakeHistoryStoreError: Error {
+    case requestedFailure
+}
+
+final class InMemoryHistoryStore: HistoryStore {
+    private(set) var receipts: [ExecutionReceipt]
+    private(set) var saveCount = 0
+    private(set) var clearCount = 0
+    private(set) var encodedData: Data?
+    var failLoad = false
+    var failSave = false
+    var failClear = false
+
+    init(receipts: [ExecutionReceipt] = []) {
+        self.receipts = receipts
+    }
+
+    func loadReceipts() throws -> [ExecutionReceipt] {
+        if failLoad { throw FakeHistoryStoreError.requestedFailure }
+        return receipts
+    }
+
+    func saveReceipts(_ receipts: [ExecutionReceipt]) throws {
+        saveCount += 1
+        if failSave { throw FakeHistoryStoreError.requestedFailure }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(receipts)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        self.receipts = try decoder.decode([ExecutionReceipt].self, from: encoded)
+        encodedData = encoded
+    }
+
+    func clearReceipts() throws {
+        clearCount += 1
+        if failClear { throw FakeHistoryStoreError.requestedFailure }
+        receipts.removeAll()
+        encodedData = nil
+    }
+}
+
 enum StubbedResult {
     case response(TransportResponse)
     case failure(CompanionError)

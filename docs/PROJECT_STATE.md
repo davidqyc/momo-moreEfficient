@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-10
-sourceMainSha=8c93a25fff4351293e73a6bf066ab91ad1b15db9
+sourceMainSha=265e09c9c54f0210f2a13f02927cf1fb506be025
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,10 +24,10 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=8c93a25fff4351293e73a6bf066ab91ad1b15db9
+CURRENT_MAIN_AT_SNAPSHOT=265e09c9c54f0210f2a13f02927cf1fb506be025
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#66
-OPEN_PRODUCT_PR=#66 implementation pending Draft PR at state update
+CURRENT_PRIMARY_ISSUE=#69
+OPEN_PRODUCT_PR=#69 implementation pending Draft PR at state update
 ```
 
 当前已完成：
@@ -38,20 +38,22 @@ OPEN_PRODUCT_PR=#66 implementation pending Draft PR at state update
 - Issue #54 的 macOS 本地日常 UI 已合并并完成 Owner 真机验收：`.app` 双击启动、native hidden Token prompt、真实主账号 12 条 Preview，结果 `新建 0 / 更新 0 / 已一致 12 / 失败 0`，本次 acceptance 无写入；
 - 当前 macOS UI 的直接聊天复制可能先于解析器丢失行边界，这是非阻断 UX 观察；#54 已关闭，不在该 Issue 内扩成 heuristic parser；
 - Issue #56 的轻量 iOS companion 已完成实现、独立审阅、真机安装与真实主账号 Preview 验收；首个真实 iPhone Preview 结果为 `CREATE 0 / UPDATE 0 / ALREADY_MATCHING 12 / BLOCKED 0 / POST 0`，#56 已关闭；
-- Issue #60 的真实 12 条 Preview 已观察到 `CREATE 9 / UPDATE 3`，没有点击执行按钮，也没有写入授权；
+- Issue #60 的单条 `sphere` UPDATE canary 已完成真实写入与鉴权回读；
+- Issue #68 的单条 `incentive` CREATE canary 已完成真实写入与鉴权回读；
 - Issue #63 的紧凑 iOS 日常界面和仅本设备 Keychain Token 持久化已经完成、合并并经真机确认；
-- Issue #66 是临时 UX/assets 修复门槛：后台保留只读 stale Preview 展示、清除全部执行授权，并加入暂定 AppIcon；
+- Issue #66 的 stale Preview 与 AppIcon 修复已经合并并安装；
+- Issue #69 是当前 UX/history 门槛：将不可变执行回执与新草稿分离，并加入仅本设备的非敏感执行历史；
 - phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_66_STALE_PREVIEW_APPICON_REPAIR_GATE
+ISSUE_69_EXECUTION_RECEIPT_HISTORY_GATE
 ```
 
-Issue #66 是当前临时修复门槛：后台只保留进程内只读 Preview 展示，清除快照、session、确认与一次性 approval 等全部执行授权，并加入 Owner 选定的暂定 AppIcon。
+Issue #69 是当前唯一实施门槛：成功执行后把不可变、非敏感回执归档到本地 History，并让活动工作流回到干净草稿；部分、失败或停止时保留原草稿供检查和恢复。
 
-Issue #60 保持 OPEN 但暂停。#66 经独立审阅、合并并安装后，必须从新的真实 Preview 恢复；此前观察到的 `CREATE 9 / UPDATE 3` 只是证据，不构成写入授权，任何旧授权均不得跨越本次修复。
+剩余 genuine batch 在 #69 完成审阅、合并和真机安装前继续等待。既有 `sphere` / `incentive` canary 不回填 History，也不构成任何后续批次授权。
 
 ## 4. Other active routes
 
@@ -93,7 +95,7 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 - 不开放 delete；没有自动 rollback；
 - update 只针对唯一明确的用户自建记录；歧义时停止；
 - 不修改墨墨内置释义；phrase/example automation 仍 blocked；
-- Issue #60 在 #66 合并、安装和 fresh Preview 前保持暂停；恢复后首个真实 iPhone 写入仍只允许一个 genuine item、一个 operation group，并需新的精确 Owner 授权；
+- 剩余真实批次在 #69 审阅、合并和安装前保持暂停；之后任何真实 iPhone 写入仍需新的 Preview、原生确认和精确 Owner 授权；
 - 真实写入不得因为换对话、文档更新或新 Agent 接管而自动授权。
 
 ## 6. Maintenance rule

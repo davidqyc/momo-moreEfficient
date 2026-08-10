@@ -24,6 +24,13 @@ struct ContentView: View {
             }
             .navigationTitle("释义录入")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink("历史") {
+                        HistoryListView(viewModel: viewModel)
+                    }
+                }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !viewModel.executionActions.isEmpty {
                     executionBar
@@ -87,6 +94,12 @@ struct ContentView: View {
 
     private var editorSurface: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let acknowledgement = viewModel.completionAcknowledgement {
+                Text(acknowledgement)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+
             TextEditor(text: $viewModel.sourceText)
                 .frame(minHeight: 140, maxHeight: 190)
                 .padding(8)
@@ -256,6 +269,11 @@ struct ContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.red)
         }
+        if let message = viewModel.historyErrorMessage {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.red)
+        }
     }
 
     private var tokenSheet: some View {
@@ -324,5 +342,115 @@ struct ContentView: View {
 
     private func clearTokenDraft() {
         tokenDraft.removeAll(keepingCapacity: false)
+    }
+}
+
+private struct HistoryListView: View {
+    @ObservedObject var viewModel: CompanionViewModel
+    @State private var showingClearConfirmation = false
+
+    var body: some View {
+        List {
+            if let message = viewModel.historyErrorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+            if viewModel.history.isEmpty {
+                ContentUnavailableView("暂无历史", systemImage: "clock.arrow.circlepath")
+            } else {
+                ForEach(viewModel.history) { receipt in
+                    NavigationLink {
+                        HistoryDetailView(receipt: receipt)
+                    } label: {
+                        HistoryRow(receipt: receipt)
+                    }
+                }
+            }
+        }
+        .navigationTitle("历史")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("清空历史", role: .destructive) {
+                    showingClearConfirmation = true
+                }
+                .disabled(viewModel.history.isEmpty)
+            }
+        }
+        .confirmationDialog(
+            "清空本地历史？",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清空历史", role: .destructive) { viewModel.clearHistory() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除本机执行回执；不会影响 Token、当前草稿或墨墨数据。")
+        }
+    }
+}
+
+private struct HistoryRow: View {
+    let receipt: ExecutionReceipt
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(receipt.timestamp.formatted(date: .omitted, time: .shortened)) · \(operation) \(receipt.items.count) · \(spellingSummary)")
+                .font(.subheadline)
+                .lineLimit(1)
+            Text(outcomeSummary)
+                .font(.caption)
+                .foregroundStyle(receipt.isFullSuccess ? Color.secondary : Color.orange)
+        }
+    }
+
+    private var operation: String { receipt.operationGroup == .create ? "新建" : "更新" }
+
+    private var spellingSummary: String {
+        guard let first = receipt.items.first?.spelling else { return "—" }
+        return receipt.items.count == 1 ? first : "\(first) 等"
+    }
+
+    private var outcomeSummary: String {
+        if receipt.isFullSuccess { return "成功" }
+        var parts: [String] = []
+        if receipt.succeeded > 0 { parts.append("\(receipt.succeeded) 成功") }
+        if receipt.failed > 0 { parts.append("\(receipt.failed) 失败") }
+        if receipt.notAttempted > 0 { parts.append("\(receipt.notAttempted) 未执行") }
+        return parts.joined(separator: " / ")
+    }
+}
+
+private struct HistoryDetailView: View {
+    let receipt: ExecutionReceipt
+
+    var body: some View {
+        List {
+            Section("执行") {
+                LabeledContent("时间", value: receipt.timestamp.formatted())
+                LabeledContent("操作", value: receipt.operationGroup == .create ? "CREATE" : "UPDATE")
+                LabeledContent("成功", value: "\(receipt.succeeded)")
+                LabeledContent("失败", value: "\(receipt.failed)")
+                LabeledContent("未执行", value: "\(receipt.notAttempted)")
+                LabeledContent("已停止", value: receipt.stopped ? "是" : "否")
+            }
+            Section("条目") {
+                ForEach(Array(receipt.items.enumerated()), id: \.offset) { _, item in
+                    LabeledContent(item.spelling, value: outcomeLabel(item.finalOutcome))
+                }
+            }
+        }
+        .navigationTitle("执行回执")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func outcomeLabel(_ outcome: WriteOutcome) -> String {
+        switch outcome {
+        case .confirmed: return "已确认"
+        case .recovered: return "已恢复确认"
+        case .notVerified: return "未确认"
+        case .notAttempted: return "未执行"
+        }
     }
 }
