@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-12
-sourceMainSha=ff0b262a27e213245cf8e110096fc64c5e69b05d
+sourceMainSha=f8a5fcd6e78bf52fa48af311160bb5f089d555f1
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,7 +13,7 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
 CURRENT_PRIMARY_ISSUE=#4
-CURRENT_UNIQUE_NEXT=INSTALL_AND_SMOKE_FINAL_USABILITY_THEN_REAL_USE_PAUSE
+CURRENT_UNIQUE_NEXT=REAL_USE_PAUSE
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -23,69 +23,28 @@ ACTIVE_WIP=none
 - interpretation batch CREATE/UPDATE is production-validated on the intended account;
 - iOS companion is in real use; iOS Token follows D-016 device-only Keychain policy;
 - phrase CREATE core + iPhone UI are merged and production-validated;
-- #87 + #92 + #88 final-usability implementation is complete in PR #93, and fresh Opus review passed;
-- first real main-account phrase CREATE canary passed exact English/Chinese/source/`PUBLISHED` hard readback; that run also round-tripped `MBA/BEC/GMAT`;
-- Maimemo App visually highlighted the English target although Open API readback did not return highlight; Chinese semantic range remains manual/unavailable through documented writable API;
-- #89 / PR #91 merged as `0541c239acfa6d2585f3fc8eaeed9a00646c718b`: only `PUBLISHED` phrases count active, `DELETED` tombstones do not consume capacity or block re-creation, 5 active phrases block another CREATE with a manual fallback, and >5 fails closed;
+- #89 / PR #91 added active-capacity + DELETED-tombstone handling without phrase UPDATE;
+- #87 + #92 + #88 final usability shipped in PR #93; fresh Opus review passed;
+- merged `main` @ `f8a5fcd6e78bf52fa48af311160bb5f089d555f1` built, installed and launched successfully on the Owner's physical iPhone;
+- `墨墨账号 ✓ 已连接` neutral wording is correct on device;
+- shared `MBA / BEC / GMAT` tag preference persisted across app termination/relaunch;
+- mixed native 3-line + 4-line phrase input parsed correctly on device;
+- no-source Preview displayed `SOURCE 未填写`, source-present Preview preserved `Financial Times`, and the selected tag summary displayed correctly;
+- final smoke reached `新建 2 / 一致 0 / 阻断 0` with Preview only; no synthetic phrase write was executed;
+- first real main-account phrase CREATE canary previously passed exact English/Chinese/source/`PUBLISHED` hard readback and round-tripped `MBA/BEC/GMAT`;
 - current merged safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery.
 
-## Lightweight architecture reset
+## Current route — REAL_USE_PAUSE
 
-Owner accepted the 2026-08-12 fresh Fable 5 audit and Coordinator adjudication:
+No further feature-building step is scheduled.
 
-- current merged app stays mostly as-is; no broad refactor;
-- low-frequency edge cases with cheap manual fallback default to guard/defer, not complete automation;
-- scope subtraction is preferred over generic abstraction;
-- review/rehearsal/evidence strength must match realistic risk;
-- real use should interrupt feature accumulation when it is more informative than the next hypothetical feature.
+Use the app for real batches. Re-open engineering only from:
 
-Durable routing lives in `AGENTS.md`, `docs/CODEX_REASONING_DEPTH_POLICY.md`, `docs/AGENT_SKILLS_CONNECTOR.md`, and `davidqyc/agent-skills`; do not duplicate those rules here.
+- repeated real friction;
+- a safety incident;
+- an explicit decision to start external distribution.
 
-## Final usability implementation complete
-
-PR #93 completes #87 + #92 + #88 together. The current product implementation has no further feature-building step before real use.
-
-### #87 — native phrase input + optional source
-
-Accept native phrase records with 3 or 4 logical non-empty lines:
-
-```text
-spelling
-English sentence
-Chinese translation
-[source/origin — optional]
-```
-
-Blank lines may be ignored. Mixed 3/4-line batches are allowed only when the whole document has exactly one valid deterministic segmentation; ambiguous input fails closed. Keep the existing strict labeled grammar.
-
-When source is supplied it remains an exact hard field. When omitted, never invent a source; use documented `origin` with an empty string and treat the first real no-source write as a small runtime-validation point.
-
-### #92 — persisted shared tag preference
-
-Replace the universal hard-coded `MBA/BEC/GMAT` convention with one user preference:
-
-```text
-发布状态 = PUBLISHED / 公开（固定）
-标签 = 0–3 个，可为空
-```
-
-Use one shared tag set valid for both interpretation and phrase endpoints, persisted locally in UserDefaults. Default is zero tags. Preference changes invalidate current Preview/approval. Interpretation exact-state semantics use the selected tags; phrase tags remain non-blocking observations.
-
-### #88 — neutral account wording
-
-In the same UI-touching PR:
-
-```text
-主账号 -> 墨墨账号
-```
-
-Do not build nickname/profile fetching, local account labels, OAuth/OIDC, account switching or identity frameworks.
-
-## Unique next action
-
-Install on the Owner's physical iPhone, set the Owner's persistent tags once (`MBA/BEC/GMAT` if still desired), and smoke-test native 3/4-line input. Then validate optional-origin naturally with the first genuinely wanted no-source phrase; do not create a synthetic write merely for characterization.
-
-After that smoke, enter a real-use pause. Re-open engineering only from repeated real friction, a safety incident, or an explicit external-distribution decision.
+The first genuinely wanted 3-line/no-source phrase may naturally validate production handling of empty `origin`. Do not create a synthetic extra write merely for characterization.
 
 ## Deferred routes
 
@@ -106,10 +65,10 @@ separate interpretation/phrase tag profiles = DEFER unless real users need them
 - dispatched POST gets immediate authenticated readback; uncertain outcome gets GET-only recovery;
 - UPDATE targets only explicit authenticated-user records; ambiguity blocks;
 - no automatic delete/rollback/replay;
-- source/origin equality is hard when the user supplied source; no-source semantics are governed by #87;
+- source/origin equality is hard when the user supplied source; no-source semantics are governed by D-019 / #87;
 - unknown/malformed server schema fails closed;
 - no new product feature is justified merely because an Issue already exists.
 
 ## Maintenance rule
 
-Keep this file to current state, one next step, and live boundaries only. Update it at real merged milestones, preferably inside the same product PR; do not create standalone chronology commits between micro-steps.
+Keep this file to current state, one next step, and live boundaries only. During `REAL_USE_PAUSE`, do not update it for ordinary successful batches; update only when the project re-enters engineering for a real reason.
