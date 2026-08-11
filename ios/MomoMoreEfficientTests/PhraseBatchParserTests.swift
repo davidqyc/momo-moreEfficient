@@ -92,6 +92,15 @@ final class PhraseBatchParserTests: XCTestCase {
         """)
     }
 
+    func testNativeLogicalValuesRejectLeadingAndTrailingWhitespace() {
+        assertRejected("word\n English sentence\n中文翻译")
+        assertRejected("word\nEnglish sentence \n中文翻译")
+        assertRejected("word\nEnglish sentence\n 中文翻译")
+        assertRejected("word\nEnglish sentence\n中文翻译 ")
+        assertRejected("word\nEnglish sentence\n中文翻译\n source")
+        assertRejected("word\nEnglish sentence\n中文翻译\nsource ")
+    }
+
     func testValidMultiEntryBatchPreservesExactValues() throws {
         let document = """
         ## acquisition

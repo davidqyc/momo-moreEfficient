@@ -223,6 +223,7 @@ enum PhraseBatchParser {
 
     private static func isSafeNonemptyLine(_ value: String, maximumCharacters: Int) -> Bool {
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
             && value.unicodeScalars.count <= maximumCharacters
             && !containsDisallowedControlCharacter(value, allowingNewline: false)
     }

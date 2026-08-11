@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-12
-sourceMainSha=d1f2bad0a8b68915f7c71efcca1bf6230c5b2641
+sourceMainSha=ff0b262a27e213245cf8e110096fc64c5e69b05d
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#87
-CURRENT_UNIQUE_NEXT=NATIVE_3_4_LINE_PHRASE_INPUT_PLUS_PERSISTED_TAG_DEFAULTS_PLUS_NEUTRAL_ACCOUNT_WORDING
+CURRENT_PRIMARY_ISSUE=#4
+CURRENT_UNIQUE_NEXT=INSTALL_AND_SMOKE_FINAL_USABILITY_THEN_REAL_USE_PAUSE
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -23,6 +23,7 @@ ACTIVE_WIP=none
 - interpretation batch CREATE/UPDATE is production-validated on the intended account;
 - iOS companion is in real use; iOS Token follows D-016 device-only Keychain policy;
 - phrase CREATE core + iPhone UI are merged and production-validated;
+- #87 + #92 + #88 final-usability implementation is complete in PR #93, and fresh Opus review passed;
 - first real main-account phrase CREATE canary passed exact English/Chinese/source/`PUBLISHED` hard readback; that run also round-tripped `MBA/BEC/GMAT`;
 - Maimemo App visually highlighted the English target although Open API readback did not return highlight; Chinese semantic range remains manual/unavailable through documented writable API;
 - #89 / PR #91 merged as `0541c239acfa6d2585f3fc8eaeed9a00646c718b`: only `PUBLISHED` phrases count active, `DELETED` tombstones do not consume capacity or block re-creation, 5 active phrases block another CREATE with a manual fallback, and >5 fails closed;
@@ -40,9 +41,9 @@ Owner accepted the 2026-08-12 fresh Fable 5 audit and Coordinator adjudication:
 
 Durable routing lives in `AGENTS.md`, `docs/CODEX_REASONING_DEPTH_POLICY.md`, `docs/AGENT_SKILLS_CONNECTOR.md`, and `davidqyc/agent-skills`; do not duplicate those rules here.
 
-## Current final usability round
+## Final usability implementation complete
 
-One PR should close #87 + #92 + #88 together.
+PR #93 completes #87 + #92 + #88 together. The current product implementation has no further feature-building step before real use.
 
 ### #87 — native phrase input + optional source
 
@@ -80,11 +81,11 @@ In the same UI-touching PR:
 
 Do not build nickname/profile fetching, local account labels, OAuth/OIDC, account switching or identity frameworks.
 
-## After this round
+## Unique next action
 
-Install on the Owner's iPhone, set the Owner's persistent tags once (`MBA/BEC/GMAT` if still desired), and smoke-test native input. Because optional source changes phrase request/readback semantics, use one fresh independent review before merge and later validate the first real no-source write with one genuinely wanted phrase; no synthetic second write merely for characterization.
+Install on the Owner's physical iPhone, set the Owner's persistent tags once (`MBA/BEC/GMAT` if still desired), and smoke-test native 3/4-line input. Then validate optional-origin naturally with the first genuinely wanted no-source phrase; do not create a synthetic write merely for characterization.
 
-After the usability round reaches the Owner's iPhone, pause feature work and use the app for real batches. Re-open engineering from repeated real friction, a safety incident, or an explicit external-distribution decision.
+After that smoke, enter a real-use pause. Re-open engineering only from repeated real friction, a safety incident, or an explicit external-distribution decision.
 
 ## Deferred routes
 
@@ -92,9 +93,9 @@ After the usability round reaches the Owner's iPhone, pause feature work and use
 phrase automatic replacement / phrase UPDATE = DEFER; closed PR #90 remains shelf only
 #71 public distribution = DEFER until Owner still wants external users after real-use pause
 #72 OAuth/OIDC = DEFER until real external onboarding friction exists
-#5 desktop quick lookup = DROP UNLESS REQUESTED
+#5 desktop quick lookup = DEFER unless explicitly requested after real-use pause
 #7 open-source evidence = passive ledger only
-#88 local labels / verified nickname = DEFER; neutral wording only is current minimum
+#88 local labels / verified nickname / identity framework = DEFER; neutral wording only is current minimum
 separate interpretation/phrase tag profiles = DEFER unless real users need them
 ```
 
