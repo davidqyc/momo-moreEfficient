@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-11
-sourceMainSha=51a724b6347ac3b8e4085d2bd3eeb3d712c63713
+sourceMainSha=6977c9f385bdda7beb2cd49e57d06608fadf690e
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,10 +24,10 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=51a724b6347ac3b8e4085d2bd3eeb3d712c63713
+CURRENT_MAIN_AT_SNAPSHOT=6977c9f385bdda7beb2cd49e57d06608fadf690e
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#84
-CURRENT_UNIQUE_NEXT=ISSUE_84_IMPLEMENTATION_AND_OFFLINE_REHEARSAL_BUILD
+CURRENT_PRIMARY_ISSUE=#86
+CURRENT_UNIQUE_NEXT=WAIT_FOR_OWNER_CANARY_CONTENT_AND_GATE_A_AUTHORIZATION
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -38,32 +38,46 @@ ACTIVE_WIP=none
 - macOS 本地日常 UI 已验收；
 - iOS companion 已在实体 iPhone 使用，Token 按 D-016 保存为仅本设备 Keychain；
 - stale Preview、History/receipt、有限后台保护、Preview interruption resilience、one-action mixed CREATE→UPDATE 已完成；
-- 真实 10 条 mixed batch 已完成 CREATE 8/8 + UPDATE 2/2；
-- #82 / PR #83 已完成并合入 `main`：iOS phrase/example **CREATE-only core** 已实现并独立审阅 PASS，支持严格 `## spelling + EN/ZH/SOURCE` grammar、CREATE / ALREADY_MATCHING / BLOCKED、source/origin hard readback gate、fresh preflight、one-POST-max、no retry、immediate authenticated readback、GET-only uncertain recovery；
-- phrase tags / English highlight 只作为结构安全的非阻断 observation；中文 translation range 在 documented API 无写字段时不再阻断；
-- #82 Builder/测试和独立审阅均未使用真实 Token、未发真实 Maimemo 请求；
+- 真实 10 条 interpretation mixed batch 已完成 CREATE 8/8 + UPDATE 2/2；
+- #82 / PR #83 已完成并合入：iOS phrase/example CREATE-only core 已实现并独立审阅 PASS；
+- #84 / PR #85 已完成并合入 `main`：单 App `释义 | 例句` 模式、独立草稿/authority、phrase Preview / native confirmation / CREATE / readback / History、DEBUG rehearsal 均已完成；
+- PR #85 在一次 CHANGES REQUIRED 后完成窄修复并通过 delta re-review；
+- Owner 已在实体 iPhone 对 PR #85 精确 head 完成 11 步 DEBUG rehearsal，全部符合预期：CREATE 3、后台切 App 后继续、History、草稿清空、第二次 ALREADY_MATCHING 3、释义草稿隔离均通过；该 rehearsal 零真实 Token、零 Maimemo 网络、零 production History；
+- D-018 已显式 supersede D-005 的旧 phrase blocker levels：`origin` / 英文 / 中文 / `PUBLISHED` / 安全唯一 same-English readback 为 hard gate；tags/highlight 为 structurally-valid non-blocking observations；中文 range 在 documented API 无写字段时可 unavailable；
+- #85 已 squash merge 为 `6977c9f385bdda7beb2cd49e57d06608fadf690e`，#84 自动关闭；
 - 桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_84_IMPLEMENTATION_AND_OFFLINE_REHEARSAL_BUILD
+WAIT_FOR_OWNER_CANARY_CONTENT_AND_GATE_A_AUTHORIZATION
 ```
 
-#84 是当前主线：把已审阅的 phrase CREATE core 接入现有 iPhone 日常 UI，同时保持现有释义流程零回归。
+#86 是当前唯一主线：第一次真实 phrase production canary，只允许 **1 条 Owner 真正想保留的主账号例句**。
 
-冻结的产品方向：
+必须由 Owner 先提供严格 grammar 的一条真实内容：
 
-- 一个 App，明确 `释义 | 例句` 两种输入模式；默认仍为释义；
-- 两种草稿在当前进程内分开保存，切换模式不得复用另一模式的 Preview/approval/suspended authority；
-- phrase Preview 只显示 CREATE / ALREADY_MATCHING / BLOCKED，不提供 phrase UPDATE；
-- phrase full success 清空 phrase draft；partial/uncertain/interrupted 保留原 phrase draft，下一次必须 fresh Preview；
-- `origin`、英文、中文、`PUBLISHED`、安全唯一 same-English readback 是 hard gate；tags/highlight 是非阻断 closed observation；
-- phrase 执行进入现有本地 History 时只新增非敏感 content kind，不保存 EN/ZH/SOURCE、tags/highlight、ID、binding、请求或响应；旧 history-v1 必须向后兼容；
-- DEBUG rehearsal 必须能在实体 iPhone 上走 phrase Preview → native confirmation → CREATE → readback，且零联网、零真实 Token、零生产 History；
-- 完成独立审阅后，下一 gate 是 Owner 实体 iPhone DEBUG rehearsal；通过前不得进行真实 phrase canary。
+```markdown
+## <spelling>
+EN: <English sentence>
+ZH: <Chinese translation>
+SOURCE: <source/origin>
+```
 
-当前授权只覆盖 **#84 代码实现 + offline/fake/rehearsal 验证**。不授权真实 Token、真实 Maimemo GET/POST、phrase UPDATE/DELETE、release/publish 或未经独立审阅的 merge。
+随后仍分成两个独立 gate：
+
+1. **Gate A — real authenticated Preview / GET-only**：只允许该精确一条内容的 vocabulary GET + phrase collection GET；Preview 不是 POST 授权。
+2. **Gate B — one real CREATE POST**：只有 Owner 看过 Gate A 的实际 Preview 并再次明确授权后，才可通过 app 原生 destructive confirmation 执行；fresh preflight、最多一次 POST、no retry、immediate authenticated GET readback、uncertain outcome GET-only recovery 均保持。
+
+当前状态：
+
+```text
+CANARY_CONTENT=WAITING_FOR_OWNER
+REAL_PHRASE_GET_AUTHORIZATION=NOT_YET_GRANTED
+REAL_PHRASE_POST_AUTHORIZATION=NOT_YET_GRANTED
+```
+
+不得把 Owner 的“继续”、merge 授权、Issue 创建、之前的 DEBUG rehearsal 或任何文档状态解释成真实 GET/POST 授权。
 
 ## 4. Other active routes
 
@@ -72,10 +86,10 @@ ISSUE_84_IMPLEMENTATION_AND_OFFLINE_REHEARSAL_BUILD
 ```text
 Issue #2 = OPEN / SUPPORTING_EVIDENCE_AND_LIMITATIONS
 Issue #4 = PARENT_PRODUCT_ROUTE
-Issue #84 = CURRENT_PRIMARY / UI_INTEGRATION
+Issue #86 = CURRENT_PRIMARY / ONE_ITEM_REAL_CANARY
 ```
 
-Owner 于 2026-08-11 明确放宽旧 D-005 阻断标准：source/origin reliable write + readback 是 phrase-specific 必须项；tags、English highlight、Chinese translation range 均为 best-effort/non-blocking。#84 需在其 PR 中追加新的 durable decision，显式 supersede D-005 的旧 blocker levels；不要改写历史。
+#82/#84 已完成；#86 只验证第一次 production CREATE runtime path。若一条 canary 的 hard readback + Owner App-level 检查都通过，再单独决定是否扩大到普通 phrase batch。
 
 ### Public launch / distribution
 
@@ -83,7 +97,7 @@ Owner 于 2026-08-11 明确放宽旧 D-005 阻断标准：source/origin reliable
 Issue #71 = OPEN / CANDIDATE_ONLY
 ```
 
-排在当前例句线路之后，不是 primary。
+排在当前 canary 之后，不是 primary。
 
 ### Open Platform authorization research
 
@@ -121,7 +135,8 @@ Issue #62 = OPEN_BUT_SUPERSEDED_BY_COMPLETED_#63
 
 - Preview **不是**授权；任何真实写入必须来自当前有效 Preview 与明确 Owner action；
 - interpretation mixed batch 仍保持 whole-batch fresh preflight、CREATE 完整成功后才进入 UPDATE、UPDATE subset 再 fresh preflight；CREATE approval 不作为 UPDATE permission；
-- phrase 当前只允许 CREATE 设计，不存在 phrase UPDATE/DELETE；
+- phrase 当前只允许 CREATE，不存在 phrase UPDATE/DELETE；
+- #86 的真实 canary 固定为一条，并把 GET-only Preview 与 POST write 拆成两个 Owner gate；
 - 每个 changed item 最多一次 POST；绝不 POST retry；POST 后立即 authenticated GET readback；结果不确定只做 GET-only recovery；
 - server state、source/mode、credential 或 binding 发生变化时停止，不扩大旧授权；再次尝试必须 fresh Preview；
 - 不开放 delete；没有自动 rollback / replay；不修改墨墨内置释义；
@@ -130,7 +145,7 @@ Issue #62 = OPEN_BUT_SUPERSEDED_BY_COMPLETED_#63
 - CLI/macOS localhost UI 凭证契约仍按 D-013；
 - 已开始的 Preview/已授权 execution 只可在 iOS 允许的有限后台时间内继续；系统到期安全停止；前台返回不得 replay/resume、mint 新 approval 或恢复失效 authority；
 - 当前开放 API 没有可靠 account identity endpoint，Token 实际所属账号仍由操作者确认；
-- 换对话、文档更新、Agent 接管、测试或 rehearsal **都不构成新的真实账号写入授权**。
+- 换对话、文档更新、Agent 接管、测试、rehearsal、merge 或“继续”**都不构成新的真实账号 GET/POST 授权**。
 
 ## 6. Maintenance rule
 
