@@ -1,158 +1,150 @@
 # AGENTS.md
 
-本文件约束 Codex 及其他代码代理在本仓库中的工作方式。
+本文件约束 Codex 及其他 coding Agent 在本仓库中的工作方式。
 
-## 1. 事实来源优先级
+## 1. 事实来源与优先级
 
-遇到冲突时，按以下顺序处理：
+遇到冲突时按以下顺序处理：
 
-1. 当前明确指定的 GitHub Issue 及其最新评论
-2. `docs/decision-log.md` 中仍有效的决策
-3. `docs/product-and-api-plan.md`
-4. README、测试和当前代码行为
-5. 聊天记录或代理自行推断
+1. Owner 当前明确指令；
+2. 当前 GitHub Issue 及其最新评论；
+3. `docs/decision-log.md` 中仍有效的长期产品/安全决定；
+4. `docs/PROJECT_STATE.md` 的当前主线与唯一下一步；
+5. `docs/product-and-api-plan.md`、README、当前代码与测试；
+6. `docs/AGENT_SKILLS_CONNECTOR.md` 指向的跨项目 Agent 工作流规则；
+7. 聊天记录或 Agent 自行推断。
 
-聊天记录不是长期事实源。发现重要新要求时，应先写入或更新 GitHub Issue，再开始大范围实现。
-
-`docs/CODEX_REASONING_DEPTH_POLICY.md` 是模型、思考深度和执行模式的 canonical 流程规则；它不替代上述产品事实来源。
+跨项目 Skill 只约束协作与路由，不得覆盖本项目当前产品事实。
 
 ## 2. 开始任务前必须读取
 
-每次 Codex 会话至少执行：
+每次实质 coding / review 会话至少：
 
-1. 确认当前仓库、分支和 `origin/main`。
-2. 阅读 `README.md`、本文件、`docs/decision-log.md` 和 `docs/CODEX_REASONING_DEPTH_POLICY.md`。
-3. 阅读被分配的 Issue 全文、依赖 Issue 和最新评论。
-4. 只读取与当前任务相关的其他文档和代码；不要默认扩展范围。
-5. 确认正式 Prompt 已显式标注模型、思考深度、执行模式和选择原因。
-6. 在动手前用简短计划说明：目标、拟改文件、验证方式、风险和不做事项。
+1. 确认仓库、分支和实时 `origin/main`；
+2. 读取本文件、`docs/PROJECT_STATE.md`、`docs/decision-log.md`、`docs/CODEX_REASONING_DEPTH_POLICY.md`；
+3. 读取 `docs/AGENT_SKILLS_CONNECTOR.md`；
+4. 读取当前被分配 Issue 全文及最新评论；
+5. 只读取与当前任务直接相关的其他代码/文档；
+6. 开工前用很短的计划写清目标、拟改文件、验证方式、风险和不做事项。
 
-如果没有明确 Issue，除非所有者明确要求，否则不要开始工程实现。
+如果没有明确 Issue 或 Owner 明确施工指令，不自动扩展工程范围。
 
-## 3. Issue-first / Codex-second
+## 3. 轻项目优先：先过 ROI 门，再写合同
 
-- 新工程任务优先写成 GitHub Issue。
-- Issue 必须至少说明：用户问题、范围、阻断项、验收标准和安全边界。
-- Codex 以读取 Issue、实现、测试和轻量状态回写为主。
-- 大段产品定义、重大取舍或新的不可逆规则，不得由 Codex自行发明；应请求所有者先确认并写回 Issue/决策记录。
-- Codex 可以对文档做轻量事实更新，例如记录已验证接口、补充命令、勾选验收项和链接 PR。
+这是一个小型效率工具，不是通用 Maimemo CRUD 客户端。
 
-## 4. 变更方式
+发现新边缘情况时，Coordinator / Agent 在建 Issue 或写实现合同前先回答：
 
-仓库引导完成后，默认工作流为：
+1. 现实中多久会发生一次？
+2. 最便宜、最清楚的安全人工 fallback 是什么？
+3. 如果不自动化，现实最坏后果是什么？
 
-1. 从最新 `main` 创建与 Issue 对应的分支。
-2. 做最小可验证改动。
-3. 运行测试、静态检查和必要的安全检查。
-4. 提交清晰、单一目的的 commit。
-5. 创建 Draft PR，并在正文中关联 Issue、列出验证结果和剩余风险。
-6. 未经明确授权，不直接合并、不强推、不重写公共历史。
+默认规则：
 
-不要为了“显得完整”而引入状态机、多代理框架、云基础设施、复杂设计系统或大范围重构。
+- 低频边缘情况 + 有便宜人工 fallback → 默认做 guard / 提示 / defer，不自动化；
+- 只有重复造成真实摩擦，或不自动化存在明确的数据损失、重复写、错误覆盖、凭证/身份风险时，才值得增加自动机制；
+- 不用固定“出现 N 次”作为新 Gate；看真实频率、损失半径和 fallback 成本；
+- 先服务 Owner 当前真实使用，再服务已出现的小规模外部用户；不要提前为假设中的大众用户补完整能力；
+- 优先删范围、延后能力，不因为文件长就先做抽象重构；
+- 禁止因为解释完整、对称或“CRUD 应该齐全”而自动补功能。
 
-## 5. 凭证和个人数据
+### 3.1 过度工程触发器
+
+命中任一项时，停止继续派 Builder，先做一次独立简化/架构重表达：
+
+- 一个低频小机制的实现合同已经超过一屏；
+- 为一个新边缘情况准备新增平行 executor / approval / binding / recovery 栈；
+- 保护机制的复杂度开始明显超过被保护机制本身；
+- 同一机制连续两轮主要在加 Gate、digest、validator、Harness 或 proof；
+- Owner 明确质疑 ROI、复杂度或“是否做重了”。
+
+优先按 `docs/AGENT_SKILLS_CONNECTOR.md` 路由到 fresh Claude/Fable/Opus simplification checkpoint，再决定是否让 Codex施工。
+
+## 4. Issue 与施工粒度
+
+默认：**一个 Issue = 一个用户可见结果**。
+
+- 不把一个小功能机械拆成 4a/4b/4c/4d 多个工程回合；
+- 只有新的真实写入类型、真实账号权限边界、不可逆迁移等风险确实需要分段授权时才拆 runtime gate；
+- task contract 应尽量一屏内说清，超过后先检查是不是机制本身过大；
+- Issue 存在不代表必须实现；没有现实 ROI 时可以 DEFER / DROP。
+
+默认工程流：最新 `main` → Issue branch → 最小改动 → 定向测试 → commit → Draft PR。
+
+已授权路线内、所需验证已通过且没有新风险边界时，机械 merge/closeout 不需要再向 Owner 收一次同义确认；但禁止 force push、历史改写、reset/clean/stash/rebase 等高破坏动作，除非 Owner 单独授权。
+
+## 5. 真实凭证与个人数据
 
 绝对禁止提交：
 
-- 真实 Maimemo Token、Cookie、刷新凭证或账号标识
-- 用户完整学习记录、云词本导出或私人例句批次
-- 未脱敏 API 请求/响应、日志、截图和崩溃转储
-- `.env`、钥匙串导出、私钥、证书或其他可用凭证
+- 真实 Maimemo Token、Cookie、刷新凭证；
+- 用户完整学习记录、私人例句批次、未脱敏 API 响应；
+- `.env`、私钥、证书、Keychain 导出、账号身份原值；
+- 未脱敏日志、截图、崩溃转储。
 
-凭证输入方式由 `SECURITY.md` 规定，并且**比"从环境变量读取"更严格**：真实 Token 只能通过隐藏交互式 `getpass` 输入，仅存于进程内存。不得改为从命令行参数、环境变量、`.env`、配置文件、剪贴板或系统钥匙串读取。这不是疏漏，而是刻意收紧——环境变量和 `.env` 会存活到进程之外，泄漏进 shell 历史、子进程环境、崩溃转储和 CI 日志。示例必须使用明显无效的占位符。
+凭证边界：
 
-如果发现疑似凭证已经进入 Git 历史：立即停止；通知所有者撤销并轮换凭证；不要仅通过后续 commit 删除文件来宣称问题已解决。
+- iOS：按 D-016，仅保存到本设备 Keychain，`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，non-sync；
+- CLI/macOS 本地工具：按 D-013，仅隐藏交互输入、进程内存，不使用 argv/env/.env/config/clipboard automation；
+- Token 不进入日志、History、UI 持久状态、review artifact 或 Git。
 
-## 6. API 写入安全
+发现疑似真实凭证进入 Git 历史时立即停止并报告；不要靠后续删除文件假装历史已安全。
 
-任何触及真实账号内容的实现必须遵守：
+## 6. 真实 API 写入的最低安全底线
 
-- 默认 `dry-run`，且界面/CLI 明确显示当前模式。
-- 首次只允许一条可丢弃测试记录。
-- 写入前展示最终 payload；需要明确确认。
-- 写入后回读并逐字段核对。
-- 不修改墨墨内置释义。
-- 更新必须绑定到明确选择的用户自建记录 ID；存在多条候选时停止。
-- 不静默重试创建或更新请求，避免重复和误覆盖。
-- 操作日志必须脱敏，并能支持人工回滚判断。
-- 遵守官方频控，不通过并发绕过限制。
+真实写入继续保留这些最小必要机制：
 
-## 7. 当前产品优先级
+- Preview 不是授权；
+- 写前显式用户批准；
+- stale state 可能导致错误写入时，POST 前 fresh authenticated preflight；
+- 每个 changed item 最多一次 POST；
+- POST 不自动 retry；
+- dispatched POST 后立即 authenticated GET readback；
+- uncertain POST 只允许 GET-only recovery；
+- UPDATE 只能绑定到明确的 authenticated-user record；歧义时阻断；
+- 不自动 DELETE / rollback / replay；
+- 不发送 undocumented request fields；
+- unknown/malformed server schema fail closed。
 
-1. Issue #2：验证标签、跨账号可发现性、英文高亮、中文位置和来源字段。**释义标签部分已验证；例句部分仍阻断，Issue 保持 OPEN。**
-2. Issue #3：释义批量录入 MVP。**已完成**（`dry-run` / `create` / `update` 均已真实端到端验证），构成 `v0.1.0` 的全部范围。
-3. Issue #4：例句录入，保持阻断，直到 #2 给出可接受结论。
-4. Issue #5：桌面快速查词。**尚未开始实现。**
-5. Issue #6：公开发布准备。**进行中**（#45 为其公开安全审计与 `v0.1.0` 准备子任务）。
-6. Issue #7：Codex for Open Source 证据和申请准备。
+不要把每一条安全底线都复制成新的平行架构。新增 binding/state/type 必须能用一句话说明：它防止了现有机制尚未防住的哪个现实错误写入。
 
-不要让例句线路的阻断拖住独立可行的释义线路。
+## 7. Review、rehearsal 与证据强度
 
-## 8. 技术栈原则
+Fresh independent review 默认保留给这些高价值变化：
 
-当前尚未锁定技术栈。先完成 API 冒烟验证，再根据真实调用、桌面分发方式和代码复用需求选择最小方案。
+- 第一次新增一种真实写入操作；
+- Token、Keychain、账号身份/ownership 边界变化；
+- readback / unknown-outcome / recovery 语义变化；
+- 第一次面向外部用户分发 build；
+- Reviewer 已发现实质安全/正确性 blocker，修复跨多个安全不变量。
 
-- 不因快速查词需求而提前搭建完整跨平台框架。
-- 不因一次批量导入而提前引入数据库或服务端。
-- 优先可测试的纯解析、API 客户端和写入安全层。
-- 如需引入依赖，说明其必要性、维护状态和可替代方案。
+以下默认不需要 fresh independent review：
 
-## 9. 所有者沟通与审阅交付
+- parser；
+- UI 文案/布局；
+- 只会阻断、不会新增写能力的 guard；
+- docs / test-only / mechanical change。
 
-### 9.1 需要所有者决策时
+这些通常使用：Builder 自测 + Coordinator 定向 diff 检查 + 必要时一次 Owner smoke。
 
-不得只抛出技术问题或让所有者猜测后果。必须用中文白话单独列出：
+实体 iPhone rehearsal 默认只在“新的真实写入类型第一次进入生产”或真实设备 lifecycle 行为确实改变时使用。不要为普通 parser、文案或 block-only guard制造真机 Gate。
 
-1. **你现在要决定什么**：说明这项选择实际会改变什么。
-2. **可选方案**：每个方案列出主要好处、代价和风险。
-3. **推荐方案**：给出明确建议及理由；不能只说“都可以”。
-4. **默认后果**：如果暂不决定，说明任务会停在哪里，不得自行替所有者做不可逆决定。
+### 7.1 Review ZIP
 
-### 9.2 需要所有者执行动作时
+Review ZIP 不是每次改文件的默认交付物。
 
-将动作翻译成所有者熟悉的语言和步骤：
+只有以下情况默认需要：
 
-- 直接说明要点击、打开、粘贴或检查什么。
-- 说明完成后应该看到什么结果，以及看到异常时在哪里停止。
-- 技术字段名、命令和代码可以保留英文，但不得只给术语或裸命令而不解释用途。
-- 代理自己能够安全完成或读取确认的事项，不得转嫁给所有者手工处理。
+- 交给 fresh / out-of-band Reviewer；
+- fresh conversation 必须靠文件包独立复现；
+- 当前 Issue 明确要求；
+- Owner 明确要求。
 
-### 9.3 修改实体文件后的 ZIP 交付门槛
+普通 Builder→Coordinator 同一远端 PR 流程可直接依靠 exact commit/PR diff、测试结果和 GitHub readback，不制造无信息增益的 ZIP 仪式。
 
-只要本轮新增、修改或删除了任何实体文件，最终回复必须附带一个**可直接点击的 Markdown ZIP 链接**；仅给本地路径、文件名或“已生成 ZIP”不算完成。
+## 8. 模型与架构路由
 
-ZIP 规则：
-
-- 在本地已忽略目录 `artifacts/review/` 生成，不得提交 ZIP 本体。
-- 保留仓库相对路径，至少包含本轮新增/修改后的文件；删除项写入清单。
-- 同时包含变更清单和可审阅补丁，说明 base/head、修改/新增/删除文件、验证结果和未触及的敏感区域。
-- 排除 `.git/`、真实凭证、`.env`、私人学习数据、未脱敏响应、缓存、依赖目录和构建产物。
-- 最终回复同时报告：ZIP 路径、SHA-256、大小、文件数、压缩包完整性检查、路径安全检查，以及解压后校验/round-trip 结果。
-- 如果 ZIP 检查发现绝对路径、`..`、反斜杠路径穿越、符号链接或敏感文件，停止交付并重新生成。
-- 如果代码和验证都已完成但只缺 ZIP 链接，只补生成/上传审阅包；不要因此重写代码。
-
-没有修改实体文件的只读轮次，应明确写“本轮未修改文件”，无需制造空 ZIP。
-
-### 9.4 最终回复语言和状态
-
-最终汇报默认使用中文；代码、命令、字段名和必须保持原样的内容可用英文。至少列出：变更摘要、验证结果、commit SHA/分支、`git status`、未解决风险、是否修改敏感区域，以及可继续的下一任务。
-
-## 10. 完成定义
-
-任务不能只以“代码已写”结束。至少需要：
-
-- 验收标准逐项对应
-- 自动化测试或可复现的手工验证步骤
-- 无真实凭证和私人数据
-- 失败路径可见且不会造成静默破坏
-- Issue/PR 中记录实际结果、未解决事项和下一步
-- 修改实体文件时，完成第 9.3 节规定的可点击 ZIP 审阅交付
-
-## 11. 模型、思考深度和执行模式
-
-所有正式 coding Prompt 必须遵守 `docs/CODEX_REASONING_DEPTH_POLICY.md`。
-
-Codex 5.6 Sol 的标准标注为：
+正式 coding Prompt 继续写：
 
 ```text
 Model: GPT-5.6 Sol
@@ -161,9 +153,47 @@ Model: GPT-5.6 Sol
 选择原因: <一句话>
 ```
 
-- 每一轮必须重新评估，不因上一轮使用某档就自动沿用。
-- 本项目普通实质 coding 默认 `高`；机械 Git/merge 可降到 `轻度`，小型 docs/确定性小修可用 `中`。
-- Token、账号隔离、真实写入、response loss、unknown outcome、恢复/回滚或 Reviewer 实质 BLOCK 通常升级到 `极高`。
-- `最高` 和 `Ultra` 默认关闭；启用必须在 Prompt 中说明普通档位不足或并行 ROI。
-- Agent 不得自行把单 Agent 任务改成 Ultra，也不得用高深度扩大已冻结范围。
-- 如果执行中发现任务复杂度明显超出 Prompt 标注，停止并报告升级理由，不自行扩大授权。
+但不要把“选择 effort”本身变成项目。
+
+项目默认：
+
+- 普通实质 Builder：GPT-5.6 Sol / 高 / 单 Agent；
+- 真实写入、凭证、身份、unknown outcome、recovery：极高；
+- 机械状态/merge/docs 小修可降到中或轻度；
+- 最高与 Ultra 默认关闭。
+
+如果问题已经从“实现”变成“这个表示/架构是不是做重了”，不要只提高 Codex effort；按 connector 路由 fresh Claude/Fable/Opus 做简化裁决。
+
+Claude coding/architecture Agent 的正式 Prompt 与 Agent 自生成报告默认全英文；Owner 中文需求由 Coordinator 保真翻译，中文产品文案作为精确任务数据保留。
+
+## 9. 当前产品优先级
+
+**不要在本文件维护动态优先级列表。**
+
+当前 primary Issue、唯一下一步、open product PR 和阶段性边界只看：
+
+`docs/PROJECT_STATE.md`
+
+## 10. Owner 交互
+
+需要 Owner 决策时，必须是后果真正不同的产品/风险选择；不能把内部技术编排伪装成产品决策。
+
+需要 Owner 操作时：
+
+- 一次只给一个最具体动作；
+- 说明应该看到什么；
+- 异常时在哪里停止；
+- Agent 能自行读取/恢复的内容不得让 Owner 反复搬运。
+
+默认连续推进已授权主线；不要让 Owner 在每个机械节点回复“继续”。
+
+## 11. 完成定义
+
+任务完成至少要求：
+
+- 用户可见目标达成或 blocker 被明确关闭；
+- 只跑与风险相称的验证，不用测试数量冒充产品进度；
+- 无真实凭证/私人数据进入 Git；
+- 失败路径不会静默破坏；
+- Issue/PR 记录必要的真实结果与剩余风险；
+- 下一步通过 ROI 门；如果继续工程不如实际使用提供的信息多，默认停止开发并进入真实使用。
