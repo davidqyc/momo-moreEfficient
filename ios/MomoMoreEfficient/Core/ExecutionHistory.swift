@@ -1,8 +1,16 @@
 import Foundation
 
+enum ReceiptContentKind: String, Codable, Equatable, Sendable {
+    case interpretation
+    case phrase
+
+    var displayLabel: String { self == .interpretation ? "释义" : "例句" }
+}
+
 struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let timestamp: Date
+    let contentKind: ReceiptContentKind
     let operationGroup: OperationGroup
     let succeeded: Int
     let failed: Int
@@ -13,12 +21,14 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     init(
         id: UUID = UUID(),
         timestamp: Date = Date(),
+        contentKind: ReceiptContentKind = .interpretation,
         operationGroup: OperationGroup,
         selectedSpellings: [String],
         result: ExecutionSummary
     ) {
         self.id = id
         self.timestamp = timestamp
+        self.contentKind = contentKind
         self.operationGroup = operationGroup
         items = selectedSpellings.enumerated().map { index, spelling in
             ExecutionReceiptItem(
@@ -34,8 +44,61 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         stopped = result.cancelled || notAttempted > 0
     }
 
+    init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        selectedSpellings: [String],
+        result: PhraseExecutionSummary
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        contentKind = .phrase
+        operationGroup = .create
+        items = selectedSpellings.enumerated().map { index, spelling in
+            ExecutionReceiptItem(
+                spelling: spelling,
+                finalOutcome: result.results.indices.contains(index)
+                    ? result.results[index].outcome
+                    : .notAttempted
+            )
+        }
+        succeeded = items.count { $0.finalOutcome == .confirmed || $0.finalOutcome == .recovered }
+        failed = items.count { $0.finalOutcome == .notVerified }
+        notAttempted = items.count { $0.finalOutcome == .notAttempted }
+        stopped = result.cancelled || result.stalePreview || failed > 0 || notAttempted > 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, timestamp, contentKind, operationGroup
+        case succeeded, failed, notAttempted, stopped, items
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        timestamp = try values.decode(Date.self, forKey: .timestamp)
+        contentKind = try values.decodeIfPresent(ReceiptContentKind.self, forKey: .contentKind)
+            ?? .interpretation
+        operationGroup = try values.decode(OperationGroup.self, forKey: .operationGroup)
+        succeeded = try values.decode(Int.self, forKey: .succeeded)
+        failed = try values.decode(Int.self, forKey: .failed)
+        notAttempted = try values.decode(Int.self, forKey: .notAttempted)
+        stopped = try values.decode(Bool.self, forKey: .stopped)
+        items = try values.decode([ExecutionReceiptItem].self, forKey: .items)
+    }
+
     var isFullSuccess: Bool {
-        succeeded == items.count && failed == 0 && notAttempted == 0
+        let allItemsVerified = succeeded == items.count && failed == 0 && notAttempted == 0
+        switch contentKind {
+        case .interpretation:
+            // Preserve the pre-#84 interpretation contract: a cancellation flag
+            // arriving after every item was verified does not undo completion.
+            return allItemsVerified
+        case .phrase:
+            // Phrase's first UI slice is intentionally stricter: any interrupted
+            // run retains the whole draft and must not look ordinarily complete.
+            return !stopped && allItemsVerified
+        }
     }
 }
 

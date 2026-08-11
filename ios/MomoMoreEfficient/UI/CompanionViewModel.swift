@@ -5,14 +5,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published var sourceText = "" {
         didSet {
             if sourceText != oldValue {
+                storeActiveDraft(sourceText)
                 detachInlineExecutionFeedback()
                 updateLocalParseState()
                 invalidatePreview()
             }
         }
     }
+    @Published private(set) var contentMode: ContentMode = .interpretation
     @Published private(set) var isConnected = false
     @Published private(set) var preview: PreviewPresentation?
+    @Published private(set) var phrasePreview: PhrasePreviewPresentation?
     @Published private(set) var finalSummary = FinalSummary()
     @Published private(set) var isBusy = false
     @Published private(set) var isPreviewing = false
@@ -22,6 +25,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var errorMessage: String?
     @Published private(set) var pendingConfirmation: OperationGroup?
     @Published private(set) var pendingBatchConfirmation: PendingBatchConfirmation?
+    @Published private(set) var pendingPhraseConfirmation: PendingPhraseConfirmation?
     @Published private(set) var isPreviewStale = false
     @Published private(set) var history: [ExecutionReceipt] = []
     @Published private(set) var completionAcknowledgement: String?
@@ -29,6 +33,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var isExecuting = false
     @Published private(set) var executionStage: ExecutionStage?
     @Published private(set) var previewProgress: PreviewProgress?
+    @Published private(set) var phraseObservationMessage: String?
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -38,10 +43,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private let backgroundAssertionFactory: @MainActor () -> BackgroundExecutionAssertion
     private let dateProvider: () -> Date
     private var snapshot: PreviewSnapshot?
+    private var phraseSnapshot: PhrasePreviewSnapshot?
     private var activeControl: ExecutionControl?
     private var sessionID: UUID?
     private var armedApproval: ArmedApprovalIntent?
     private var armedBatchApproval: ArmedBatchApprovalIntent?
+    private var armedPhraseApproval: ArmedPhraseApprovalIntent?
+    private var interpretationDraft = ""
+    private var phraseDraft = ""
     /// Set when the app left the foreground while an authorized batch or an active
     /// Preview was running. The transient credential teardown is owed but
     /// deliberately postponed until that work resolves, so that scene changes
@@ -65,8 +74,26 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         let sessionID: UUID
     }
 
+    private struct ArmedPhraseApprovalIntent {
+        let approval: PhraseCreateApproval
+        let sessionID: UUID
+    }
+
+    private enum SuspendedSnapshot {
+        case interpretation(PreviewSnapshot)
+        case phrase(PhrasePreviewSnapshot)
+
+        var credentialFingerprint: String {
+            switch self {
+            case let .interpretation(snapshot): return snapshot.credentialFingerprint
+            case let .phrase(snapshot): return snapshot.credentialFingerprint
+            }
+        }
+    }
+
     private struct SuspendedPreview {
-        let snapshot: PreviewSnapshot
+        let mode: ContentMode
+        let snapshot: SuspendedSnapshot
         /// The exact document the snapshot was built from.
         let document: String
     }
@@ -166,18 +193,28 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         suspendedPreview = nil
         guard !isBusy,
               isConnected,
+              suspended.mode == contentMode,
               suspended.document == sourceText,
               let fingerprint = credentialSession.fingerprint,
               fingerprint == suspended.snapshot.credentialFingerprint
         else { return }
-        snapshot = suspended.snapshot
-        preview = suspended.snapshot.presentation
+        switch suspended.snapshot {
+        case let .interpretation(restored):
+            guard contentMode == .interpretation else { return }
+            snapshot = restored
+            preview = restored.presentation
+        case let .phrase(restored):
+            guard contentMode == .phrase else { return }
+            phraseSnapshot = restored
+            phrasePreview = restored.presentation
+        }
         isPreviewStale = false
     }
 
     func previewCurrentInput() async {
         guard !isBusy else { return }
-        let preserveStalePresentationOnFailure = isPreviewStale && preview != nil
+        let mode = contentMode
+        let preserveStalePresentationOnFailure = isPreviewStale && activePreviewExists
         isBusy = true
         isPreviewing = true
         errorMessage = nil
@@ -189,7 +226,9 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         // ordinary app switch or call interruption pass without discarding reads
         // that already completed. Expiry stops it cleanly; nothing is ever written.
         let assertion = backgroundAssertionFactory()
-        assertion.begin(reason: "momo-interpretation-preview") {
+        assertion.begin(reason: mode == .interpretation
+            ? "momo-interpretation-preview"
+            : "momo-phrase-preview") {
             control.requestCancellation()
         }
         defer {
@@ -202,7 +241,6 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
         do {
             let document = sourceText
-            let batch = try BatchParser.parseDailyInput(document)
             let lease = try credentialSession.makeOperationLease()
             defer { lease.clear() }
             let api = MaimemoTransport(
@@ -210,36 +248,61 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 credential: lease,
                 sleeper: sleeperFactory()
             )
-            let built = try await PreflightPlanner(api: api).buildSnapshot(
-                entries: batch.entries,
-                credentialFingerprint: lease.fingerprint,
-                control: control,
-                onEntryStarted: { [weak self] entry, total in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.isPreviewing else { return }
-                        self.previewProgress = PreviewProgress(entry: entry, total: total)
-                    }
+            let progress: @Sendable (Int, Int) -> Void = { [weak self] entry, total in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isPreviewing else { return }
+                    self.previewProgress = PreviewProgress(entry: entry, total: total)
                 }
-            )
+            }
+            if mode == .interpretation {
+                let batch = try BatchParser.parseDailyInput(document)
+                let built = try await PreflightPlanner(api: api).buildSnapshot(
+                    entries: batch.entries,
+                    credentialFingerprint: lease.fingerprint,
+                    control: control,
+                    onEntryStarted: progress
+                )
+                snapshot = built
+                preview = built.presentation
+                phraseSnapshot = nil
+                phrasePreview = nil
+                finalSummary = FinalSummary(
+                    created: 0,
+                    updated: 0,
+                    alreadyMatching: built.presentation.counts.alreadyMatching,
+                    failed: 0
+                )
+            } else {
+                let entries = try PhraseBatchParser.parse(document)
+                let built = try await PhrasePreflightPlanner(api: api).buildSnapshot(
+                    entries: entries,
+                    credentialFingerprint: lease.fingerprint,
+                    control: control,
+                    onEntryStarted: progress
+                )
+                phraseSnapshot = built
+                phrasePreview = built.presentation
+                snapshot = nil
+                preview = nil
+                finalSummary = FinalSummary(
+                    created: 0,
+                    updated: 0,
+                    alreadyMatching: built.alreadyMatchingCount,
+                    failed: 0
+                )
+            }
             // Unchanged: the teardown owed to a background transition is postponed
             // until this function returns, so the session is still the one that
             // produced the lease and this check keeps its original strength.
-            guard document == sourceText,
+            guard mode == contentMode,
+                  document == sourceText,
                   credentialSession.fingerprint == lease.fingerprint
             else {
                 throw CompanionError.stalePreview
             }
-            snapshot = built
-            preview = built.presentation
             isPreviewStale = false
             expandedRowIDs.removeAll()
             hasExecutionFeedback = false
-            finalSummary = FinalSummary(
-                created: 0,
-                updated: 0,
-                alreadyMatching: built.presentation.counts.alreadyMatching,
-                failed: 0
-            )
         } catch let error as CompanionError {
             invalidatePreviewAfterRefreshFailure(
                 preservingStalePresentation: preserveStalePresentationOnFailure
@@ -254,7 +317,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             errorMessage = CompanionError.responseRejected.description
         }
 
-        settleBackgroundTeardownOwedByPreview(document: sourceText)
+        settleBackgroundTeardownOwedByPreview(mode: mode, document: sourceText)
     }
 
     /// Runs the transient-credential teardown that a background transition asked
@@ -264,13 +327,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// have been at the moment of the transition. What is preserved is the *read*
     /// result, held aside as non-executable until `enterForeground()` revalidates
     /// it, so a short interruption does not force the Owner to re-read every item.
-    private func settleBackgroundTeardownOwedByPreview(document: String) {
+    private func settleBackgroundTeardownOwedByPreview(mode: ContentMode, document: String) {
         guard owesBackgroundTeardown else { return }
         owesBackgroundTeardown = false
-        let completed = snapshot
+        let completed: SuspendedSnapshot? = switch mode {
+        case .interpretation: snapshot.map(SuspendedSnapshot.interpretation)
+        case .phrase: phraseSnapshot.map(SuspendedSnapshot.phrase)
+        }
         clearTransientCredential(preservingPreviewPresentation: true)
         guard let completed else { return }
-        suspendedPreview = SuspendedPreview(snapshot: completed, document: document)
+        suspendedPreview = SuspendedPreview(mode: mode, snapshot: completed, document: document)
     }
 
     func askToExecute(_ group: OperationGroup) {
@@ -324,6 +390,162 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             errorMessage = error.description
         } catch {
             errorMessage = CompanionError.responseRejected.description
+        }
+    }
+
+    func askToExecutePhrase() {
+        invalidateArmedApproval()
+        guard contentMode == .phrase,
+              let phraseSnapshot,
+              let sessionID,
+              phraseSnapshot.createCount > 0,
+              phraseSnapshot.blockedCount == 0,
+              isConnected,
+              !isBusy,
+              !isPreviewStale
+        else { return }
+        do {
+            let plan = try PhraseCreateBinding.makePlan(snapshot: phraseSnapshot)
+            armedPhraseApproval = ArmedPhraseApprovalIntent(
+                approval: try PhraseCreateBinding.makeApproval(snapshot: phraseSnapshot),
+                sessionID: sessionID
+            )
+            pendingPhraseConfirmation = PendingPhraseConfirmation(
+                spellings: plan.items.map(\.entry.spelling),
+                bindingDigest: plan.bindingDigest
+            )
+            errorMessage = nil
+        } catch let error as CompanionError {
+            errorMessage = error.description
+        } catch {
+            errorMessage = CompanionError.responseRejected.description
+        }
+    }
+
+    @discardableResult
+    func executeConfirmedPhrase() -> Task<Void, Never>? {
+        guard !isBusy else { return nil }
+        let intent = consumeArmedPhraseApproval()
+        guard contentMode == .phrase,
+              let displayed = phraseSnapshot,
+              let currentSessionID = sessionID,
+              let intent,
+              intent.sessionID == currentSessionID
+        else {
+            errorMessage = CompanionError.approvalRequired.description
+            return nil
+        }
+        do {
+            guard intent.approval == (try PhraseCreateBinding.makeApproval(snapshot: displayed))
+            else {
+                errorMessage = CompanionError.stalePreview.description
+                return nil
+            }
+        } catch let error as CompanionError {
+            errorMessage = error.description
+            return nil
+        } catch {
+            errorMessage = CompanionError.responseRejected.description
+            return nil
+        }
+
+        isBusy = true
+        isExecuting = true
+        executionStage = .securing
+        errorMessage = nil
+        historyErrorMessage = nil
+        phraseObservationMessage = nil
+        let control = ExecutionControl()
+        activeControl = control
+        let assertion = backgroundAssertionFactory()
+        assertion.begin(reason: "momo-phrase-create-batch") {
+            control.requestCancellation()
+        }
+        return Task {
+            await executeAuthorizedPhrase(
+                displayed: displayed,
+                intent: intent,
+                control: control,
+                assertion: assertion
+            )
+        }
+    }
+
+    private func executeAuthorizedPhrase(
+        displayed: PhrasePreviewSnapshot,
+        intent: ArmedPhraseApprovalIntent,
+        control: ExecutionControl,
+        assertion: BackgroundExecutionAssertion
+    ) async {
+        var receipt: ExecutionReceipt?
+        var observations: [PhraseObservation] = []
+        var fullySucceeded = false
+        let progress = ExecutionProgressReporter { [weak self] stage in
+            Task { @MainActor [weak self] in
+                guard let self, self.isExecuting else { return }
+                self.executionStage = stage
+            }
+        }
+        do {
+            let lease = try credentialSession.makeOperationLease()
+            defer { lease.clear() }
+            let api = MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                sleeper: sleeperFactory()
+            )
+            let result = await PhraseWriteExecutor(api: api).execute(
+                displayedSnapshot: displayed,
+                approval: intent.approval,
+                control: control,
+                progress: progress
+            )
+            if result.stalePreview {
+                errorMessage = CompanionError.stalePreview.description
+            } else {
+                receipt = appendPhraseReceipt(displayed: displayed, result: result)
+                observations = result.results.flatMap(\.observations)
+                fullySucceeded = result.isFullSuccess
+                if result.failed > 0 {
+                    errorMessage = CompanionError.uncertainWriteOutcome.description
+                } else if result.cancelled {
+                    errorMessage = CompanionError.cancelled.description
+                }
+            }
+        } catch let error as CompanionError {
+            errorMessage = error.description
+        } catch {
+            errorMessage = CompanionError.responseRejected.description
+        }
+
+        assertion.end()
+        activeControl = nil
+        isBusy = false
+        isExecuting = false
+        executionStage = nil
+        invalidatePreview()
+
+        if let receipt, fullySucceeded {
+            let localHistoryError = historyErrorMessage
+            sourceText = ""
+            completionAcknowledgement = "已完成 \(receipt.succeeded) 条例句 · 新建 \(receipt.succeeded)"
+            phraseObservationMessage = phraseObservationSummary(observations)
+            historyErrorMessage = localHistoryError
+        } else if let receipt {
+            hasExecutionFeedback = true
+            finalSummary = FinalSummary(
+                created: receipt.succeeded,
+                updated: 0,
+                alreadyMatching: 0,
+                failed: receipt.failed,
+                notAttempted: receipt.notAttempted,
+                stopped: true
+            )
+        }
+
+        if owesBackgroundTeardown {
+            owesBackgroundTeardown = false
+            clearTransientCredential(preservingPreviewPresentation: true)
         }
     }
 
@@ -744,6 +966,28 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     @discardableResult
+    private func appendPhraseReceipt(
+        displayed: PhrasePreviewSnapshot,
+        result: PhraseExecutionSummary
+    ) -> ExecutionReceipt {
+        let selectedSpellings = displayed.items
+            .filter { $0.classification == .create }
+            .map(\.entry.spelling)
+        let receipt = ExecutionReceipt(
+            timestamp: dateProvider(),
+            selectedSpellings: selectedSpellings,
+            result: result
+        )
+        history.insert(receipt, at: 0)
+        do {
+            try historyStore.saveReceipts(history)
+        } catch {
+            historyErrorMessage = "历史记录保存失败"
+        }
+        return receipt
+    }
+
+    @discardableResult
     private func recordExecution(
         group: OperationGroup,
         displayed: PreviewSnapshot,
@@ -782,9 +1026,29 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         invalidateArmedApproval()
     }
 
-    var isShowingEditor: Bool { preview == nil }
+    var isShowingEditor: Bool {
+        contentMode == .interpretation ? preview == nil : phrasePreview == nil
+    }
+
+    var canSwitchMode: Bool { !isBusy }
+
+    func selectMode(_ mode: ContentMode) {
+        guard canSwitchMode, mode != contentMode else { return }
+        invalidatePreview()
+        detachInlineExecutionFeedback()
+        contentMode = mode
+        sourceText = mode == .interpretation ? interpretationDraft : phraseDraft
+        updateLocalParseState()
+    }
 
     var previewHeader: String? {
+        if contentMode == .phrase {
+            guard let rows = phrasePreview?.rows,
+                  let first = rows.first?.spelling,
+                  let last = rows.last?.spelling
+            else { return nil }
+            return "\(rows.count) 条例句 · \(first) → \(last)"
+        }
         guard let rows = preview?.rows,
               let first = rows.first?.spelling,
               let last = rows.last?.spelling
@@ -805,6 +1069,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     var executionActions: [ExecutionAction] {
+        guard contentMode == .interpretation else { return [] }
         guard let snapshot,
               preview != nil,
               !isPreviewStale,
@@ -821,6 +1086,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             ExecutionAction(group: .create, count: counts.create),
             ExecutionAction(group: .update, count: counts.update),
         ]
+    }
+
+    var canExecutePhrase: Bool {
+        guard contentMode == .phrase,
+              let phraseSnapshot,
+              phrasePreview != nil,
+              !isPreviewStale,
+              isConnected,
+              !isBusy
+        else { return false }
+        return phraseSnapshot.createCount > 0 && phraseSnapshot.blockedCount == 0
     }
 
     func editInput() {
@@ -846,6 +1122,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
     }
 
+    func toggleDetails(for row: PhrasePreviewRow) {
+        if expandedRowIDs.contains(row.id) {
+            expandedRowIDs.remove(row.id)
+        } else {
+            expandedRowIDs.insert(row.id)
+        }
+    }
+
     func details(for row: PreviewRow) -> PreviewRowDetails? {
         guard row.canExpand, expandedRowIDs.contains(row.id) else { return nil }
         return PreviewRowDetails(current: row.current, proposed: row.proposed)
@@ -853,21 +1137,23 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     private func invalidatePreview() {
         preview = nil
+        phrasePreview = nil
         expandedRowIDs.removeAll()
         invalidateExecutionAuthorization()
     }
 
     private func invalidateExecutionAuthorization() {
         snapshot = nil
+        phraseSnapshot = nil
         // A source edit, token change or explicit invalidation also discards any
         // Preview held aside across an interruption.
         suspendedPreview = nil
-        isPreviewStale = preview != nil
+        isPreviewStale = activePreviewExists
         invalidateArmedApproval()
     }
 
     private func invalidatePreviewAfterRefreshFailure(preservingStalePresentation: Bool) {
-        if preservingStalePresentation, preview != nil {
+        if preservingStalePresentation, activePreviewExists {
             invalidateExecutionAuthorization()
         } else {
             invalidatePreview()
@@ -879,6 +1165,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         pendingConfirmation = nil
         armedBatchApproval = nil
         pendingBatchConfirmation = nil
+        armedPhraseApproval = nil
+        pendingPhraseConfirmation = nil
     }
 
     private func consumeArmedApproval() -> ArmedApprovalIntent? {
@@ -893,20 +1181,32 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         return intent
     }
 
+    private func consumeArmedPhraseApproval() -> ArmedPhraseApprovalIntent? {
+        let intent = armedPhraseApproval
+        invalidateArmedApproval()
+        return intent
+    }
+
     private func updateLocalParseState() {
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             localParseState = .empty
             return
         }
         do {
-            let entries = try BatchParser.parseDailyInput(sourceText).entries
-            guard let first = entries.first?.spelling,
-                  let last = entries.last?.spelling
+            let spellings: [String]
+            switch contentMode {
+            case .interpretation:
+                spellings = try BatchParser.parseDailyInput(sourceText).entries.map(\.spelling)
+            case .phrase:
+                spellings = try PhraseBatchParser.parse(sourceText).map(\.spelling)
+            }
+            guard let first = spellings.first,
+                  let last = spellings.last
             else {
                 localParseState = .invalid
                 return
             }
-            localParseState = .valid(count: entries.count, first: first, last: last)
+            localParseState = .valid(count: spellings.count, first: first, last: last)
         } catch {
             localParseState = .invalid
         }
@@ -918,6 +1218,40 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         finalSummary = FinalSummary()
         historyErrorMessage = nil
         errorMessage = nil
+        phraseObservationMessage = nil
+    }
+
+    private func storeActiveDraft(_ document: String) {
+        switch contentMode {
+        case .interpretation: interpretationDraft = document
+        case .phrase: phraseDraft = document
+        }
+    }
+
+    private var activePreviewExists: Bool {
+        contentMode == .interpretation ? preview != nil : phrasePreview != nil
+    }
+
+    private func phraseObservationSummary(_ observations: [PhraseObservation]) -> String? {
+        guard !observations.isEmpty else { return nil }
+        let unique = Set(observations.map(\.rawValue))
+        // Stable and deviation-first within each observation family. Emitting
+        // every distinct closed observation prevents one successful item from
+        // hiding another item's missing or differing tags/highlight.
+        let ordered: [(PhraseObservation, String)] = [
+            (.tagsDiffer, "标签与请求不同"),
+            (.tagsMissing, "标签未返回"),
+            (.tagsMatchRequested, "标签已匹配"),
+            (.highlightOtherReviewedRange, "英文高亮为其他已审阅范围"),
+            (.highlightMissing, "英文高亮未返回"),
+            (.highlightEmpty, "英文高亮为空"),
+            (.highlightExactTarget, "英文高亮准确"),
+            (.chineseRangeUnavailable, "中文范围在 documented API 中不可用"),
+        ]
+        let parts = ordered.compactMap { observation, label in
+            unique.contains(observation.rawValue) ? label : nil
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func acknowledgement(for receipt: ExecutionReceipt) -> String {
@@ -985,5 +1319,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     nonisolated var debugDescription: String { "CompanionViewModel(<redacted credential>)" }
 
-    var hasExecutablePreview: Bool { snapshot != nil }
+    var hasExecutablePreview: Bool {
+        contentMode == .interpretation ? snapshot != nil : phraseSnapshot != nil
+    }
 }

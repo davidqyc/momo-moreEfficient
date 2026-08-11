@@ -7,6 +7,16 @@ enum PhrasePreviewClassification: String, Equatable, Sendable {
     case blocked = "BLOCKED"
 }
 
+extension PhrasePreviewClassification {
+    var compactLabel: String {
+        switch self {
+        case .create: return "新建"
+        case .alreadyMatching: return "一致"
+        case .blocked: return "阻断"
+        }
+    }
+}
+
 struct PhraseRange: Equatable, Sendable {
     let start: Int
     let end: Int
@@ -118,6 +128,27 @@ struct PhrasePreflightItem: Equatable, Sendable {
     }
 }
 
+struct PhrasePreviewRow: Equatable, Identifiable, Sendable {
+    let ordinal: Int
+    let spelling: String
+    let classification: PhrasePreviewClassification
+    let english: String
+    let chinese: String
+    let source: String
+    let blockedReason: String?
+    let observations: [PhraseObservation]
+
+    var id: Int { ordinal }
+    var canExpand: Bool { true }
+}
+
+struct PhrasePreviewPresentation: Equatable, Sendable {
+    let rows: [PhrasePreviewRow]
+    let createCount: Int
+    let alreadyMatchingCount: Int
+    let blockedCount: Int
+}
+
 struct PhrasePreviewBindingContext: Equatable, Sendable {
     let host: String
     let vocabularyPath: String
@@ -140,6 +171,39 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
         items.filter { $0.classification == .alreadyMatching }.count
     }
     var blockedCount: Int { items.filter { $0.classification == .blocked }.count }
+
+    var presentation: PhrasePreviewPresentation {
+        PhrasePreviewPresentation(
+            rows: items.map { item in
+                PhrasePreviewRow(
+                    ordinal: item.entry.ordinal,
+                    spelling: item.entry.spelling,
+                    classification: item.classification,
+                    english: item.entry.english,
+                    chinese: item.entry.chinese,
+                    source: item.entry.source,
+                    blockedReason: Self.safeBlockedReason(item.reason),
+                    observations: item.observations
+                )
+            },
+            createCount: createCount,
+            alreadyMatchingCount: alreadyMatchingCount,
+            blockedCount: blockedCount
+        )
+    }
+
+    private static func safeBlockedReason(_ reason: String?) -> String? {
+        switch reason {
+        case "CONFLICTING_SAME_ENGLISH":
+            return "相同英文已存在，但中文或来源不一致"
+        case "AMBIGUOUS_SAME_ENGLISH":
+            return "存在多条相同英文例句，无法安全判断"
+        case "READ_FAILED":
+            return "无法安全读取例句状态"
+        default:
+            return nil
+        }
+    }
 }
 
 struct PhraseConfirmationPlan {
@@ -184,6 +248,15 @@ struct PhraseExecutionSummary: Equatable, Sendable {
         stalePreview: true,
         results: []
     )
+
+    var isFullSuccess: Bool {
+        !stalePreview
+            && !cancelled
+            && failed == 0
+            && !results.isEmpty
+            && succeeded == results.count
+            && results.allSatisfy { $0.outcome == .confirmed || $0.outcome == .recovered }
+    }
 }
 
 struct PhrasePreflightPlanner {
@@ -192,7 +265,8 @@ struct PhrasePreflightPlanner {
     func buildSnapshot(
         entries: [PhraseBatchEntry],
         credentialFingerprint: String,
-        control: ExecutionControl? = nil
+        control: ExecutionControl? = nil,
+        onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PhrasePreviewSnapshot {
         guard !entries.isEmpty, entries.count <= CompanionConstants.maxBatchItems else {
             throw CompanionError.inputRejected
@@ -200,6 +274,7 @@ struct PhrasePreflightPlanner {
 
         var planned: [PhrasePreflightItem] = []
         for entry in entries {
+            onEntryStarted?(entry.ordinal, entries.count)
             do {
                 let vocabulary = try await api.vocabulary(
                     spelling: entry.spelling,
@@ -473,7 +548,8 @@ struct PhraseWriteExecutor {
     func execute(
         displayedSnapshot: PhrasePreviewSnapshot,
         approval: PhraseCreateApproval,
-        control: ExecutionControl
+        control: ExecutionControl,
+        progress: ExecutionProgressReporter? = nil
     ) async -> PhraseExecutionSummary {
         do {
             guard approval == (try PhraseCreateBinding.makeApproval(snapshot: displayedSnapshot))
@@ -481,6 +557,7 @@ struct PhraseWriteExecutor {
                 return .stale
             }
 
+            progress?.report(.securing)
             let fresh = try await PhrasePreflightPlanner(api: api).buildSnapshot(
                 entries: displayedSnapshot.items.map(\.entry),
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
@@ -491,7 +568,7 @@ struct PhraseWriteExecutor {
             }
             let plan = try PhraseCreateBinding.makePlan(snapshot: fresh)
             guard plan.bindingDigest == approval.bindingDigest else { return .stale }
-            return await perform(plan: plan, control: control)
+            return await perform(plan: plan, control: control, progress: progress)
         } catch CompanionError.cancelled {
             return PhraseExecutionSummary(
                 succeeded: 0,
@@ -507,13 +584,16 @@ struct PhraseWriteExecutor {
 
     private func perform(
         plan: PhraseConfirmationPlan,
-        control: ExecutionControl
+        control: ExecutionControl,
+        progress: ExecutionProgressReporter?
     ) async -> PhraseExecutionSummary {
         var results: [PhraseItemExecutionResult] = []
         var succeeded = 0
         var failed = 0
 
-        for item in plan.items {
+        defer { progress?.report(.finishing(group: .create)) }
+
+        for (index, item) in plan.items.enumerated() {
             if control.isCancellationRequested {
                 results.append(
                     PhraseItemExecutionResult(
@@ -524,6 +604,15 @@ struct PhraseWriteExecutor {
                 )
                 break
             }
+
+            progress?.report(
+                .writing(
+                    group: .create,
+                    item: index + 1,
+                    total: plan.items.count,
+                    spelling: item.entry.spelling
+                )
+            )
 
             do {
                 let body = try PhraseCreateBinding.requestData(item)

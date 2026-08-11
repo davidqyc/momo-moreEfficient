@@ -14,6 +14,17 @@ enum CompanionConstants {
     static let writePolicy = "EXACTLY ONE POST PER ITEM / NO RETRY / IMMEDIATE READBACK"
 }
 
+enum ContentMode: String, CaseIterable, Equatable, Sendable {
+    case interpretation
+    case phrase
+
+    var pickerLabel: String { self == .interpretation ? "释义" : "例句" }
+    var navigationTitle: String { self == .interpretation ? "释义录入" : "例句录入" }
+    var editorAccessibilityLabel: String {
+        self == .interpretation ? "批次释义输入" : "批次例句输入"
+    }
+}
+
 enum CompanionError: String, Error, Equatable, CustomStringConvertible {
     case inputRejected
     case credentialRejected
@@ -340,6 +351,25 @@ struct PendingBatchConfirmation: Equatable, Sendable {
                 + "每项最多一次 POST，不重试。"
         )
         return lines.joined(separator: "\n")
+    }
+}
+
+/// The one native destructive confirmation for a phrase CREATE plan. It carries
+/// only Owner-safe presentation data; exact content and write authority remain in
+/// the separately armed `PhraseCreateApproval`.
+struct PendingPhraseConfirmation: Equatable, Sendable {
+    let spellings: [String]
+    let bindingDigest: String
+
+    var count: Int { spellings.count }
+    var title: String { "确认新建 \(count) 条例句？" }
+    var actionTitle: String { "确认新建 \(count) 条例句" }
+    var message: String {
+        [
+            "共 \(count) 条：" + spellings.joined(separator: "、"),
+            "授权指纹 \(bindingDigest)",
+            "将先执行一次新的完整鉴权预检；只有与当前预览严格一致才会写入。每项最多一次 POST，不重试。",
+        ].joined(separator: "\n")
     }
 }
 

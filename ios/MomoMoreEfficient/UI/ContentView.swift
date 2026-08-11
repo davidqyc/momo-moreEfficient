@@ -15,11 +15,15 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 rehearsalBanner
                 accountRow
+                modePicker
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         if viewModel.isShowingEditor {
                             editorSurface
+                        } else if viewModel.contentMode == .phrase,
+                                  let preview = viewModel.phrasePreview {
+                            phrasePreviewSurface(preview)
                         } else if let preview = viewModel.preview {
                             previewSurface(preview)
                         }
@@ -27,7 +31,7 @@ struct ContentView: View {
                     .padding()
                 }
             }
-            .navigationTitle("释义录入")
+            .navigationTitle(viewModel.contentMode.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -37,7 +41,9 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !viewModel.executionActions.isEmpty || viewModel.isExecuting {
+                if !viewModel.executionActions.isEmpty
+                    || viewModel.canExecutePhrase
+                    || viewModel.isExecuting {
                     executionBar
                 }
             }
@@ -80,6 +86,23 @@ struct ContentView: View {
             // One approval, stating the total, both memberships and the digest that
             // commits it to this exact Preview and to both subplans.
             Text(viewModel.pendingBatchConfirmation?.message ?? "")
+        }
+        .confirmationDialog(
+            viewModel.pendingPhraseConfirmation?.title ?? "确认新建例句？",
+            isPresented: Binding(
+                get: { viewModel.pendingPhraseConfirmation != nil },
+                set: { if !$0 { viewModel.cancelPendingConfirmation() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pending = viewModel.pendingPhraseConfirmation {
+                Button(pending.actionTitle, role: .destructive) {
+                    viewModel.executeConfirmedPhrase()
+                }
+            }
+            Button("取消", role: .cancel) { viewModel.cancelPendingConfirmation() }
+        } message: {
+            Text(viewModel.pendingPhraseConfirmation?.message ?? "")
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -128,6 +151,22 @@ struct ContentView: View {
         .frame(minHeight: 44)
     }
 
+    private var modePicker: some View {
+        Picker("内容类型", selection: Binding(
+            get: { viewModel.contentMode },
+            set: { viewModel.selectMode($0) }
+        )) {
+            ForEach(ContentMode.allCases, id: \.self) { mode in
+                Text(mode.pickerLabel).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .disabled(!viewModel.canSwitchMode)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .accessibilityLabel("录入模式")
+    }
+
     private var editorSurface: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let acknowledgement = viewModel.completionAcknowledgement {
@@ -142,7 +181,13 @@ struct ContentView: View {
                 .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .accessibilityLabel("批次释义输入")
+                .accessibilityLabel(viewModel.contentMode.editorAccessibilityLabel)
+
+            if viewModel.contentMode == .phrase {
+                Text("格式：## 单词 · EN: 英文例句 · ZH: 中文翻译 · SOURCE: 来源")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let parseMessage = viewModel.localParseState.message {
                 Text(parseMessage)
@@ -224,6 +269,97 @@ struct ContentView: View {
         }
     }
 
+    private func phrasePreviewSurface(_ preview: PhrasePreviewPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(viewModel.previewHeader ?? "例句预览")
+                    .font(.headline)
+                Spacer()
+                Button("编辑") { viewModel.editInput() }
+                    .font(.subheadline)
+                    .disabled(viewModel.isBusy)
+            }
+
+            HStack(spacing: 14) {
+                summaryLabel("新建", preview.createCount)
+                summaryLabel("一致", preview.alreadyMatchingCount)
+                summaryLabel("阻断", preview.blockedCount)
+            }
+            .font(.subheadline.monospacedDigit())
+
+            if viewModel.isPreviewStale {
+                HStack(spacing: 10) {
+                    Text("需重新预览后才能写入")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("重新预览") {
+                        Task { await viewModel.previewCurrentInput() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .disabled(
+                        !viewModel.isConnected
+                            || !viewModel.localParseState.isValid
+                            || viewModel.isBusy
+                    )
+                }
+            }
+
+            feedbackView
+
+            LazyVStack(spacing: 0) {
+                ForEach(preview.rows) { row in
+                    phrasePreviewRow(row)
+                    if row.id != preview.rows.last?.id { Divider() }
+                }
+            }
+            .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private func phrasePreviewRow(_ row: PhrasePreviewRow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                viewModel.toggleDetails(for: row)
+            } label: {
+                HStack {
+                    Text(row.spelling)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(row.classification.compactLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(phraseClassificationColor(row.classification))
+                    Image(systemName: viewModel.expandedRowIDs.contains(row.id)
+                        ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if let reason = row.blockedReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            if row.classification == .alreadyMatching, !row.observations.isEmpty {
+                Text(phraseObservationLabel(row.observations))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if viewModel.expandedRowIDs.contains(row.id) {
+                detailLabel("EN", row.english)
+                detailLabel("ZH", row.chinese)
+                detailLabel("SOURCE", row.source)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
     private func previewRow(_ row: PreviewRow) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
@@ -270,6 +406,13 @@ struct ContentView: View {
         Group {
             if viewModel.isExecuting {
                 executionProgressRow
+            } else if viewModel.contentMode == .phrase {
+                Button("新建 \(viewModel.phrasePreview?.createCount ?? 0) 条例句") {
+                    viewModel.askToExecutePhrase()
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+                .disabled(!viewModel.canExecutePhrase)
             } else {
                 HStack(spacing: 12) {
                     ForEach(viewModel.executionActions) { action in
@@ -315,12 +458,22 @@ struct ContentView: View {
     private var feedbackView: some View {
         if viewModel.hasExecutionFeedback {
             VStack(alignment: .leading, spacing: 3) {
-                Text(
-                    "新建成功 \(viewModel.finalSummary.created) · "
-                        + "更新成功 \(viewModel.finalSummary.updated) · "
-                        + "失败 \(viewModel.finalSummary.failed) · "
-                        + "未执行 \(viewModel.finalSummary.notAttempted)"
-                )
+                Group {
+                    if viewModel.contentMode == .phrase {
+                        Text(
+                            "例句新建成功 \(viewModel.finalSummary.created) · "
+                                + "失败 \(viewModel.finalSummary.failed) · "
+                                + "未执行 \(viewModel.finalSummary.notAttempted)"
+                        )
+                    } else {
+                        Text(
+                            "新建成功 \(viewModel.finalSummary.created) · "
+                                + "更新成功 \(viewModel.finalSummary.updated) · "
+                                + "失败 \(viewModel.finalSummary.failed) · "
+                                + "未执行 \(viewModel.finalSummary.notAttempted)"
+                        )
+                    }
+                }
                 .font(.footnote.monospacedDigit())
                 if let stoppedMessage = viewModel.finalSummary.stoppedMessage {
                     Text(stoppedMessage)
@@ -328,6 +481,11 @@ struct ContentView: View {
                         .foregroundStyle(.orange)
                 }
             }
+        }
+        if let message = viewModel.phraseObservationMessage {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.orange)
         }
         if let message = viewModel.errorMessage {
             Text(message)
@@ -407,6 +565,28 @@ struct ContentView: View {
         }
     }
 
+    private func phraseClassificationColor(_ classification: PhrasePreviewClassification) -> Color {
+        switch classification {
+        case .create, .alreadyMatching: return .secondary
+        case .blocked: return .red
+        }
+    }
+
+    private func phraseObservationLabel(_ observations: [PhraseObservation]) -> String {
+        observations.map { observation in
+            switch observation {
+            case .tagsMatchRequested: return "标签匹配"
+            case .tagsMissing: return "标签未返回"
+            case .tagsDiffer: return "标签不同"
+            case .highlightExactTarget: return "英文高亮准确"
+            case .highlightMissing: return "英文高亮未返回"
+            case .highlightEmpty: return "英文高亮为空"
+            case .highlightOtherReviewedRange: return "英文高亮为其他已审阅范围"
+            case .chineseRangeUnavailable: return "中文范围不可用"
+            }
+        }.joined(separator: " · ")
+    }
+
     private func clearTokenDraft() {
         tokenDraft.removeAll(keepingCapacity: false)
     }
@@ -463,7 +643,7 @@ private struct HistoryRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(receipt.timestamp.formatted(date: .omitted, time: .shortened)) · \(operation) \(receipt.items.count) · \(spellingSummary)")
+            Text("\(receipt.timestamp.formatted(date: .omitted, time: .shortened)) · \(receipt.contentKind.displayLabel) · \(operation) \(receipt.items.count) · \(spellingSummary)")
                 .font(.subheadline)
                 .lineLimit(1)
             Text(outcomeSummary)
@@ -496,6 +676,7 @@ private struct HistoryDetailView: View {
         List {
             Section("执行") {
                 LabeledContent("时间", value: receipt.timestamp.formatted())
+                LabeledContent("内容", value: receipt.contentKind.displayLabel)
                 LabeledContent("操作", value: receipt.operationGroup == .create ? "CREATE" : "UPDATE")
                 LabeledContent("成功", value: "\(receipt.succeeded)")
                 LabeledContent("失败", value: "\(receipt.failed)")
