@@ -1,283 +1,92 @@
-# momo-moreEfficient Coding 思考深度使用协议
+# momo-moreEfficient Coding Reasoning Depth Policy
 
 status=CANONICAL_CODING_REASONING_DEPTH_POLICY
-version=1.0
-date=2026-08-03
-authority=OWNER_ACCEPTED_PROJECT_REASONING_DEPTH_POLICY
-source_policy=davidqyc/babyfood@master:docs/CODEX_REASONING_DEPTH_POLICY.md
+version=2.0
+date=2026-08-12
 
-## 1. 目的
+本文件只负责**模型 / effort / execution topology 路由**。产品事实和当前任务以 `AGENTS.md`、`docs/PROJECT_STATE.md`、当前 Issue 为准。
 
-本协议规定本项目向 Codex、Claude Code、Kimi Code 或其他 coding 程序发出正式 Prompt 时，怎样选择并标注模型、思考深度和执行模式。
+## 1. 正式 Prompt 头
 
-本项目是极小型效率工具。目标不是沿用大型产品的默认深度，也不是一律开到最高，而是使用能够可靠关闭当前任务的最低充分档位，避免过度设计、无收益延迟和多 Agent 协调成本。
-
-每份正式 coding Prompt 顶部必须显式写明：
+实质 coding / review Prompt 仍写：
 
 ```text
-Model: <实际模型>
+Model: GPT-5.6 Sol
 思考深度: 轻度 | 中 | 高 | 极高 | 最高
 执行模式: 单 Agent | Ultra
 选择原因: <一句话>
 ```
 
-不得只写“认真一点”“深度思考”“自动选择”，也不得把深度交给 Agent 自行猜测。
+不要把“选择 effort”本身变成流程项目；同一已冻结任务的机械 follow-up 可沿用或降低，不必每个小节点重新论证。
 
----
+## 2. 默认路由
 
-## 2. 命名
+### 轻度 / Low
 
-### 2.1 Codex 5.6 Sol
+用于纯机械、可直接验错的工作：SHA、状态回读、merge、链接/拼写修正、ZIP/hash 机械核验。
 
-| Codex 界面 | 项目语义 |
-| --- | --- |
-| `轻度` | Low |
-| `中` | Medium |
-| `高` | High |
-| `极高` | Extra |
-| `最高` | Max |
-| `Ultra` | 多 Agent 执行模式，不是普通第六档单 Agent 深度 |
+### 中 / Medium
 
-硬规则：
+用于确定性的小改动：小型 docs、单文件低风险修复、简单 UI/测试调整。
 
-- 不写 `X High` 或 `Extra High`；统一使用 `Extra`；
-- `最高` 是单 Agent 最高深度；
-- `Ultra` 改变执行拓扑，不等于“比最高再多想一点”。
+### 高 / High — 默认 Builder / Reviewer
 
-### 2.2 其他 coding 程序
+用于普通实质功能：多文件但边界明确的 parser、UI、API client、fake transport、Preview、普通 bug 和定向 review。
 
-跨工具统一语义：
+**momo-moreEfficient 的普通实质 coding 默认从 `高 / 单 Agent` 开始。**
 
-```text
-Low / Medium / High / Extra / Max / Ultracode
-```
+### 极高 / Extra — 真实写入风险档
 
-工具没有对应档位时，不得编造；Prompt 中同时写明项目语义和工具实际选择。
+只在确实涉及以下内容时使用：
 
----
+- Token / Keychain / 账号身份与 ownership；
+- 新真实写入操作；
+- 幂等、response loss、unknown outcome；
+- readback / recovery / rollback 语义；
+- Reviewer 已发现跨多个安全不变量的实质 blocker。
 
-## 3. 项目级选择原则
+### 最高 / Max
 
-固定优先级：
+默认关闭。只有 Extra 后仍有结构性 blocker、重大真实数据迁移/恢复、或最终高风险裁决才启用。
 
-```text
-正确性与账号/数据安全
-→ 使用体验与可恢复性
-→ 可维护性和开源价值
-→ 时延、额度与协调成本
-```
+### Ultra
 
-选择时检查：
+默认关闭。只有至少三条真正独立、可隔离的长 lane 且并行 ROI 明显为正时才启用。单一 Builder、一个 PR、普通 review 不使用 Ultra。
 
-1. 需求是否已经冻结；
-2. 改动是机械操作、单文件，还是多文件行为变化；
-3. 是否涉及 Token、账号隔离、真实 API 写入、幂等、超时、response loss、恢复或回滚；
-4. 错误是否可能造成重复写入、错误覆盖、凭证泄漏、账号串号或大范围返工；
-5. 上一轮是否被 Reviewer BLOCK，或同类修复是否已经失败；
-6. 是否需要独立反例搜索与证据闭环。
+## 3. 不要用更高 effort 掩盖错误的产品范围
 
-项目规模小意味着多数任务应比 BabyFood 低一档或保持更窄范围；但真实 API 写入安全、结果未知和账号隔离不因代码量少而降级。
+在升级到 Extra/Max 或增加 Agent 之前，先问：
 
----
+1. 这是不是低频边缘情况？
+2. 有没有便宜安全的人工 fallback？
+3. 复杂度来自真实风险，还是来自我们试图自动处理一个不该自动处理的问题？
 
-## 4. 各档位用途
+如果合同已经超过一屏、准备新增平行 executor/approval/binding 栈，或保护机制明显大于机制本身，**不要继续提高 Codex effort**。
 
-### 4.1 轻度 / Low
+按 `docs/AGENT_SKILLS_CONNECTOR.md` 先路由 fresh Claude/Fable/Opus 做独立 simplification / architecture re-frame，再决定是否继续施工。
 
-用于完全机械、可直接判定对错的工作：
+## 4. Review 深度
 
-- 读取 PR 状态、SHA、分支和 Issue 状态；
-- hash、ZIP 完整性、文件清单和 merge 后 readback；
-- 已知位置的拼写、链接或状态字段修正；
-- 普通 Ready、merge、删除分支和 closeout。
+- 普通 parser/UI/block-only guard：Builder High 自测 + Coordinator 定向检查通常足够；
+- 新真实写入类型、credential/identity、readback/recovery：Fresh Reviewer 至少 Extra；
+- 不因为测试很多、文件很长就自动升级；看现实损失半径和错误类型。
 
-不得用于实质代码、独立审阅、API 语义或安全逻辑。
+## 5. Claude 路由
 
-### 4.2 中 / Medium
+Claude coding / architecture Agent 的正式输入 Prompt 和 Agent 自生成报告默认全英文。
 
-用于低风险、合同已冻结的窄施工：
+- 普通架构敏感 fresh review：Opus 5 / Extra / Single Agent；
+- 最高能力、长程 architecture reset：Fable 5 / Max / Single Agent；
+- 不为了“更强”默认使用 Ultracode；本项目通常是一条连续判断链，单 Agent 更合适。
 
-- 小型文档更新；
-- 单文件或少量文件的确定性修复；
-- 已知原因的测试调整；
-- 无账号、无网络、无状态风险的脚手架和样板；
-- 明确审阅意见对应的机械修正。
+具体 Claude 产品端映射以 `davidqyc/agent-skills` 的 `claude-model-effort-routing` 与项目 instance 为准。
 
-### 4.3 高 / High
-
-这是本项目实质 Builder 和普通 Reviewer 的常用默认档位：
-
-- 多文件但范围清楚的功能实现；
-- 解析器、API client、CLI、缓存或桌面入口的非平凡修改；
-- mocked transport、预览、批量流程和测试联动；
-- 第一次实现一项边界明确的功能；
-- 有明确合同的定向代码审阅。
-
-本项目此前 Issue #2 offline planner、Issue #9 第一版 harness 使用 `高`，与当时“首次、边界清楚、完全离线”的任务性质匹配。
-
-### 4.4 极高 / Extra
-
-仅在小项目中仍存在实质高风险或已触发升级条件时使用：
-
-- Token 与账号隔离；
-- 真实写入门禁、幂等、超时、response loss、unknown outcome；
-- 写前状态、写后回读、人工恢复和回滚证据；
-- 凭证指纹、防串号和敏感信息边界；
-- Reviewer 已给出实质 BLOCK，且修复跨多个安全不变量；
-- 同一问题普通修复未关闭根因；
-- 进入真实副账号测试前的最终 write-path 审阅。
-
-当前 PR #10 的阻断修复属于此档：上一版虽通过测试，但 Reviewer 发现错误 update payload、错误 readback 合同、未记录 highlight、写入结果未知不落状态和不可用的预览/回滚设计。它同时涉及 response loss、恢复和账号安全，因此从此前的 `高` 升为 `极高`。
-
-### 4.5 最高 / Max
-
-默认关闭，仅用于：
-
-- `极高` 修复后仍存在结构性 BLOCK；
-- 多轮仍无法关闭真实写入、恢复或账号串号根因；
-- 主账号接入前的最终独立安全审阅；
-- 真实数据迁移、批量回滚或不可轻易返工的最终裁决。
-
-使用前必须说明 `极高` 为什么不足。不得用于普通 Builder、文档、merge 或已知小修。
-
-### 4.6 Ultra / Ultracode
-
-本项目默认关闭，通常不适合极小应用。
-
-只有以下条件全部成立时才可启用：
-
-1. 至少三条真正独立的长工作流；
-2. 各 lane 不共享可写文件；
-3. 并行显著提高反例覆盖或缩短时间；
-4. 有主 Agent 统一真值和综合；
-5. 收益明显高于协调与 token 成本。
-
-单一 Builder、一个 PR 修复、普通审阅、merge 和同一 worktree 写入均不得使用 Ultra。用户不承担手工多 Agent 编排。
-
----
-
-## 5. 角色默认值
-
-| 角色 / 工作 | 默认档位 | 升级条件 |
-| --- | --- | --- |
-| PR 状态、merge、readback、ZIP 机械核验 | `轻度` | 坐标冲突或异常 diff → `中/高` |
-| 小型 docs 或已知单点修复 | `中` | 多文件行为或合同冲突 → `高` |
-| 普通功能 Builder | `高` | Token、真实写入、unknown outcome、恢复 → `极高` |
-| 普通定向 Reviewer | `高` | write path、账号隔离、恢复或已 BLOCK → `极高` |
-| 真实副账号写入前安全审阅 | `极高` | 多轮仍 BLOCK 或主账号最终门禁 → `最高` |
-| Coordinator 生成普通 Builder Prompt | `中/高` | 多个安全合同和恢复路径 → `极高` |
-
-Reviewer 深度不得低于所审问题的实质复杂度。Fresh context 和审阅独立性优先于机械地“高一档”。
-
----
-
-## 6. 自动升级
-
-命中任一项，至少升一级：
-
-- 上一轮没有关闭根因；
-- Reviewer 给出实质正确性或安全 blocker；
-- 同类修复失败两次；
-- 涉及幂等、重试、response loss、restart、恢复或回滚；
-- 涉及 Token、账号身份、权限或多个 identity domain；
-- 需要证明某类危险行为“不发生”；
-- 错误可能造成凭证泄漏、账号串号、重复写入、错误覆盖或不可恢复数据问题。
-
-`Ultra` 不是自动升级结果，必须另行通过并行 ROI 检查。
-
----
-
-## 7. 自动降级
-
-以下均成立时可以降低一档：
-
-- 合同和根因已经冻结；
-- 改动位置与预期 diff 明确；
-- 有直接决定性的自动验证；
-- 不涉及新网络、Token、真实账号、状态或恢复；
-- 只是机械修正、状态同步、证据包装、merge 或 closeout。
-
-不得因为此前连续使用 `高`，就让后续 merge 或 readback 继续使用 `高`。
-
----
-
-## 8. Prompt 写法
-
-### 8.1 Codex 5.6 Sol
-
-普通功能：
+## 6. Durable rule
 
 ```text
-Model: GPT-5.6 Sol
-思考深度: 高
-执行模式: 单 Agent
-选择原因: 多文件但边界清楚的实质功能实现
+先判断产品是否值得做
+→ 再选择最小机制
+→ 再选择足够的模型/effort
 ```
 
-高风险修复：
-
-```text
-Model: GPT-5.6 Sol
-思考深度: 极高
-执行模式: 单 Agent
-选择原因: 涉及真实写入结果未知、恢复状态和账号隔离，且上一轮被 Reviewer BLOCK
-```
-
-机械 closing：
-
-```text
-Model: GPT-5.6 Sol
-思考深度: 轻度
-执行模式: 单 Agent
-选择原因: 只做 PR 状态核验、合并和 readback
-```
-
-### 8.2 英文界面工具
-
-```text
-Model: <model>
-Reasoning: Low | Medium | High | Extra | Max
-Execution: Single agent
-Selection reason: <one sentence>
-```
-
----
-
-## 9. Coordinator 职责
-
-Coordinator 必须：
-
-- 在每一份 coding Prompt 中自行选择并标注模型、深度和执行模式；
-- 用一句话说明选择原因；
-- 每轮根据新风险、Reviewer 结果和任务收敛程度重新判断，不沿用上一轮档位；
-- 不把档位选择转嫁给 Owner；
-- 不让 Owner 手工编排多 Agent；
-- closing 时判断下一轮应升级、保持或降级。
-
-只有当两种模式带来显著不同的费用、时间或并行风险，且无法按本协议判断时，才询问 Owner。
-
----
-
-## 10. 新会话和任务入口
-
-开始任何 coding Prompt 设计或代码任务前，必须读取：
-
-```text
-docs/CODEX_REASONING_DEPTH_POLICY.md
-```
-
-新 Issue 或 PR 的执行 Prompt 也必须显式引用本协议。不得依赖聊天中的旧档位记忆。
-
----
-
-## 11. 边界
-
-本协议只决定模型思考深度和执行模式，不自动授权：
-
-- 进入真实 API 阶段；
-- 配置 Token；
-- 对副账号或主账号写入；
-- 删除、回滚或批量更新；
-- 合并 PR；
-- 使用 Ultra；
-- 跳过测试、独立审阅或 Owner 的产品决定。
+禁止倒过来用高 effort 把低 ROI 功能做得更完整。
