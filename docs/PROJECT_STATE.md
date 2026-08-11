@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-11
-sourceMainSha=6977c9f385bdda7beb2cd49e57d06608fadf690e
+sourceMainSha=8f1deac64f733c751dca647ed405c5a5e1337047
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,79 +24,64 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=6977c9f385bdda7beb2cd49e57d06608fadf690e
+CURRENT_MAIN_AT_SNAPSHOT=8f1deac64f733c751dca647ed405c5a5e1337047
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#86
-CURRENT_UNIQUE_NEXT=WAIT_FOR_OWNER_GATE_B_ONE_POST_AUTHORIZATION
+CURRENT_PRIMARY_ISSUE=#89
+CURRENT_UNIQUE_NEXT=ISSUE_89_OFFLINE_IMPLEMENTATION_AND_REVIEW
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
 
 当前已完成：
 
-- `v0.1.0` 释义批量录入闭环、主账号显式 opt-in、真实 CREATE/UPDATE 与鉴权回读均已验证；
-- macOS 本地日常 UI 已验收；
-- iOS companion 已在实体 iPhone 使用，Token 按 D-016 保存为仅本设备 Keychain；
-- stale Preview、History/receipt、有限后台保护、Preview interruption resilience、one-action mixed CREATE→UPDATE 已完成；
-- 真实 10 条 interpretation mixed batch 已完成 CREATE 8/8 + UPDATE 2/2；
-- #82 / PR #83 已完成并合入：iOS phrase/example CREATE-only core 已实现并独立审阅 PASS；
-- #84 / PR #85 已完成并合入 `main`：单 App `释义 | 例句` 模式、独立草稿/authority、phrase Preview / native confirmation / CREATE / readback / History、DEBUG rehearsal 均已完成；
-- PR #85 在一次 CHANGES REQUIRED 后完成窄修复并通过 delta re-review；
-- Owner 已在实体 iPhone 对 PR #85 精确 head 完成 11 步 DEBUG rehearsal，全部符合预期：CREATE 3、后台切 App 后继续、History、草稿清空、第二次 ALREADY_MATCHING 3、释义草稿隔离均通过；该 rehearsal 零真实 Token、零 Maimemo 网络、零 production History；
-- D-018 已显式 supersede D-005 的旧 phrase blocker levels：`origin` / 英文 / 中文 / `PUBLISHED` / 安全唯一 same-English readback 为 hard gate；tags/highlight 为 structurally-valid non-blocking observations；中文 range 在 documented API 无写字段时可 unavailable；
-- #85 已 squash merge 为 `6977c9f385bdda7beb2cd49e57d06608fadf690e`，#84 自动关闭；
-- #86 的真实单条 phrase canary 已由 Owner 提供精确内容并授权 Gate A；实体 iPhone production Preview 已真实 GET-only 完成，结果为 `新建 1 · 一致 0 · 阻断 0`；尚未发生 phrase POST；
-- #87 已记录 Owner 日常四行纯文本 phrase 输入格式兼容要求；当前生产 phrase parser 仍只接受严格 labeled grammar；
-- #88 已记录当前 iOS `主账号` 为静态 UI 标签、不是 server-verified identity；在缺少 documented account identity endpoint 时，外部用户版本必须改成 identity-safe 中性文案或明确的本地标签；
+- `v0.1.0` 释义批量录入闭环、主账号真实 CREATE/UPDATE 与鉴权回读均已验证；
+- macOS 本地日常 UI 已验收；iOS companion 已在实体 iPhone 使用；
+- iOS Token 按 D-016 保存为仅本设备 Keychain；stale authority、History、有限后台保护和 mixed CREATE→UPDATE 均已完成；
+- #82 / PR #83：phrase CREATE-only core 已实现并独立审阅 PASS；
+- #84 / PR #85：`释义 | 例句` iPhone UI、独立草稿/authority、phrase Preview / confirmation / CREATE / readback / History、DEBUG rehearsal 已实现、独立审阅、实体 iPhone 11 步 rehearsal PASS，并合入 `main`；
+- D-018 已 supersede D-005 的旧 phrase blocker levels：英文/中文/source/`PUBLISHED`/安全唯一 same-English readback 为 hard gate；tags/highlight 为 structurally-valid non-blocking observations；
+- #86 已完成第一次真实主账号 phrase production canary：Gate A Preview `新建 1 · 一致 0 · 阻断 0`；Gate B 一次 CREATE 成功，authenticated readback hard gates 全部通过，`MBA/BEC/GMAT` 当前真实 round-trip 成功；
+- Owner 在墨墨 App 本体确认英文、中文、source 和三标签均正确可见；Open API readback 未返回 English highlight，但 App 实际视觉上自动高亮英文目标；中文语义位置由 Owner 手工补充；
+- #86 已关闭；#2 已降为 supporting evidence，#4 已更新为 phrase 产品总路线；
+- #87 已记录 Owner 日常四行纯文本 phrase 输入格式兼容要求；
+- #88 已记录当前 `主账号` 是静态 UI 标签，外部用户发布前必须改为 identity-safe account UI；
 - 桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-WAIT_FOR_OWNER_GATE_B_ONE_POST_AUTHORIZATION
+ISSUE_89_OFFLINE_IMPLEMENTATION_AND_REVIEW
 ```
 
-#86 是当前唯一主线：第一次真实 phrase production canary，固定为 **1 条 Owner 真正想保留的主账号例句**。
+#89 是当前主线：让 phrase CREATE 对多例句容量有感知，并为满额场景增加**明确选择目标记录的安全 UPDATE/替换**。
 
-Gate A 已完成：Owner 已独立确认目标主账号，并在 production iPhone App 中对精确 canary 内容执行真实 authenticated GET-only Preview，结果为：
+当前产品规则：
 
-```text
-新建 1 · 一致 0 · 阻断 0
-```
+- phrase 可有多条 authenticated-user records；
+- Owner 从当前 App 实际使用确认每词每用户最多 5 条自建例句；当前 first-party public docs 未找到这个数字，因此 `5` 只作为**Owner-observed、保守产品安全上限**，不得宣称为 documented API constant；
+- `<5` 且无 same-English conflict：继续当前 CREATE；
+- exact hard-field match：ALREADY_MATCHING / 0 POST；
+- `=5` 且是新例句：`REPLACE_REQUIRED`，CREATE 必须 0 POST；用户必须显式选择五条中的一条进行替换；
+- `>5`：视为 server/legacy rule mismatch，fail closed；
+- 替换使用 first-party documented `POST /phrases/{id}` UPDATE，不采用 delete→create；
+- 不得自动选 oldest/first/least-liked 等任何目标；
+- phrase UPDATE 首轮只允许 offline/fake/rehearsal 实现和独立审阅，**不授权任何真实 phrase UPDATE**。
 
-当前只剩 **Gate B — one real CREATE POST**。必须由 Owner 再次明确授权后，才可在当前有效 Preview 上点击原生 destructive confirmation 执行。执行时仍必须：
-
-- fresh authenticated preflight before POST；
-- 最多一次 POST；
-- no POST retry；
-- dispatched POST 后立即 authenticated GET readback；
-- uncertain outcome 只允许 GET-only recovery；
-- no UPDATE / DELETE / rollback / replay。
-
-当前状态：
-
-```text
-CANARY_CONTENT=LOCKED_TO_OWNER_SUPPLIED_ONE_ITEM
-REAL_PHRASE_GET_AUTHORIZATION=GRANTED_AND_COMPLETED
-GATE_A_RESULT=CREATE_1_MATCHING_0_BLOCKED_0
-REAL_PHRASE_POST_AUTHORIZATION=NOT_YET_GRANTED
-```
-
-不得把 Owner 的“继续”、merge 授权、Issue 创建、之前的 DEBUG rehearsal、Gate A 授权或任何文档状态解释成 Gate B 的真实 POST 授权。
+UPDATE 仍必须保持：fresh authenticated preflight、目标 record/baseline 精确 binding、每项最多一次 POST、no retry、immediate authenticated GET readback、uncertain outcome GET-only recovery、no delete/rollback/replay。
 
 ## 4. Other active routes
 
 ### Phrase / example automation
 
 ```text
-Issue #2 = OPEN / SUPPORTING_EVIDENCE_AND_LIMITATIONS
+Issue #2 = OPEN / SUPPORTING_EVIDENCE_ONLY
 Issue #4 = PARENT_PRODUCT_ROUTE
-Issue #86 = CURRENT_PRIMARY / ONE_ITEM_REAL_CANARY
 Issue #87 = FOLLOW_UP / NATIVE_FOUR_LINE_INPUT
 Issue #88 = FOLLOW_UP / IDENTITY_SAFE_ACCOUNT_UI
+Issue #89 = CURRENT_PRIMARY / CAPACITY_AND_SAFE_REPLACEMENT
 ```
 
-#82/#84 已完成；#86 只验证第一次 production CREATE runtime path。若一条 canary 的 hard readback + Owner App-level 检查都通过，再单独决定是否扩大到普通 phrase batch。#87/#88 不在 canary 前插入实现，以免混入新的 parser/UI 变量。
+#87/#88 与 #89 保持独立，避免 parser、account identity 和首次 phrase UPDATE authority 混成一个不可审阅的大改动。
 
 ### Public launch / distribution
 
@@ -104,7 +89,7 @@ Issue #88 = FOLLOW_UP / IDENTITY_SAFE_ACCOUNT_UI
 Issue #71 = OPEN / CANDIDATE_ONLY
 ```
 
-排在当前 canary 之后，不是 primary。#88 在外部用户分发前必须解决。
+#88 在外部用户分发前必须解决。
 
 ### Open Platform authorization research
 
@@ -120,8 +105,6 @@ Issue #72 = OPEN / RESEARCH_CANDIDATE_ONLY
 Issue #5 = OPEN / NOT_STARTED
 ```
 
-独立后续能力。
-
 ### Codex for Open Source
 
 ```text
@@ -130,29 +113,17 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 
 只积累真实 release、用户、维护、Issue/PR 和安全质量证据，不制造 adoption 信号。
 
-### Superseded legacy issue
-
-```text
-Issue #62 = OPEN_BUT_SUPERSEDED_BY_COMPLETED_#63
-```
-
-不是当前 WIP。
-
 ## 5. Safety boundaries that remain current
 
 - Preview **不是**授权；任何真实写入必须来自当前有效 Preview 与明确 Owner action；
-- interpretation mixed batch 仍保持 whole-batch fresh preflight、CREATE 完整成功后才进入 UPDATE、UPDATE subset 再 fresh preflight；CREATE approval 不作为 UPDATE permission；
-- phrase 当前只允许 CREATE，不存在 phrase UPDATE/DELETE；
-- #86 的真实 canary 固定为一条，并把 GET-only Preview 与 POST write 拆成两个 Owner gate；
+- phrase production 当前只已验证 CREATE；#89 的 UPDATE/replacement 尚未实现、未审阅、未获任何真实运行授权；
 - 每个 changed item 最多一次 POST；绝不 POST retry；POST 后立即 authenticated GET readback；结果不确定只做 GET-only recovery；
-- server state、source/mode、credential 或 binding 发生变化时停止，不扩大旧授权；再次尝试必须 fresh Preview；
-- 不开放 delete；没有自动 rollback / replay；不修改墨墨内置释义；
-- phrase 的 tags/highlight 不完整不构成 hard failure，但 malformed/unknown/out-of-bounds response schema 仍 fail closed；source/origin mismatch 始终是 hard failure；
-- iOS Token 只在本设备 Keychain generic-password 项，`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`、non-sync；不进入 `UserDefaults`、文件、状态恢复、argv、环境变量、日志、分析、自动剪贴板读取或 URL/query；
-- CLI/macOS localhost UI 凭证契约仍按 D-013；
-- 已开始的 Preview/已授权 execution 只可在 iOS 允许的有限后台时间内继续；系统到期安全停止；前台返回不得 replay/resume、mint 新 approval 或恢复失效 authority；
-- 当前 documented Open API 没有可靠 account identity endpoint，Token 实际所属账号仍由操作者确认；当前 iOS `主账号` 只是静态标签，不是身份验证结果；
-- 换对话、文档更新、Agent 接管、测试、rehearsal、merge、Gate A 或“继续”**都不构成新的真实 POST 授权**。
+- server state、source/mode、credential、target record 或 binding 发生变化时停止；再次尝试必须 fresh Preview；
+- 不开放 delete；没有自动 rollback / replay；
+- phrase tags/highlight 不完整不构成 hard failure，但 malformed/unknown/out-of-bounds response schema 仍 fail closed；source/origin mismatch 始终是 hard failure；
+- iOS Token 只在本设备 Keychain generic-password 项，`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`、non-sync；
+- current manual Token path 不提供可靠 server-verified Maimemo nickname；当前 `主账号` 只是静态标签，不是身份验证结果；
+- 换对话、文档更新、Agent 接管、测试、rehearsal、merge 或此前的 CREATE 授权**都不构成新的 phrase UPDATE 授权**。
 
 ## 6. Maintenance rule
 
