@@ -17,19 +17,25 @@
 - 26 个针对主账号 opt-in 的离线测试，总数由 443 增至 469。
 - macOS 本地日常 UI（Issue #54）：标准库 localhost 适配层 + 双击 `.app` 启动器，复用现有导入器作为唯一写入安全权威；支持 mixed Preview、分离 CREATE/UPDATE、native hidden Token prompt、fresh preflight、stale-preview 失效和 bounded in-memory credential lifecycle。
 - Issue #54 已完成 Owner 真机产品验收：`~/Applications/momo-moreEfficient.app` 双击启动成功且普通使用无 Terminal，真实主账号 12 条批次 Preview 结果为 `新建 0 / 更新 0 / 已一致 12 / 失败 0`，本次 acceptance 未执行写入，渲染内容与预期一致。
+- 轻量 iOS companion 已进入 `main` 并完成实体 iPhone 验收：GET-only Preview、CREATE/UPDATE、CURRENT/PROPOSED、fresh preflight、stale-preview 失效与 one-shot native destructive confirmation 均在设备端工作；Token 按 D-016 保存为仅本设备 `WhenUnlockedThisDeviceOnly`、非同步 Keychain 项。
+- iPhone 真实主账号写入路径已完成 `sphere` UPDATE canary 与 `incentive` CREATE canary；随后一份真实 mixed 10 条批次完成 CREATE 8/8 + UPDATE 2/2，分别生成 History receipt，最终编辑器清空，10/10 成功。
+- iOS 本地 History/receipt 已与活动草稿分离，只保存非敏感执行结果；Token、ID、digest、请求体、响应和释义正文不进入 History。
+- 已开始的 Preview 与已授权 execution 现在可在 iOS 允许的有限后台时间内跨普通切 App / 来电继续；系统回收后台时间时安全停止，不自动 replay/resume，也不制造新的 approval。
+- mixed actionable batch 的日常 UX 已收口为：一次 Preview → 一次 Run → 一次 native confirmation → 内部 CREATE 后自动 UPDATE。CREATE/UPDATE 仍是两个独立安全 phase；首个 POST 前保留 whole-batch fresh authenticated preflight，CREATE 完整成功后 UPDATE subset 再 fresh preflight。execution-time 安全检查对用户只显示 `安全确认中…`，逐项 `n/N` 只显示真实写入进度。参见 #76 / PR #80。
 
 ### Unchanged
 
-- 写入安全模型没有任何放宽：整批 preflight、每个待写条目最多一次 POST、不重试、写后立即鉴权回读、任一阻断项都在第一个 POST 之前中止、失败即停止、不回滚、不删除。
-- 凭证策略沿用 D-013；macOS UI 通过 native hidden prompt 读取主账号 Token，Token 仅留在本地 UI 进程内存，不进入浏览器持久存储、日志或 Git。
+- 写入安全模型没有任何放宽：Preview 不是授权；写入前 fresh authenticated validation、每个待写条目最多一次 POST、不重试、写后立即鉴权回读、结果不确定只做 GET-only recovery、失败即停止、不回滚、不删除。
+- mixed batch 的一次 whole-plan confirmation **不**合并 CREATE/UPDATE 的内部安全边界：CREATE approval 不作为 UPDATE permission，UPDATE 在任何 POST 前仍需重新验证其原 operation-group binding；server state 改变或歧义时停止。
+- CLI 与 macOS localhost UI 的凭证策略继续沿用 D-013：hidden prompt / 仅进程内存；iOS 单独按 D-016 使用仅本设备 Keychain。两条契约不得互相机械套用。
 - `scripts/issue9_live_harness.py` 的副账号门禁未放宽，历史 spike/probe 工具仍然只能用于测试账号。
 - 仍然没有账号身份接口，因此本工具**不能**证明 Token 属于哪个墨墨账号；账号身份由操作者负责。
-- 仍然没有删除路径、没有自动回滚、没有例句/短语请求路径。
+- 仍然没有删除路径、没有自动回滚、没有受支持的例句/短语写入产品路径。
 
 ### Known limitations
 
 - 从部分聊天/网页渲染直接复制时，源端可能在文本到达本地 UI textarea 前折叠行边界；下载的 text/Markdown 或其他保留换行的来源可正常解析。该现象不作为启用 heuristic parser 的理由。
-- 当前已验收的日常 UI 是 macOS 本地应用路径；iOS companion 作为后续独立产品任务由 Issue #56 跟踪，尚未实现。
+- iOS companion 已在 Owner 的实体 iPhone 上通过当前日常流程与 DEBUG rehearsal 验收，但尚未提供 TestFlight/App Store 或其它面向陌生用户的低摩擦公开安装路径；v0.2 分发与首次外部用户由 #71 跟踪，尚未自动授权启动。
 
 ## [0.1.0] - 2026-08-09
 
