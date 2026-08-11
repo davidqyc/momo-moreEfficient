@@ -252,11 +252,8 @@ final class ExecutionLifecycleTests: XCTestCase {
         let execution = model.executeConfirmed(.create)
         // Synchronously, before the first await: no unexplained grey UI.
         XCTAssertTrue(model.isExecuting)
-        XCTAssertEqual(
-            model.executionStage,
-            .preflight(group: .create, entry: 1, total: 2)
-        )
-        XCTAssertEqual(model.executionProgressLabel, "正在预检 1/2")
+        XCTAssertEqual(model.executionStage, .securing)
+        XCTAssertEqual(model.executionProgressLabel, "安全确认中…")
 
         await execution?.value
 
@@ -301,10 +298,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             ExecutionStage.writing(group: .update, item: 1, total: 2, spelling: "manning").label,
             "正在更新 1/2 · manning"
         )
-        XCTAssertEqual(
-            ExecutionStage.preflight(group: .update, entry: 2, total: 2).label,
-            "正在预检 2/2"
-        )
+        XCTAssertEqual(ExecutionStage.securing.label, "安全确认中…")
         XCTAssertEqual(ExecutionStage.finishing(group: .update).label, "正在收尾…")
     }
 
@@ -341,45 +335,46 @@ final class ExecutionLifecycleTests: XCTestCase {
         await execution?.value
     }
 
-    // MARK: - Preflight progress counts exactly 1/N … N/N
+    // MARK: - #76: the execution-time preflight is compact, writes stay numbered
 
-    func testPreflightProgressCountsEachEntryExactlyOnceForTwoEntries() async throws {
-        let labels = try await preflightLabels(
-            document: "one\nn. 一\ntwo\nn. 二",
-            spellings: ["one", "two"]
-        )
-        XCTAssertEqual(labels, ["正在预检 1/2", "正在预检 2/2"])
+    /// The safety pass still reads every approved item, but the Owner sees one
+    /// compact stage instead of a second apparent 1/N sequence.
+    func testExecutionTimePreflightReportsOneCompactStageRegardlessOfEntryCount() async throws {
+        for (document, spellings) in [
+            ("one\nn. 一\ntwo\nn. 二", ["one", "two"]),
+            ("one\nn. 一\ntwo\nn. 二\nthree\nn. 三", ["one", "two", "three"]),
+        ] {
+            let stages = try await recordedStages(document: document, spellings: spellings)
+            XCTAssertEqual(stages.filter { $0 == .securing }.count, 1, document)
+            XCTAssertEqual(stages.first, .securing, document)
+        }
     }
 
-    func testPreflightProgressCountsEachEntryExactlyOnceForThreeEntries() async throws {
-        let labels = try await preflightLabels(
-            document: "one\nn. 一\ntwo\nn. 二\nthree\nn. 三",
-            spellings: ["one", "two", "three"]
-        )
-        XCTAssertEqual(labels, ["正在预检 1/3", "正在预检 2/3", "正在预检 3/3"])
-    }
-
-    func testPreflightNeverReportsAnEntryBeyondWhatItHasReached() async throws {
+    func testNoExecutionStageEverRendersAPreflightStyleCounter() async throws {
         let stages = try await recordedStages(
             document: "one\nn. 一\ntwo\nn. 二",
             spellings: ["one", "two"]
         )
-        // Entry 2 must never appear before entry 1 has been reported.
-        let firstTwo = stages.firstIndex { $0 == .preflight(group: .create, entry: 2, total: 2) }
-        let firstOne = stages.firstIndex { $0 == .preflight(group: .create, entry: 1, total: 2) }
-        XCTAssertNotNil(firstOne)
-        XCTAssertNotNil(firstTwo)
-        XCTAssertLessThan(firstOne ?? .max, firstTwo ?? .min)
-        // No entry index may exceed the total.
         for stage in stages {
-            if case let .preflight(_, entry, total) = stage {
-                XCTAssertGreaterThanOrEqual(entry, 1)
-                XCTAssertLessThanOrEqual(entry, total)
+            guard case .writing = stage else {
+                // Only real writes may carry per-item numbers.
+                XCTAssertFalse(stage.label.contains("/"), stage.label)
+                XCTAssertFalse(stage.label.contains("预检"), stage.label)
+                continue
             }
         }
+        // The whole-batch preflight still ran over every entry: 2 GET pairs before
+        // the first POST, exactly as before.
+        XCTAssertEqual(
+            stages.compactMap { stage -> String? in
+                guard case .writing = stage else { return nil }
+                return stage.label
+            },
+            ["正在新建 1/2 · one", "正在新建 2/2 · two"]
+        )
     }
 
-    func testViewModelPreflightLabelStartsAtEntryOne() async {
+    func testViewModelPreflightLabelIsTheCompactSecuringStage() async {
         let assertion = FakeBackgroundExecutionAssertion()
         let factory = SequencedTransportFactory([
             previewRun(["one", "two"]),
@@ -396,8 +391,8 @@ final class ExecutionLifecycleTests: XCTestCase {
         model.askToExecute(.create)
 
         let execution = model.executeConfirmed(.create)
-        XCTAssertEqual(model.executionStage, .preflight(group: .create, entry: 1, total: 2))
-        XCTAssertEqual(model.executionProgressLabel, "正在预检 1/2")
+        XCTAssertEqual(model.executionStage, .securing)
+        XCTAssertEqual(model.executionProgressLabel, "安全确认中…")
         await execution?.value
     }
 
@@ -560,21 +555,6 @@ final class ExecutionLifecycleTests: XCTestCase {
             progress: ExecutionProgressReporter { recorder.record($0) }
         )
         return recorder.stages
-    }
-
-    /// Every preflight label reported, in order and *not* de-duplicated: for N
-    /// entries there must be exactly N reports, one per entry. Collapsing repeats
-    /// would hide the off-by-one this guards against, where an extra report made
-    /// `N/N` appear while entry N had not been reached.
-    private func preflightLabels(
-        document: String,
-        spellings: [String]
-    ) async throws -> [String] {
-        try await recordedStages(document: document, spellings: spellings)
-            .compactMap { stage -> String? in
-                guard case .preflight = stage else { return nil }
-                return stage.label
-            }
     }
 
     private func proposedText(_ document: String, _ index: Int) -> String {

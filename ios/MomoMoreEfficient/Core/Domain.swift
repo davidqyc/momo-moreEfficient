@@ -28,6 +28,7 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
     case uncertainWriteOutcome
     case previewInterrupted
     case credentialStorageUnavailable
+    case remainingPhaseChanged
 
     var description: String {
         switch self {
@@ -57,6 +58,8 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
             return "预览被系统中断；未写入任何数据，可重新预览。"
         case .credentialStorageUnavailable:
             return "无法安全访问设备上的 Token；请解锁设备后重试。"
+        case .remainingPhaseChanged:
+            return "后续阶段的服务器状态已变化；该阶段未发送任何写请求，请重新预览。"
         }
     }
 }
@@ -148,12 +151,41 @@ enum OperationGroup: String, Codable, Equatable, Sendable {
     case update
 }
 
+/// A primary action offered by a Preview.
+///
+/// A single-group Preview keeps the original one-group-per-button layout. A mixed
+/// actionable Preview instead offers exactly one action covering the whole
+/// displayed plan (#76): the Owner must never have to run CREATE, re-Preview the
+/// remainder and confirm UPDATE by hand.
 struct ExecutionAction: Equatable, Identifiable, Sendable {
-    let group: OperationGroup
-    let count: Int
+    /// `nil` when this action covers the whole displayed plan.
+    let group: OperationGroup?
+    let createCount: Int
+    let updateCount: Int
 
-    var id: String { group.rawValue }
-    var title: String { group == .create ? "新建 \(count)" : "更新 \(count)" }
+    init(group: OperationGroup, count: Int) {
+        self.group = group
+        createCount = group == .create ? count : 0
+        updateCount = group == .update ? count : 0
+    }
+
+    /// The single mixed-batch action covering both phases.
+    init(createCount: Int, updateCount: Int) {
+        group = nil
+        self.createCount = createCount
+        self.updateCount = updateCount
+    }
+
+    var id: String { group?.rawValue ?? "whole-plan" }
+    var count: Int { createCount + updateCount }
+    var coversWholePlan: Bool { group == nil }
+
+    var title: String {
+        guard let group else {
+            return "执行 \(count) 条（新建 \(createCount) · 更新 \(updateCount)）"
+        }
+        return group == .create ? "新建 \(createCount)" : "更新 \(updateCount)"
+    }
 }
 
 enum WriteOutcome: String, Codable, Equatable, Sendable {
@@ -186,6 +218,60 @@ struct ExecutionSummary: Equatable, Sendable {
             results: []
         )
     }
+
+    /// Every planned item of this phase was written and read back successfully.
+    ///
+    /// Deliberately strict: a stop always leaves at least one `.notAttempted` or
+    /// `.notVerified` behind, and a cancellation flag alone is enough to fail. Only
+    /// this may let a later phase begin.
+    var isFullSuccess: Bool {
+        !stalePreview
+            && !cancelled
+            && failed == 0
+            && !results.isEmpty
+            && succeeded == results.count
+            && results.allSatisfy { $0.outcome == .confirmed || $0.outcome == .recovered }
+    }
+}
+
+/// Why a planned phase never started.
+enum BatchRunStopReason: String, Equatable, Sendable {
+    /// The phase before it did not commit completely.
+    case earlierPhaseIncomplete
+    /// Its own fresh authenticated preflight no longer matched the approved plan.
+    case remainingPhaseChanged
+    /// The run was cancelled — ordinarily background time expiring — before the
+    /// phase could be revalidated.
+    case interrupted
+}
+
+enum BatchRunOutcome: Equatable, Sendable {
+    /// The whole-plan authorization or the whole-batch preflight did not match.
+    /// Nothing was written.
+    case stale
+    /// Every planned phase ran and produced its own summary.
+    case completed
+    /// An earlier phase resolved, and the named phase was deliberately not started.
+    case stoppedBeforeRemainingPhase(group: OperationGroup, reason: BatchRunStopReason)
+}
+
+/// The result of one Owner-authorized whole-plan run.
+///
+/// `phases` holds one summary per phase that actually ran, in execution order, so
+/// CREATE and UPDATE stay distinguishable in History exactly as they are today.
+struct BatchRunResult: Equatable, Sendable {
+    let outcome: BatchRunOutcome
+    let phases: [ExecutionSummary]
+
+    static let stale = BatchRunResult(outcome: .stale, phases: [])
+
+    var isFullSuccess: Bool {
+        outcome == .completed && !phases.isEmpty && phases.allSatisfy(\.isFullSuccess)
+    }
+
+    func summary(for group: OperationGroup) -> ExecutionSummary? {
+        phases.first { $0.group == group }
+    }
 }
 
 /// What an authorized execution is doing right now.
@@ -193,24 +279,67 @@ struct ExecutionSummary: Equatable, Sendable {
 /// Every value is derived from real executor state — a completed readback, a
 /// dispatched item — never from a timer. Only the Owner's own spelling is carried;
 /// no identifier, fingerprint, payload or credential material appears here.
-/// Both `preflight` and `writing` use the same current-entry semantics: `entry`
-/// and `item` are 1-based indexes of the unit being worked on right now, so the
-/// visible sequence is exactly 1/N, 2/N, … N/N with no compensating arithmetic.
+///
+/// `writing` uses 1-based current-item semantics, so the visible sequence is
+/// exactly 1/N, 2/N, … N/N with no compensating arithmetic.
+///
+/// The execution-time preflight is deliberately *not* one of those sequences.
+/// It still reads every approved item over the network before the first POST —
+/// that whole-batch gate is the reason no item can be written before a later one
+/// is known to have changed — but the Owner sees a single compact `securing`
+/// stage instead of a second apparent 1/N pass (#76). Per-item numbers belong to
+/// actual writes only.
 enum ExecutionStage: Equatable, Sendable {
-    case preflight(group: OperationGroup, entry: Int, total: Int)
+    case securing
     case writing(group: OperationGroup, item: Int, total: Int, spelling: String)
     case finishing(group: OperationGroup)
 
     var label: String {
         switch self {
-        case let .preflight(_, entry, total):
-            return "正在预检 \(entry)/\(total)"
+        case .securing:
+            return "安全确认中…"
         case let .writing(group, item, total, spelling):
             let verb = group == .create ? "正在新建" : "正在更新"
             return "\(verb) \(item)/\(total) · \(spelling)"
         case .finishing:
             return "正在收尾…"
         }
+    }
+}
+
+/// Everything the native confirmation must state so that one approval covers the
+/// exact displayed plan and nothing else (#76).
+struct PendingBatchConfirmation: Equatable, Sendable {
+    let createSpellings: [String]
+    let updateSpellings: [String]
+    /// Short form of the whole-plan binding digest, which commits to the exact
+    /// Preview and to both subplans including their proposed content.
+    let bindingDigest: String
+
+    var createCount: Int { createSpellings.count }
+    var updateCount: Int { updateSpellings.count }
+    var totalCount: Int { createCount + updateCount }
+
+    var title: String { "确认执行 \(totalCount) 条？" }
+
+    var actionTitle: String {
+        "确认执行 \(totalCount) 条（新建 \(createCount) · 更新 \(updateCount)）"
+    }
+
+    var message: String {
+        var lines = ["共 \(totalCount) 条 · 新建 \(createCount) · 更新 \(updateCount)"]
+        if !createSpellings.isEmpty {
+            lines.append("新建：" + createSpellings.joined(separator: "、"))
+        }
+        if !updateSpellings.isEmpty {
+            lines.append("更新：" + updateSpellings.joined(separator: "、"))
+        }
+        lines.append("授权指纹 \(bindingDigest)")
+        lines.append(
+            "将重新完整预检；只有与当前预览严格一致时才会按 新建 → 更新 顺序写入。"
+                + "每项最多一次 POST，不重试。"
+        )
+        return lines.joined(separator: "\n")
     }
 }
 

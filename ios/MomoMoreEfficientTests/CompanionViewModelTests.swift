@@ -127,7 +127,9 @@ final class CompanionViewModelTests: XCTestCase {
         )
     }
 
-    func testExecutionControlsRemainSeparateCreateAndUpdateActions() async {
+    /// #76: a mixed actionable Preview offers exactly one primary action covering
+    /// the whole displayed plan, never two mandatory user runs.
+    func testMixedPreviewExposesOneWholePlanActionWithBothCounts() async {
         let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
             [
@@ -139,8 +141,27 @@ final class CompanionViewModelTests: XCTestCase {
         model.sourceText = "create\nn. 新建\nupdate\nn. 新版"
         await model.previewCurrentInput()
 
+        XCTAssertEqual(model.executionActions.count, 1)
+        XCTAssertEqual(model.executionActions.map(\.group), [nil])
+        XCTAssertEqual(model.executionActions.map(\.title), ["执行 2 条（新建 1 · 更新 1）"])
+        XCTAssertEqual(model.executionActions.first?.count, 2)
+    }
+
+    /// Single-group batches keep the original controls and gain no extra step.
+    func testSingleGroupPreviewKeepsTheOriginalSeparateActions() async {
+        let factory = SequencedTransportFactory([
+            [
+                vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
+                vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
+            ],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = "one\nn. 一\ntwo\nn. 二"
+        await model.previewCurrentInput()
+
         XCTAssertEqual(model.executionActions.map(\.group), [.create, .update])
-        XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 1"])
+        XCTAssertEqual(model.executionActions.map(\.title), ["新建 2", "更新 0"])
+        XCTAssertFalse(model.executionActions.contains { $0.coversWholePlan })
     }
 
     func testSourceEditClearsStalePreviewPresentation() async {

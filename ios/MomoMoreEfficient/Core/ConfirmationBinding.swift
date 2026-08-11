@@ -38,6 +38,51 @@ struct NativeApproval: Equatable {
     }
 }
 
+/// The whole run the Owner authorizes with one native confirmation (#76).
+///
+/// It is built strictly *on top of* the existing per-group `ConfirmationPlan`s —
+/// their digests are unchanged and still computed exactly as before — so a phase
+/// is never authorized by anything weaker than its own operation-group binding.
+/// What the batch plan adds is a single digest that additionally commits to the
+/// exact displayed Preview and to the deterministic CREATE-then-UPDATE ordering,
+/// so one approval covers that whole plan and nothing else.
+struct BatchPlan {
+    let phases: [ConfirmationPlan]
+    let credentialFingerprint: String
+    let bindingDigest: String
+    let expectedConfirmation: String
+
+    var totalItemCount: Int { phases.reduce(0) { $0 + $1.items.count } }
+
+    func plan(for group: OperationGroup) -> ConfirmationPlan? {
+        phases.first { $0.group == group }
+    }
+}
+
+/// The armed, comparable form of a `BatchPlan`.
+///
+/// Each phase carries its own operation-group binding digest verbatim. A later
+/// phase is admitted only when a fresh authenticated read reproduces that exact
+/// digest — never by inheriting the earlier phase's approval, and never by
+/// re-deriving authority from whatever the server happens to say later.
+struct BatchPlanApproval: Equatable, Sendable {
+    struct Phase: Equatable, Sendable {
+        let group: OperationGroup
+        let itemCount: Int
+        let batchDigest: String
+        let bindingDigest: String
+    }
+
+    let snapshotIdentity: String
+    let credentialFingerprint: String
+    let phases: [Phase]
+    let bindingDigest: String
+
+    func phase(for group: OperationGroup) -> Phase? {
+        phases.first { $0.group == group }
+    }
+}
+
 enum ConfirmationBinding {
     static func makePreviewBindingContext(
         items: [PrivatePreflightItem]
@@ -180,6 +225,76 @@ enum ConfirmationBinding {
         return NativeApproval(
             group: group,
             snapshotIdentity: try snapshotIdentity(snapshot),
+            bindingDigest: plan.bindingDigest
+        )
+    }
+
+    /// Deterministic phase ordering for a whole-plan run: CREATE first, then
+    /// UPDATE. Only groups with at least one actionable item take part.
+    static let batchPhaseOrder: [OperationGroup] = [.create, .update]
+
+    static func makeBatchPlan(snapshot: PreviewSnapshot) throws -> BatchPlan {
+        let phases = try batchPhaseOrder
+            .filter { !snapshot.items(for: $0).isEmpty }
+            .map { try makePlan(snapshot: snapshot, group: $0) }
+        guard !phases.isEmpty else { throw CompanionError.blocked }
+
+        let binding: [String: Any] = [
+            "operation": "batch-interpretation-run",
+            "host": CompanionConstants.productionBaseURL.absoluteString,
+            "method": "POST",
+            "account_label": CompanionConstants.accountLabel,
+            "account_mode": CompanionConstants.accountMode,
+            "write_policy": CompanionConstants.writePolicy,
+            "pricing_and_terms_checked": true,
+            "tags": CompanionConstants.tags,
+            "status": CompanionConstants.status,
+            "credential_fingerprint": snapshot.credentialFingerprint,
+            // Commits the approval to the exact Preview the Owner was shown,
+            // including its counts, classifications and baselines.
+            "snapshot_identity": try snapshotIdentity(snapshot),
+            "total_item_count": phases.reduce(0) { $0 + $1.items.count },
+            "phase_order": phases.map { $0.group.rawValue },
+            "phases": phases.map { plan -> [String: Any] in
+                [
+                    "group": plan.group.rawValue,
+                    "operation": operationName(plan.group),
+                    "path": reviewedBindingPath(plan.group),
+                    "item_count": plan.items.count,
+                    "batch_digest": plan.batchDigest,
+                    // The per-group binding digest, verbatim. A later phase is
+                    // admitted only by reproducing exactly this value.
+                    "binding_digest": plan.bindingDigest,
+                    "items": plan.items.map { boundItem($0) },
+                    "request_bodies": plan.items.map { requestBody($0, group: plan.group) },
+                    "vocabulary_ids": plan.items.map(\.vocabularyID),
+                    "record_ids": plan.items.compactMap { $0.baseline?.id },
+                ] as [String: Any]
+            },
+        ]
+
+        let bindingDigest = String(try digest(binding).prefix(16))
+        return BatchPlan(
+            phases: phases,
+            credentialFingerprint: snapshot.credentialFingerprint,
+            bindingDigest: bindingDigest,
+            expectedConfirmation: "CONFIRM MAIN BATCH \(bindingDigest)"
+        )
+    }
+
+    static func makeBatchApproval(snapshot: PreviewSnapshot) throws -> BatchPlanApproval {
+        let plan = try makeBatchPlan(snapshot: snapshot)
+        return BatchPlanApproval(
+            snapshotIdentity: try snapshotIdentity(snapshot),
+            credentialFingerprint: snapshot.credentialFingerprint,
+            phases: plan.phases.map {
+                BatchPlanApproval.Phase(
+                    group: $0.group,
+                    itemCount: $0.items.count,
+                    batchDigest: $0.batchDigest,
+                    bindingDigest: $0.bindingDigest
+                )
+            },
             bindingDigest: plan.bindingDigest
         )
     }
