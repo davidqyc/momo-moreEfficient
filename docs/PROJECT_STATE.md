@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-08-10
-sourceMainSha=3057bbe52af3e087b8d2d4a47e6dbe558877e8c6
+updatedAt=2026-08-11
+sourceMainSha=cb955cf284c9da630227013e11518dfee3ef3deb
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,39 +24,52 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=3057bbe52af3e087b8d2d4a47e6dbe558877e8c6
+CURRENT_MAIN_AT_SNAPSHOT=cb955cf284c9da630227013e11518dfee3ef3deb
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#73
-OPEN_PRODUCT_PR=#73 implementation pending Draft PR at state update
+CURRENT_PRIMARY_ISSUE=NONE
+CURRENT_UNIQUE_NEXT=OWNER_PRODUCT_SELECTION_REQUIRED
+OPEN_PRODUCT_PR=none
+ACTIVE_WIP=none
 ```
 
 当前已完成：
 
-- `v0.1.0` 的核心释义批量录入闭环已经成立：`dry-run / create / update`；
-- 副账号 create / update / immediate readback 的真实端到端验证已经完成；
-- Issue #51 的显式主账号 opt-in 与真实主账号闭环已经完成：dry-run 12 条 / 0 POST、CREATE 9/9、UPDATE 3/3；
-- Issue #54 的 macOS 本地日常 UI 已合并并完成 Owner 真机验收：`.app` 双击启动、native hidden Token prompt、真实主账号 12 条 Preview，结果 `新建 0 / 更新 0 / 已一致 12 / 失败 0`，本次 acceptance 无写入；
-- 当前 macOS UI 的直接聊天复制可能先于解析器丢失行边界，这是非阻断 UX 观察；#54 已关闭，不在该 Issue 内扩成 heuristic parser；
-- Issue #56 的轻量 iOS companion 已完成实现、独立审阅、真机安装与真实主账号 Preview 验收；首个真实 iPhone Preview 结果为 `CREATE 0 / UPDATE 0 / ALREADY_MATCHING 12 / BLOCKED 0 / POST 0`，#56 已关闭；
-- Issue #60 的单条 `sphere` UPDATE canary 已完成真实写入与鉴权回读；
-- Issue #68 的单条 `incentive` CREATE canary 已完成真实写入与鉴权回读；
-- Issue #63 的紧凑 iOS 日常界面和仅本设备 Keychain Token 持久化已经完成、合并并经真机确认；
-- Issue #66 的 stale Preview 与 AppIcon 修复已经合并并安装；
-- Issue #69 的不可变执行回执、活动草稿分离和仅本设备非敏感 History 已完成；
-- Issue #73 是临时 mixed-batch 生命周期门槛；真实 10 条批次暂停在 Preview：`CREATE 8 / UPDATE 2 / MATCHING 0 / BLOCKED 0`，该批次 `0 POST`；
+- `v0.1.0` 的释义批量录入闭环、显式主账号 opt-in、真实主账号 dry-run / CREATE / UPDATE 与写后回读均已完成；
+- macOS 本地日常 UI 已合并并完成 Owner 真机验收；
+- 轻量 iOS companion 已完成实现、独立审阅、实体 iPhone 安装与真实主账号 Preview；`sphere` UPDATE canary 与 `incentive` CREATE canary 均已真实写入并鉴权回读；
+- iOS Token 使用仅本设备 Keychain（D-016）；stale Preview、AppIcon、非敏感本地 History/receipt 与活动草稿分离均已完成；
+- #73 / PR #74 已完成 mixed-batch remainder preservation。随后真实 10 条批次在实体 iPhone 完成：CREATE 8/8 + UPDATE 2/2，两个 History receipt，最终编辑器清空，10/10 成功；
+- #75 / PR #77 已完成已授权执行的可见进度与有限后台保护：普通切 App / 来电不会因 scenePhase 被主动取消；系统回收后台时间时安全停止，不自动 replay/resume；
+- #78 / PR #79 已完成进行中 Preview 的 interruption resilience：普通短暂后台可继续/完成；若后台时间到期则干净中断；前台返回不会重复启动 Preview，也不会复活旧 approval；
+- #76 / PR #80 已完成 mixed actionable batch 的最终日常 UX：一次 Preview → 一次 Run → 一次 native confirmation → 内部自动 CREATE 再 UPDATE。Owner 已在实体 iPhone DEBUG rehearsal 验收中确认 CREATE 期间切 App 后仍可继续安全确认并自动 UPDATE，无第二次 Preview/确认；
+- execution-time whole-batch fresh preflight 继续保留，但 UI 只显示 `安全确认中…`；逐项 `n/N` 只用于真实 CREATE/UPDATE 写入进度；
 - phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-ISSUE_73_MIXED_BATCH_REMAINDER_GATE
+OWNER_PRODUCT_SELECTION_REQUIRED
 ```
 
-Issue #73 是当前临时门槛：mixed Preview 的一个操作组全成功后，只保留另一操作组仍可执行条目的无损 source remainder，并要求重新 Preview 与授权；部分、失败或停止继续保留原草稿。
-
-真实 10 条 batch 在 #73 完成审阅、合并和真机安装前继续等待；当前只有 Preview `CREATE 8 / UPDATE 2 / MATCHING 0 / BLOCKED 0`，从该 batch 发出的 POST 数仍为 0。既有 `sphere` / `incentive` canary 不构成任何后续批次授权。
+#76 / PR #80 已收口后，旧对话中没有新的 Owner 明确产品授权。**不要自动把任何 OPEN Issue 升格为 primary。** 下一步由 Owner 选择产品路线；在选择前不启动新的实现、研究、真实账号写入或发布。
 
 ## 4. Other active routes
+
+### Public launch / distribution
+
+```text
+Issue #71 = OPEN / CANDIDATE_ONLY
+```
+
+目标是 v0.2 低摩擦分发、仓库 frontage、独立品牌、演示和首批外部用户。当前未被自动授权为 primary。
+
+### Open Platform authorization research
+
+```text
+Issue #72 = OPEN / RESEARCH_CANDIDATE_ONLY
+```
+
+只允许在 Owner 选择后做 first-party 文档研究；不得因该 Issue 存在而改变现有 manual Token production path。
 
 ### Phrase / example automation
 
@@ -73,7 +86,7 @@ Issue #4 = BLOCKED_BY_ISSUE_2
 Issue #5 = OPEN / NOT_STARTED
 ```
 
-仍是后续独立能力，不得自动并入 iOS companion。
+仍是独立后续能力，不得自动并入 iOS companion。
 
 ### Codex for Open Source
 
@@ -83,21 +96,28 @@ Issue #7 = LONG_TERM_EVIDENCE_BUILDING
 
 只积累真实 release、用户、维护、Issue/PR 和安全质量证据，不制造 adoption 信号。
 
+### Superseded legacy issue
+
+```text
+Issue #62 = OPEN_BUT_SUPERSEDED_BY_COMPLETED_#63
+```
+
+#62 的 Keychain/UX 目标已经由后续 #63 及相关合并实现，不是当前 WIP，也不得因仍 OPEN 自动恢复施工。
+
 ## 5. Safety boundaries that remain current
 
-- 现有 CLI 主账号模式仍保持显式 opt-in、整批 preflight、exact preview、one POST per changed item、no POST retry、immediate readback；
-- macOS UI 的主账号 Token 只在本地 UI 进程内存中存在，通过 native hidden prompt 输入，不进入浏览器持久存储、日志或 Git；
-- iOS Token 只保存为本设备 Keychain generic-password 项，使用 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` 且不同步；不进入 `UserDefaults`、文件、状态恢复、环境变量、argv、日志、分析、自动剪贴板读取或 URL/query；
-- iOS 进入 inactive/background 会取消未派发操作、清除瞬态 session credential、session ID、可执行 PreviewSnapshot、确认与 approval，但不删除 Keychain Token；已完成的 PreviewPresentation 只可作为进程内 stale/read-only 展示保留，前台解锁后恢复连接本身不能恢复执行授权；
-- iOS production networking 使用 ephemeral URLSession、ATS 默认安全策略和关闭的 reviewed host/path；
-- iOS Preview 不是授权；任何输入、credential、background 或既有执行变化都会使其失效，写入前必须 fresh preflight 并与原 preview binding 精确一致；
-- iOS destructive confirmation 是绑定当前 preview / operation group / session 的一次性结构门禁；
-- 当前 API 无账号身份端点，Token 实际所属账号仍由操作者负责确认；
-- 不开放 delete；没有自动 rollback；
-- update 只针对唯一明确的用户自建记录；歧义时停止；
-- 不修改墨墨内置释义；phrase/example automation 仍 blocked；
-- 剩余真实批次在 #73 审阅、合并和安装前保持暂停；之后任何真实 iPhone 写入仍需新的 Preview、原生确认和精确 Owner 授权；
-- 真实写入不得因为换对话、文档更新或新 Agent 接管而自动授权。
+- Preview **不是**授权；任何后续真实写入都必须来自当前有效 Preview 与明确 Owner action；
+- mixed batch 对 Owner 可以是一份 whole-plan approval，但内部 CREATE / UPDATE 仍是两个独立 phase，不得把 CREATE approval 当作 UPDATE permission；
+- mixed execution 在**第一个 POST 前**对全部 approved items 做 fresh authenticated whole-batch preflight；只有 CREATE phase 完整成功后才进入 UPDATE；UPDATE subset 在任何 UPDATE POST 前再次 fresh preflight 并验证其原始 operation-group binding；
+- server state 改变、歧义、credential/source mismatch 或安全检查失败时停止，不扩大旧授权；后续再次尝试必须 fresh Preview；
+- 每个 changed item 最多一次 POST；绝不 POST retry；POST 后立即 authenticated GET readback；结果不确定时只做 GET-only recovery；
+- 不开放 delete；没有自动 rollback；不修改墨墨内置释义；phrase/example automation 仍 blocked；
+- iOS Token 只保存在本设备 Keychain generic-password 项：`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`、不同步；不进入 `UserDefaults`、文件、状态恢复、环境变量、argv、日志、分析、自动剪贴板读取或 URL/query；
+- CLI 与 macOS localhost UI 的凭证策略仍按 D-013：隐藏交互输入 / 仅进程内存；D-016 只为 iOS 增加设备本地 Keychain；
+- 已开始的 Preview/已授权 execution 可在 iOS 允许的有限后台时间内跨普通切 App/来电继续；系统到期则安全停止；前台返回不得自动 replay/resume、mint 新 approval 或恢复已经失效的 authority；
+- Preview 若在后台完成，只能在 source 未变且恢复 credential fingerprint 与 snapshot 一致时恢复；不持久化或复活旧 approval；实际写入仍有执行时 fresh preflight；
+- 当前开放 API 没有可靠账号身份端点，Token 实际所属账号仍由操作者确认；
+- 换对话、文档更新、Agent 接管或测试 rehearsal **都不构成任何新的真实账号写入授权**。
 
 ## 6. Maintenance rule
 
