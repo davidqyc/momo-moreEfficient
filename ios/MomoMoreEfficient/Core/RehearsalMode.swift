@@ -172,6 +172,11 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
             }
             store(text, for: vocabularyID)
             return try json([:])
+
+        // Issue #82 adds an offline-reviewed phrase core, not phrase support to
+        // the existing interpretation UI rehearsal path.
+        case .phrases, .createPhrase:
+            throw CompanionError.responseRejected
         }
     }
 
