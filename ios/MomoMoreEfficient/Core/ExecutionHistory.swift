@@ -88,7 +88,17 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     }
 
     var isFullSuccess: Bool {
-        !stopped && succeeded == items.count && failed == 0 && notAttempted == 0
+        let allItemsVerified = succeeded == items.count && failed == 0 && notAttempted == 0
+        switch contentKind {
+        case .interpretation:
+            // Preserve the pre-#84 interpretation contract: a cancellation flag
+            // arriving after every item was verified does not undo completion.
+            return allItemsVerified
+        case .phrase:
+            // Phrase's first UI slice is intentionally stricter: any interrupted
+            // run retains the whole draft and must not look ordinarily complete.
+            return !stopped && allItemsVerified
+        }
     }
 }
 

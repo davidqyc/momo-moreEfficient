@@ -1235,25 +1235,21 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func phraseObservationSummary(_ observations: [PhraseObservation]) -> String? {
         guard !observations.isEmpty else { return nil }
         let unique = Set(observations.map(\.rawValue))
-        var parts: [String] = []
-        if unique.contains(PhraseObservation.tagsMatchRequested.rawValue) {
-            parts.append("标签已匹配")
-        } else if unique.contains(PhraseObservation.tagsMissing.rawValue) {
-            parts.append("标签未返回")
-        } else if unique.contains(PhraseObservation.tagsDiffer.rawValue) {
-            parts.append("标签与请求不同")
-        }
-        if unique.contains(PhraseObservation.highlightExactTarget.rawValue) {
-            parts.append("英文高亮准确")
-        } else if unique.contains(PhraseObservation.highlightMissing.rawValue) {
-            parts.append("英文高亮未返回")
-        } else if unique.contains(PhraseObservation.highlightEmpty.rawValue) {
-            parts.append("英文高亮为空")
-        } else if unique.contains(PhraseObservation.highlightOtherReviewedRange.rawValue) {
-            parts.append("英文高亮为其他已审阅范围")
-        }
-        if unique.contains(PhraseObservation.chineseRangeUnavailable.rawValue) {
-            parts.append("中文范围在 documented API 中不可用")
+        // Stable and deviation-first within each observation family. Emitting
+        // every distinct closed observation prevents one successful item from
+        // hiding another item's missing or differing tags/highlight.
+        let ordered: [(PhraseObservation, String)] = [
+            (.tagsDiffer, "标签与请求不同"),
+            (.tagsMissing, "标签未返回"),
+            (.tagsMatchRequested, "标签已匹配"),
+            (.highlightOtherReviewedRange, "英文高亮为其他已审阅范围"),
+            (.highlightMissing, "英文高亮未返回"),
+            (.highlightEmpty, "英文高亮为空"),
+            (.highlightExactTarget, "英文高亮准确"),
+            (.chineseRangeUnavailable, "中文范围在 documented API 中不可用"),
+        ]
+        let parts = ordered.compactMap { observation, label in
+            unique.contains(observation.rawValue) ? label : nil
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

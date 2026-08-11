@@ -257,11 +257,64 @@ final class PhraseUIIntegrationTests: XCTestCase {
         await model.executeConfirmedPhrase()?.value
 
         XCTAssertEqual(model.history.first?.succeeded, 1)
+        XCTAssertEqual(model.history.first?.contentKind, .phrase)
         XCTAssertTrue(model.history.first?.stopped == true)
         XCTAssertFalse(model.history.first?.isFullSuccess == true)
         XCTAssertEqual(model.sourceText, phraseDocument)
         XCTAssertNil(model.phrasePreview)
         XCTAssertFalse(model.hasExecutablePreview)
+    }
+
+    func testMixedPhraseObservationsExposePositiveAndNegativeStatesWithoutAffectingSuccess() async {
+        let secondEnglish = "Liquidity matters."
+        let secondChinese = "流动性很重要。"
+        let twoEntries = phraseDocument + """
+
+
+        ## liquidity
+        EN: \(secondEnglish)
+        ZH: \(secondChinese)
+        SOURCE: 自编
+        """
+        let preview: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_A", "acquisition"), phraseResponse([]),
+            vocabularyResponse("INVALID_VOC_B", "liquidity"), phraseResponse([]),
+        ]
+        let positive = phraseRecord(
+            id: "INVALID_POSITIVE",
+            english: english,
+            chinese: chinese,
+            highlight: [[4, 15]]
+        )
+        let negative = phraseRecord(
+            id: "INVALID_NEGATIVE",
+            english: secondEnglish,
+            chinese: secondChinese,
+            tags: ["MBA"],
+            highlight: nil
+        )
+        let factory = SequencedTransportFactory([
+            preview,
+            preview + [
+                jsonResponse([:], status: 201), phraseResponse([positive]),
+                jsonResponse([:], status: 201), phraseResponse([negative]),
+            ],
+        ])
+        let model = connectedModel(factory: factory)
+        model.selectMode(.phrase)
+        model.sourceText = twoEntries
+        await model.previewCurrentInput()
+        model.askToExecutePhrase()
+
+        await model.executeConfirmedPhrase()?.value
+
+        XCTAssertEqual(
+            model.phraseObservationMessage,
+            "标签与请求不同 · 标签已匹配 · 英文高亮未返回 · 英文高亮准确 · 中文范围在 documented API 中不可用"
+        )
+        XCTAssertFalse(model.phraseObservationMessage?.contains("4, 15") == true)
+        XCTAssertTrue(model.history.first?.isFullSuccess == true)
+        XCTAssertEqual(model.sourceText, "")
     }
 
     func testPhraseProgressComesFromTheExecutorWriteStage() async {

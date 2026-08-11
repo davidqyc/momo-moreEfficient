@@ -31,6 +31,33 @@ final class ExecutionHistoryTests: XCTestCase {
         XCTAssertEqual(receipt.contentKind, .interpretation)
     }
 
+    func testInterpretationTailCancellationKeepsPrePhraseCompletionSemantics() {
+        let result = ExecutionSummary(
+            group: .create,
+            succeeded: 2,
+            failed: 0,
+            cancelled: true,
+            stalePreview: false,
+            results: [
+                ItemExecutionResult(spelling: "one", outcome: .confirmed),
+                ItemExecutionResult(spelling: "two", outcome: .recovered),
+            ]
+        )
+
+        let receipt = ExecutionReceipt(
+            operationGroup: .create,
+            selectedSpellings: ["one", "two"],
+            result: result
+        )
+
+        XCTAssertEqual(receipt.contentKind, .interpretation)
+        XCTAssertTrue(receipt.stopped, "the tail cancellation remains visible in History")
+        XCTAssertTrue(
+            receipt.isFullSuccess,
+            "all verified interpretation items retain the pre-#84 completion contract"
+        )
+    }
+
     func testPartialReceiptCountsFailureAndFillsMissingTailAsNotAttempted() {
         let result = ExecutionSummary(
             group: .update,
