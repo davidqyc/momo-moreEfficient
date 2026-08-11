@@ -65,12 +65,12 @@ Codex 不得自行发明重大产品决策，也不应依赖聊天历史作为�
 
 Codex for Open Source 是后续目标，但不制造 stars、downloads、users、Issues、PRs 或发布记录。先交付真实可用版本、获得真实使用、履行真实维护责任，再申请。
 
-## D-009：Codex 文件交付必须附审阅 ZIP，所有者问题必须白话化
+## D-009：Codex 审阅包按当前任务路由，所有者问题必须白话化
 
 **日期：** 2026-08-03  
-**状态：** 有效
+**状态：** 部分取代；所有者沟通规则仍有效
 
-只要 Codex 在一轮中新增、修改或删除任何实体文件，最终回复必须附带可直接点击的 Markdown ZIP 链接，供所有者转交 ChatGPT 审阅。ZIP 本体只在本地忽略目录生成，不进入 Git；必须报告 SHA-256、大小、文件数、完整性、路径安全及解压回校验结果，并排除凭证、私人数据和构建依赖。
+2026-08-12 起，当前 `AGENTS.md` / Issue 的 lightweight routing 取代“每次改文件都必须生成 ZIP”的普遍要求：同一 PR 内的普通实现与审阅不需要额外 ZIP；只有当前 Issue 明确要求、新鲜上下文或脱离 PR 的交接确实需要，或 Owner 明确提出时才生成。需要生成时，ZIP 仍只进入本地忽略目录，必须报告 SHA-256、大小、文件数、完整性、路径安全及解压回校验结果，并排除凭证、私人数据和构建依赖。
 
 Codex 请求所有者做决策时，必须先用中文白话说明“要决定什么”，再列选项、利弊和明确推荐；请求所有者执行动作时，必须翻译成可直接照做的熟悉步骤，说明预期结果和停止条件。仅抛技术术语、裸命令或无取向的“请选择”不算合格交付。
 
@@ -199,3 +199,12 @@ Owner 在 Issue #4 / #84 中重新确认例句产品门槛。例句 CREATE 必�
 `MBA` / `BEC` / `GMAT` 标签和英文 highlight 在返回结构合法时属于尽力实现、闭集呈现的非阻断观察；缺失或与请求不同不得把已经通过硬门禁的写入改判失败。中文 translation range 在 documented API 没有可写字段时允许显示为 unavailable，同样不阻断完成。不得探测或写入 undocumented fields，也不得暗示未实际提供的语义位置能力。
 
 例句能力保持 CREATE-only；UPDATE、DELETE、自动 replay/rollback 只有新的 Issue 和 Owner 明确授权后才可增加。本条只取代 D-005 的旧 blocker levels，不改写其历史文字，也不放宽既有 Preview、fresh preflight、one-POST-max、no POST retry、immediate authenticated readback、uncertain POST 的 GET-only recovery 与 stale-authority 边界。
+
+## D-019：例句来源可省略，录入标签改为共享的本地偏好
+
+**日期：** 2026-08-12
+**状态：** 有效
+
+例句输入支持三行（词头、英文、中文）和四行（词头、英文、中文、来源）的原生记录。提供来源时，`origin` 仍是写入、身份匹配和回读的精确硬条件；未提供时不得臆造来源，请求明确发送空字符串，Preview 显示“未填写”，匹配与回读不要求服务器返回的 `origin` 等于空字符串，但返回结构中的 `origin` 仍必须是合法字符串。该放宽不改变 D-018 的其余硬门禁，也不开放例句 UPDATE。
+
+释义与例句共用一份非敏感的本机标签偏好：可从闭集选择 0–3 个标签，默认空数组，以稳定 canonical 顺序保存到 `UserDefaults`。标签偏好不得进入 TokenStore、Execution History、日志或凭证状态；修改偏好必须使已有 Preview、确认和执行 authority 失效。`PUBLISHED` 继续固定；例句标签仍按 D-018 作为非阻断观察，释义标签则属于预期状态，标签本身的变化可以形成明确的 UPDATE。

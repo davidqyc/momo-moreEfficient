@@ -3,6 +3,7 @@ import XCTest
 @testable import MomoMoreEfficient
 
 let fakeToken = "FAKE_IOS_TEST_TOKEN_NOT_VALID"
+let legacyTestTags = ["MBA", "BEC", "GMAT"]
 
 final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String?
@@ -233,7 +234,7 @@ func vocabularyResponse(_ id: String, _ spelling: String) -> StubbedResult {
 func interpretation(
     _ id: String,
     _ text: String,
-    tags: [String] = ["GMAT", "MBA", "BEC"],
+    tags: [String] = [],
     status: String = "PUBLISHED"
 ) -> [String: Any] {
     ["id": id, "interpretation": text, "tags": tags, "status": status]
@@ -250,7 +251,8 @@ func credentialLease(_ token: String = fakeToken) throws -> OperationCredentialL
 func makeSnapshot(
     document: String,
     results: [StubbedResult],
-    token: String = fakeToken
+    token: String = fakeToken,
+    tags: [String] = []
 ) async throws -> (PreviewSnapshot, FakeHTTPTransport, RecordingSleeper) {
     let batch = try BatchParser.parseDailyInput(document)
     let transport = FakeHTTPTransport(results)
@@ -259,6 +261,7 @@ func makeSnapshot(
     let api = MaimemoTransport(transport: transport, credential: lease, sleeper: sleeper)
     let snapshot = try await PreflightPlanner(api: api).buildSnapshot(
         entries: batch.entries,
+        tags: tags,
         credentialFingerprint: lease.fingerprint
     )
     lease.clear()

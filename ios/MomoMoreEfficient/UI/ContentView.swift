@@ -130,12 +130,17 @@ struct ContentView: View {
 
     private var accountRow: some View {
         HStack(spacing: 10) {
-            Text("主账号")
+            Text("墨墨账号")
                 .font(.subheadline.weight(.semibold))
             Text(viewModel.isConnected ? "✓ 已连接" : "未连接")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
+            NavigationLink("录入偏好") {
+                ImportPreferencesView(viewModel: viewModel)
+            }
+            .font(.subheadline)
+            .disabled(viewModel.isBusy)
             if viewModel.isConnected {
                 Menu("更换") {
                     Button("更换 Token") { showingTokenSheet = true }
@@ -184,7 +189,7 @@ struct ContentView: View {
                 .accessibilityLabel(viewModel.contentMode.editorAccessibilityLabel)
 
             if viewModel.contentMode == .phrase {
-                Text("格式：## 单词 · EN: 英文例句 · ZH: 中文翻译 · SOURCE: 来源")
+                Text("格式：单词 · 英文例句 · 中文翻译 · 来源（可选）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -239,6 +244,10 @@ struct ContentView: View {
             }
             .font(.subheadline.monospacedDigit())
 
+            Text(viewModel.selectedTagsSummary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
             if viewModel.isPreviewStale {
                 HStack(spacing: 10) {
                     Text("需重新预览后才能写入")
@@ -286,6 +295,10 @@ struct ContentView: View {
                 summaryLabel("阻断", preview.blockedCount)
             }
             .font(.subheadline.monospacedDigit())
+
+            Text(viewModel.selectedTagsSummary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
             if viewModel.isPreviewStale {
                 HStack(spacing: 10) {
@@ -353,7 +366,7 @@ struct ContentView: View {
             if viewModel.expandedRowIDs.contains(row.id) {
                 detailLabel("EN", row.english)
                 detailLabel("ZH", row.chinese)
-                detailLabel("SOURCE", row.source)
+                detailLabel("SOURCE", row.source ?? "未填写")
             }
         }
         .padding(.horizontal, 12)
@@ -395,6 +408,14 @@ struct ContentView: View {
                     detailLabel("CURRENT", current)
                 }
                 detailLabel("PROPOSED", details.proposed)
+                if let currentTags = details.currentTags,
+                   let proposedTags = details.proposedTags {
+                    detailLabel(
+                        "TAGS",
+                        "\(WriteTagPreference.compactLabel(currentTags)) → "
+                            + WriteTagPreference.compactLabel(proposedTags)
+                    )
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -502,14 +523,14 @@ struct ContentView: View {
     private var tokenSheet: some View {
         NavigationStack {
             Form {
-                SecureField("主账号 Token", text: $tokenDraft)
+                SecureField("墨墨账号 Token", text: $tokenDraft)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Text("请在确认登录目标主账号后手动粘贴。应用无法证明 Token 属于哪个账号。")
+                Text("请在确认登录目标墨墨账号后手动粘贴。应用无法证明 Token 属于哪个账号。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            .navigationTitle(viewModel.isConnected ? "更换 Token" : "连接主账号")
+            .navigationTitle(viewModel.isConnected ? "更换 Token" : "连接墨墨账号")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { showingTokenSheet = false }
@@ -589,6 +610,42 @@ struct ContentView: View {
 
     private func clearTokenDraft() {
         tokenDraft.removeAll(keepingCapacity: false)
+    }
+}
+
+private struct ImportPreferencesView: View {
+    @ObservedObject var viewModel: CompanionViewModel
+
+    var body: some View {
+        List {
+            Section {
+                LabeledContent("发布", value: "公开")
+                Text("标签：可选，最多 3 个")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("标签") {
+                ForEach(viewModel.availableWriteTags, id: \.self) { tag in
+                    Button {
+                        viewModel.toggleTag(tag)
+                    } label: {
+                        HStack {
+                            Text(tag)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if viewModel.isTagSelected(tag) {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                    }
+                    .disabled(!viewModel.canToggleTag(tag))
+                    .accessibilityValue(viewModel.isTagSelected(tag) ? "已选择" : "未选择")
+                }
+            }
+        }
+        .navigationTitle("录入偏好")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

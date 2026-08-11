@@ -5,11 +5,15 @@ struct PreflightPlanner {
 
     func buildSnapshot(
         entries: [BatchEntry],
+        tags: [String],
         credentialFingerprint: String,
         control: ExecutionControl? = nil,
         onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PreviewSnapshot {
-        guard !entries.isEmpty, entries.count <= CompanionConstants.maxBatchItems else {
+        guard !entries.isEmpty,
+              entries.count <= CompanionConstants.maxBatchItems,
+              (try? WriteTagPreference.canonicalized(tags)) == tags
+        else {
             throw CompanionError.inputRejected
         }
 
@@ -41,7 +45,10 @@ struct PreflightPlanner {
                     planned.append(
                         PrivatePreflightItem(
                             entry: entry,
-                            classification: baseline.matchesIntendedState(entry.interpretation)
+                            classification: baseline.matchesIntendedState(
+                                entry.interpretation,
+                                tags: tags
+                            )
                                 ? .alreadyMatching
                                 : .update,
                             vocabularyID: vocabulary.id,
@@ -75,7 +82,7 @@ struct PreflightPlanner {
             }
         }
 
-        let rows = planned.map(\.publicRow)
+        let rows = planned.map { $0.publicRow(tags: tags) }
         let presentation = PreviewPresentation(
             rows: rows,
             counts: PreviewCounts(
@@ -89,7 +96,10 @@ struct PreflightPlanner {
             sourceIdentity: try ConfirmationBinding.sourceIdentity(entries),
             credentialFingerprint: credentialFingerprint,
             accountMode: CompanionConstants.accountMode,
-            bindingContext: try ConfirmationBinding.makePreviewBindingContext(items: planned),
+            bindingContext: try ConfirmationBinding.makePreviewBindingContext(
+                items: planned,
+                tags: tags
+            ),
             items: planned,
             presentation: presentation
         )

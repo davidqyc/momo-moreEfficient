@@ -420,7 +420,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         id: String,
         english: String,
         chinese: String,
-        tags: Any? = CompanionConstants.tags,
+        tags: Any? = [String](),
         source: String = "自编",
         status: String = "PUBLISHED",
         highlight: Any? = []

@@ -66,6 +66,7 @@ struct WriteExecutor {
             let entries = displayedSnapshot.items.map(\.entry)
             let fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: entries,
+                tags: displayedSnapshot.bindingContext.tags,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
@@ -131,6 +132,7 @@ struct WriteExecutor {
             progress?.report(.securing)
             fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: displayedSnapshot.items.map(\.entry),
+                tags: displayedSnapshot.bindingContext.tags,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
@@ -225,6 +227,7 @@ struct WriteExecutor {
         do {
             let fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: entries,
+                tags: displayedSnapshot.bindingContext.tags,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
@@ -287,7 +290,11 @@ struct WriteExecutor {
                     }
                     route = .updateInterpretation(recordID: recordID)
                 }
-                let body = try ConfirmationBinding.requestData(item, group: plan.group)
+                let body = try ConfirmationBinding.requestData(
+                    item,
+                    group: plan.group,
+                    tags: plan.tags
+                )
                 let dispatch = await api.post(route: route, body: body, control: control)
                 guard dispatch != .notDispatched else {
                     results.append(
@@ -314,7 +321,7 @@ struct WriteExecutor {
                 control.finishPostResolution()
 
                 guard records.count == 1,
-                      records[0].matchesIntendedState(item.interpretation),
+                      records[0].matchesIntendedState(item.interpretation, tags: plan.tags),
                       plan.group != .update || records[0].id == item.baseline?.id
                 else {
                     failed += 1

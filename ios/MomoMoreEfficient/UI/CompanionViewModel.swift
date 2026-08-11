@@ -34,6 +34,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var executionStage: ExecutionStage?
     @Published private(set) var previewProgress: PreviewProgress?
     @Published private(set) var phraseObservationMessage: String?
+    @Published private(set) var selectedTags: [String] = []
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -42,6 +43,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private let sleeperFactory: () -> RequestSleeper
     private let backgroundAssertionFactory: @MainActor () -> BackgroundExecutionAssertion
     private let dateProvider: () -> Date
+    private let preferenceDefaults: UserDefaults
     private var snapshot: PreviewSnapshot?
     private var phraseSnapshot: PhrasePreviewSnapshot?
     private var activeControl: ExecutionControl?
@@ -89,6 +91,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             case let .phrase(snapshot): return snapshot.credentialFingerprint
             }
         }
+
+        var tags: [String] {
+            switch self {
+            case let .interpretation(snapshot): return snapshot.bindingContext.tags
+            case let .phrase(snapshot): return snapshot.bindingContext.tags
+            }
+        }
     }
 
     private struct SuspendedPreview {
@@ -105,7 +114,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() },
         backgroundAssertionFactory: @escaping @MainActor () -> BackgroundExecutionAssertion
             = { makeDefaultBackgroundExecutionAssertion() },
-        dateProvider: @escaping () -> Date = Date.init
+        dateProvider: @escaping () -> Date = Date.init,
+        preferenceDefaults: UserDefaults = .standard
     ) {
         self.tokenStore = tokenStore
         self.historyStore = historyStore
@@ -113,6 +123,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         self.sleeperFactory = sleeperFactory
         self.backgroundAssertionFactory = backgroundAssertionFactory
         self.dateProvider = dateProvider
+        self.preferenceDefaults = preferenceDefaults
+        selectedTags = WriteTagPreference.load(from: preferenceDefaults)
         restoreHistory()
         restoreCredentialIfAvailable()
     }
@@ -195,6 +207,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
               isConnected,
               suspended.mode == contentMode,
               suspended.document == sourceText,
+              suspended.snapshot.tags == selectedTags,
               let fingerprint = credentialSession.fingerprint,
               fingerprint == suspended.snapshot.credentialFingerprint
         else { return }
@@ -241,6 +254,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
         do {
             let document = sourceText
+            let tags = selectedTags
             let lease = try credentialSession.makeOperationLease()
             defer { lease.clear() }
             let api = MaimemoTransport(
@@ -258,6 +272,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 let batch = try BatchParser.parseDailyInput(document)
                 let built = try await PreflightPlanner(api: api).buildSnapshot(
                     entries: batch.entries,
+                    tags: tags,
                     credentialFingerprint: lease.fingerprint,
                     control: control,
                     onEntryStarted: progress
@@ -276,6 +291,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 let entries = try PhraseBatchParser.parse(document)
                 let built = try await PhrasePreflightPlanner(api: api).buildSnapshot(
                     entries: entries,
+                    tags: tags,
                     credentialFingerprint: lease.fingerprint,
                     control: control,
                     onEntryStarted: progress
@@ -296,6 +312,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             // produced the lease and this check keeps its original strength.
             guard mode == contentMode,
                   document == sourceText,
+                  tags == selectedTags,
                   credentialSession.fingerprint == lease.fingerprint
             else {
                 throw CompanionError.stalePreview
@@ -1041,6 +1058,40 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         updateLocalParseState()
     }
 
+    var availableWriteTags: [String] { WriteTagPreference.availableTags }
+
+    var selectedTagsSummary: String {
+        "标签：" + WriteTagPreference.compactLabel(selectedTags)
+    }
+
+    func isTagSelected(_ tag: String) -> Bool { selectedTags.contains(tag) }
+
+    func canToggleTag(_ tag: String) -> Bool {
+        WriteTagPreference.availableTags.contains(tag)
+            && (isTagSelected(tag)
+                || selectedTags.count < WriteTagPreference.maximumSelectionCount)
+    }
+
+    func toggleTag(_ tag: String) {
+        guard !isBusy, WriteTagPreference.availableTags.contains(tag) else { return }
+        var proposed = selectedTags
+        if let index = proposed.firstIndex(of: tag) {
+            proposed.remove(at: index)
+        } else {
+            guard proposed.count < WriteTagPreference.maximumSelectionCount else { return }
+            proposed.append(tag)
+        }
+        do {
+            let saved = try WriteTagPreference.save(proposed, to: preferenceDefaults)
+            guard saved != selectedTags else { return }
+            selectedTags = saved
+            detachInlineExecutionFeedback()
+            invalidatePreview()
+        } catch {
+            errorMessage = CompanionError.inputRejected.description
+        }
+    }
+
     var previewHeader: String? {
         if contentMode == .phrase {
             guard let rows = phrasePreview?.rows,
@@ -1132,7 +1183,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     func details(for row: PreviewRow) -> PreviewRowDetails? {
         guard row.canExpand, expandedRowIDs.contains(row.id) else { return nil }
-        return PreviewRowDetails(current: row.current, proposed: row.proposed)
+        return PreviewRowDetails(
+            current: row.current,
+            proposed: row.proposed,
+            currentTags: row.currentTags,
+            proposedTags: row.proposedTags
+        )
     }
 
     private func invalidatePreview() {

@@ -42,8 +42,21 @@ final class PhraseCreateCoreTests: XCTestCase {
             XCTAssertEqual(records[0].interpretation, chinese)
             XCTAssertEqual(records[0].origin, "自编")
             XCTAssertEqual(records[0].status, "PUBLISHED")
-            XCTAssertEqual(records[0].tags, CompanionConstants.tags)
+            XCTAssertEqual(records[0].tags, [])
         }
+    }
+
+    func testOriginFieldAcceptsExactEmptyStringButRejectsMissingAndNonString() async throws {
+        let empty = try await readPhrases([phraseRecord(source: "")])
+        XCTAssertEqual(empty[0].origin, "")
+
+        var missing = phraseRecord()
+        missing.removeValue(forKey: "origin")
+        await assertPhraseReadRejected(phrasesResponse([missing]))
+
+        var nonString = phraseRecord()
+        nonString["origin"] = 42
+        await assertPhraseReadRejected(phrasesResponse([nonString]))
     }
 
     func testDuplicateAndUnsafePhraseIDsFailClosed() async throws {
@@ -264,9 +277,31 @@ final class PhraseCreateCoreTests: XCTestCase {
         )
         XCTAssertEqual(snapshot.alreadyMatchingCount, 1)
         XCTAssertEqual(
-            snapshot.items[0].observations,
+            snapshot.items[0].observations(tags: snapshot.bindingContext.tags),
             [.tagsMissing, .highlightMissing, .chineseRangeUnavailable]
         )
+    }
+
+    func testNoSourceAlreadyMatchingIgnoresOriginButKeepsOtherHardFields() async throws {
+        let document = "acquisition\n\(english)\n\(chinese)"
+        let (matching, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse([phraseRecord(source: "server stored source")]),
+            ]
+        )
+        XCTAssertEqual(matching.items[0].classification, .alreadyMatching)
+
+        let (wrongChinese, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse([phraseRecord(chinese: "不同中文", source: "anything")]),
+            ]
+        )
+        XCTAssertEqual(wrongChinese.items[0].classification, .blocked)
+        XCTAssertEqual(wrongChinese.items[0].reason, "CONFLICTING_SAME_ENGLISH")
     }
 
     func testSameEnglishConflictAndMultipleCandidatesAreBlocked() async throws {
@@ -341,7 +376,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: changedTags))
         let changedPath = replacingContext(
             shown,
-            tags: CompanionConstants.tags,
+            tags: [],
             createPath: "/open/api/v1/phrases/other"
         )
         XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: changedPath))
@@ -365,7 +400,10 @@ final class PhraseCreateCoreTests: XCTestCase {
             sourceIdentity: shown.sourceIdentity,
             credentialFingerprint: shown.credentialFingerprint,
             accountMode: shown.accountMode,
-            bindingContext: try PhraseCreateBinding.makePreviewBindingContext(items: [conflict]),
+            bindingContext: try PhraseCreateBinding.makePreviewBindingContext(
+                items: [conflict],
+                tags: []
+            ),
             items: [conflict]
         )
         XCTAssertNotEqual(
@@ -408,11 +446,39 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(phrase["voc_id"] as? String, "INVALID_VOC")
         XCTAssertEqual(phrase["phrase"] as? String, english)
         XCTAssertEqual(phrase["interpretation"] as? String, chinese)
-        XCTAssertEqual(phrase["tags"] as? [String], CompanionConstants.tags)
+        XCTAssertEqual(phrase["tags"] as? [String], [])
         XCTAssertEqual(phrase["origin"] as? String, "自编")
         for forbidden in ["highlight", "status", "id", "range", "chinese_range"] {
             XCTAssertNil(phrase[forbidden])
         }
+    }
+
+    func testNoSourceCREATEEmitsEmptyOriginAndReadbackDoesNotConstrainStoredOrigin() async throws {
+        let noSourceDocument = "acquisition\n\(english)\n\(chinese)"
+        let shown = try await createSnapshot(
+            document: noSourceDocument,
+            tags: ["MBA", "BEC"]
+        )
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            jsonResponse([:], status: 201),
+            phrasesResponse([
+                phraseRecord(tags: ["BEC", "MBA"], source: "server assigned"),
+            ]),
+        ])
+
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+        XCTAssertEqual(summary.succeeded, 1)
+        XCTAssertEqual(summary.results[0].outcome, .confirmed)
+        XCTAssertTrue(summary.results[0].observations.contains(.tagsMatchRequested))
+        let post = try XCTUnwrap(transport.requests.first(where: { $0.route.method == .post }))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(post.body)) as? [String: Any]
+        )
+        let phrase = try XCTUnwrap(object["phrase"] as? [String: Any])
+        XCTAssertEqual(phrase["origin"] as? String, "")
+        XCTAssertEqual(phrase["tags"] as? [String], ["MBA", "BEC"])
     }
 
     func testPostCreateReadbackIgnoresDeletedSameEnglishTombstone() async throws {
@@ -682,7 +748,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         id: String = "INVALID_RECORD",
         phrase: String? = nil,
         chinese: String? = nil,
-        tags: Any? = CompanionConstants.tags,
+        tags: Any? = [String](),
         source: String = "自编",
         status: String = "PUBLISHED",
         highlight: Any? = []
@@ -744,7 +810,8 @@ final class PhraseCreateCoreTests: XCTestCase {
     private func makePhraseSnapshot(
         document: String,
         results: [StubbedResult],
-        token: String = fakeToken
+        token: String = fakeToken,
+        tags: [String] = []
     ) async throws -> (PhrasePreviewSnapshot, FakeHTTPTransport, RecordingSleeper) {
         let entries = try PhraseBatchParser.parse(document)
         let transport = FakeHTTPTransport(results)
@@ -753,6 +820,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let api = MaimemoTransport(transport: transport, credential: lease, sleeper: sleeper)
         let snapshot = try await PhrasePreflightPlanner(api: api).buildSnapshot(
             entries: entries,
+            tags: tags,
             credentialFingerprint: lease.fingerprint
         )
         lease.clear()
@@ -761,7 +829,8 @@ final class PhraseCreateCoreTests: XCTestCase {
 
     private func createSnapshot(
         document: String,
-        token: String = fakeToken
+        token: String = fakeToken,
+        tags: [String] = []
     ) async throws -> PhrasePreviewSnapshot {
         let entries = try PhraseBatchParser.parse(document)
         var results: [StubbedResult] = []
@@ -775,7 +844,8 @@ final class PhraseCreateCoreTests: XCTestCase {
         let snapshot = try await makePhraseSnapshot(
             document: document,
             results: results,
-            token: token
+            token: token,
+            tags: tags
         )
         return snapshot.0
     }
