@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-11
-sourceMainSha=cb955cf284c9da630227013e11518dfee3ef3deb
+sourceMainSha=6482f2c74768acdaddf9c5f064529d931ac68afc
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,10 +24,10 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=cb955cf284c9da630227013e11518dfee3ef3deb
+CURRENT_MAIN_AT_SNAPSHOT=6482f2c74768acdaddf9c5f064529d931ac68afc
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=NONE
-CURRENT_UNIQUE_NEXT=OWNER_PRODUCT_SELECTION_REQUIRED
+CURRENT_PRIMARY_ISSUE=#2
+CURRENT_UNIQUE_NEXT=PHRASE_CONTRACT_RECHECK_THEN_ISSUE_4
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -43,15 +43,21 @@ ACTIVE_WIP=none
 - #78 / PR #79 已完成进行中 Preview 的 interruption resilience：普通短暂后台可继续/完成；若后台时间到期则干净中断；前台返回不会重复启动 Preview，也不会复活旧 approval；
 - #76 / PR #80 已完成 mixed actionable batch 的最终日常 UX：一次 Preview → 一次 Run → 一次 native confirmation → 内部自动 CREATE 再 UPDATE。Owner 已在实体 iPhone DEBUG rehearsal 验收中确认 CREATE 期间切 App 后仍可继续安全确认并自动 UPDATE，无第二次 Preview/确认；
 - execution-time whole-batch fresh preflight 继续保留，但 UI 只显示 `安全确认中…`；逐项 `n/N` 只用于真实 CREATE/UPDATE 写入进度；
-- phrase/example automation 仍保持 blocked；桌面快速查词仍未实现。
+- phrase/example 路线已由 Owner 于 2026-08-11 明确选为当前产品优先级。来源/origin 是当前必须可靠写入并回读的 phrase-specific 门槛；英文目标高亮、中文翻译字符/语义范围和精确三标签 round-trip 均改为 best-effort，不再作为整条例句线路的阻断项；
+- 既有副账号 phrase CREATE 已真实证明 `origin == 自编` 可随已记录请求写入并经 authenticated GET 回读；当前仍先做一次窄的第一方合同复核，然后进入 #4；
+- 桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-OWNER_PRODUCT_SELECTION_REQUIRED
+PHRASE_CONTRACT_RECHECK_THEN_ISSUE_4
 ```
 
-#76 / PR #80 已收口后，旧对话中没有新的 Owner 明确产品授权。**不要自动把任何 OPEN Issue 升格为 primary。** 下一步由 Owner 选择产品路线；在选择前不启动新的实现、研究、真实账号写入或发布。
+Owner 已选择先完成例句线路。当前只需对最新第一方 phrase CREATE/UPDATE contract 做一次窄的只读复核：确认 source/origin 仍为受支持的可写字段，并顺带记录 tags、English highlight、Chinese translation range 当前是否有受支持的写入机制；不得探测 undocumented fields。
+
+只要 source/origin 仍受支持，#4 即进入实现，不再因高亮/字符范围或精确标签语义不完美而继续 blocked。高亮/范围能可靠实现就做；不能实现则明确记录限制并继续产品交付。
+
+本状态选择**不授权任何新的真实 phrase POST、Token 使用或主账号写入**。真实写入仍需遵守现有独立授权与安全门槛。
 
 ## 4. Other active routes
 
@@ -61,7 +67,7 @@ OWNER_PRODUCT_SELECTION_REQUIRED
 Issue #71 = OPEN / CANDIDATE_ONLY
 ```
 
-目标是 v0.2 低摩擦分发、仓库 frontage、独立品牌、演示和首批外部用户。当前未被自动授权为 primary。
+目标是 v0.2 低摩擦分发、仓库 frontage、独立品牌、演示和首批外部用户。当前排在例句线路之后，不是 primary。
 
 ### Open Platform authorization research
 
@@ -69,16 +75,16 @@ Issue #71 = OPEN / CANDIDATE_ONLY
 Issue #72 = OPEN / RESEARCH_CANDIDATE_ONLY
 ```
 
-只允许在 Owner 选择后做 first-party 文档研究；不得因该 Issue 存在而改变现有 manual Token production path。
+只允许在 Owner 后续选择时做 first-party 文档研究；不得因该 Issue 存在而改变现有 manual Token production path。
 
 ### Phrase / example automation
 
 ```text
-Issue #2 = OPEN
-Issue #4 = BLOCKED_BY_ISSUE_2
+Issue #2 = CURRENT_PRIMARY / CONTRACT_RECHECK
+Issue #4 = NEXT_IMPLEMENTATION_ROUTE
 ```
 
-当前 phrase 路线仍因 tag round-trip / discoverability、English highlight、中文位置能力等阻断。不要因为释义线路已经成功就自动重开 phrase importer。
+旧的硬阻断标准已被 Owner 2026-08-11 决策放宽：source/origin 可靠写入+回读是当前必须项；tags、English highlight、Chinese translation range 均为尽力实现但非阻断。不要再按旧 D-005 条件无限延后 #4。
 
 ### Desktop quick lookup
 
@@ -111,7 +117,8 @@ Issue #62 = OPEN_BUT_SUPERSEDED_BY_COMPLETED_#63
 - mixed execution 在**第一个 POST 前**对全部 approved items 做 fresh authenticated whole-batch preflight；只有 CREATE phase 完整成功后才进入 UPDATE；UPDATE subset 在任何 UPDATE POST 前再次 fresh preflight 并验证其原始 operation-group binding；
 - server state 改变、歧义、credential/source mismatch 或安全检查失败时停止，不扩大旧授权；后续再次尝试必须 fresh Preview；
 - 每个 changed item 最多一次 POST；绝不 POST retry；POST 后立即 authenticated GET readback；结果不确定时只做 GET-only recovery；
-- 不开放 delete；没有自动 rollback；不修改墨墨内置释义；phrase/example automation 仍 blocked；
+- 不开放 delete；没有自动 rollback；不修改墨墨内置释义；
+- phrase/example 产品路线现已解除旧的 highlight/range/tag 硬阻断，但在实现并完成独立审阅前不得把它视为已验证生产写入路径；任何新的真实 phrase POST 仍需单独明确授权；
 - iOS Token 只保存在本设备 Keychain generic-password 项：`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`、不同步；不进入 `UserDefaults`、文件、状态恢复、环境变量、argv、日志、分析、自动剪贴板读取或 URL/query；
 - CLI 与 macOS localhost UI 的凭证策略仍按 D-013：隐藏交互输入 / 仅进程内存；D-016 只为 iOS 增加设备本地 Keychain；
 - 已开始的 Preview/已授权 execution 可在 iOS 允许的有限后台时间内跨普通切 App/来电继续；系统到期则安全停止；前台返回不得自动 replay/resume、mint 新 approval 或恢复已经失效的 authority；
