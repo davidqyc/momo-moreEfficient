@@ -51,6 +51,9 @@ extension RehearsalMode {
     /// Spellings the rehearsal server pretends already have one self-authored
     /// interpretation, so a mixed CREATE/UPDATE batch can be rehearsed.
     static let seededExistingSpellings = ["manning", "certified"]
+
+    /// The deterministic phrase-capacity fixture for #89 physical rehearsal.
+    static let replacementPhraseSpelling = "capacity"
 }
 
 extension CompanionViewModel {
@@ -201,6 +204,22 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
                 for: vocabularyID
             )
             return try json([:], status: 201)
+
+        case let .updatePhrase(recordID):
+            let payload = try phrasePayload(request.body)
+            guard let english = payload["phrase"] as? String,
+                  let chinese = payload["interpretation"] as? String,
+                  let source = payload["origin"] as? String,
+                  replacePhrase(
+                      recordID: recordID,
+                      english: english,
+                      chinese: chinese,
+                      source: source
+                  )
+            else {
+                return TransportResponse(status: 400, body: Data("{}".utf8))
+            }
+            return try json([:])
         }
     }
 
@@ -214,6 +233,16 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         vocabularyIDs[normalized] = identifier
         if RehearsalMode.seededExistingSpellings.contains(normalized) {
             stored[identifier] = "n. 演练用旧释义"
+        }
+        if normalized == RehearsalMode.replacementPhraseSpelling {
+            storedPhrases[identifier] = (1...CompanionConstants.maxActivePhrasesPerVocabulary).map { index in
+                StoredPhrase(
+                    id: "REHEARSAL_CAPACITY_\(index)",
+                    english: "Capacity rehearsal old phrase \(index).",
+                    chinese: "容量演练旧例句 \(index)。",
+                    source: "演练来源 \(index)"
+                )
+            }
         }
         return identifier
     }
@@ -278,6 +307,30 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         nextPhraseNumber += 1
         storedPhrases[vocabularyID, default: []].append(phrase)
         lock.unlock()
+    }
+
+    private func replacePhrase(
+        recordID: String,
+        english: String,
+        chinese: String,
+        source: String
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        for vocabularyID in storedPhrases.keys.sorted() {
+            guard var phrases = storedPhrases[vocabularyID],
+                  let index = phrases.firstIndex(where: { $0.id == recordID })
+            else { continue }
+            phrases[index] = StoredPhrase(
+                id: recordID,
+                english: english,
+                chinese: chinese,
+                source: source
+            )
+            storedPhrases[vocabularyID] = phrases
+            return true
+        }
+        return false
     }
 
     private func interpretationPayload(_ body: Data?) throws -> [String: Any] {

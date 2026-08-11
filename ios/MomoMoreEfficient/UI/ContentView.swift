@@ -283,6 +283,7 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 summaryLabel("新建", preview.createCount)
                 summaryLabel("一致", preview.alreadyMatchingCount)
+                summaryLabel("需替换", preview.replaceRequiredCount)
                 summaryLabel("阻断", preview.blockedCount)
             }
             .font(.subheadline.monospacedDigit())
@@ -306,6 +307,12 @@ struct ContentView: View {
             }
 
             feedbackView
+
+            if let guidance = viewModel.phraseWriteGuidance {
+                Text(guidance)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
 
             LazyVStack(spacing: 0) {
                 ForEach(preview.rows) { row in
@@ -341,7 +348,7 @@ struct ContentView: View {
             if let reason = row.blockedReason {
                 Text(reason)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(row.classification == .blocked ? Color.red : Color.orange)
             }
 
             if row.classification == .alreadyMatching, !row.observations.isEmpty {
@@ -354,6 +361,59 @@ struct ContentView: View {
                 detailLabel("EN", row.english)
                 detailLabel("ZH", row.chinese)
                 detailLabel("SOURCE", row.source)
+            }
+
+            if row.classification == .replaceRequired {
+                Text("请选择要替换的旧例句")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                ForEach(row.replacementCandidates) { candidate in
+                    Button {
+                        viewModel.selectPhraseReplacementCandidate(
+                            rowOrdinal: row.ordinal,
+                            candidateKey: candidate.key
+                        )
+                    } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: viewModel.selectedPhraseCandidateKey == candidate.key
+                                ? "largecircle.fill.circle" : "circle")
+                                .foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("候选 \(candidate.key)")
+                                    .font(.caption.weight(.semibold))
+                                Text("EN · \(candidate.current.english)")
+                                Text("ZH · \(candidate.current.chinese)")
+                                Text("SOURCE · \(candidate.current.source)")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("替换候选 \(candidate.key)")
+                }
+
+                if let comparison = viewModel.selectedPhraseReplacementComparison {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("CURRENT")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.orange)
+                        detailLabel("EN", comparison.current.english)
+                        detailLabel("ZH", comparison.current.chinese)
+                        detailLabel("SOURCE", comparison.current.source)
+                        Divider()
+                        Text("PROPOSED")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.blue)
+                        detailLabel("EN", comparison.proposed.english)
+                        detailLabel("ZH", comparison.proposed.chinese)
+                        detailLabel("SOURCE", comparison.proposed.source)
+                    }
+                    .padding(10)
+                    .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -407,10 +467,11 @@ struct ContentView: View {
             if viewModel.isExecuting {
                 executionProgressRow
             } else if viewModel.contentMode == .phrase {
-                Button("新建 \(viewModel.phrasePreview?.createCount ?? 0) 条例句") {
+                Button(viewModel.phraseExecutionActionTitle) {
                     viewModel.askToExecutePhrase()
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(viewModel.phrasePreview?.replaceRequiredCount == 1 ? .orange : .blue)
                 .frame(maxWidth: .infinity)
                 .disabled(!viewModel.canExecutePhrase)
             } else {
@@ -462,6 +523,7 @@ struct ContentView: View {
                     if viewModel.contentMode == .phrase {
                         Text(
                             "例句新建成功 \(viewModel.finalSummary.created) · "
+                                + "更新成功 \(viewModel.finalSummary.updated) · "
                                 + "失败 \(viewModel.finalSummary.failed) · "
                                 + "未执行 \(viewModel.finalSummary.notAttempted)"
                         )
@@ -568,6 +630,7 @@ struct ContentView: View {
     private func phraseClassificationColor(_ classification: PhrasePreviewClassification) -> Color {
         switch classification {
         case .create, .alreadyMatching: return .secondary
+        case .replaceRequired: return .orange
         case .blocked: return .red
         }
     }

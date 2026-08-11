@@ -47,13 +47,14 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     init(
         id: UUID = UUID(),
         timestamp: Date = Date(),
+        operationGroup: OperationGroup = .create,
         selectedSpellings: [String],
         result: PhraseExecutionSummary
     ) {
         self.id = id
         self.timestamp = timestamp
         contentKind = .phrase
-        operationGroup = .create
+        self.operationGroup = operationGroup
         items = selectedSpellings.enumerated().map { index, spelling in
             ExecutionReceiptItem(
                 spelling: spelling,

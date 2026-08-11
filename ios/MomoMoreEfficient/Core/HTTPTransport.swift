@@ -12,12 +12,13 @@ enum InterpretationRoute: Equatable, Sendable {
     case updateInterpretation(recordID: String)
     case phrases(vocabularyID: String)
     case createPhrase
+    case updatePhrase(recordID: String)
 
     var method: HTTPMethod {
         switch self {
         case .vocabulary, .interpretations, .phrases:
             return .get
-        case .createInterpretation, .updateInterpretation, .createPhrase:
+        case .createInterpretation, .updateInterpretation, .createPhrase, .updatePhrase:
             return .post
         }
     }
@@ -34,6 +35,8 @@ enum InterpretationRoute: Equatable, Sendable {
             return "/open/api/v1/interpretations/\(recordID)"
         case .phrases, .createPhrase:
             return "/open/api/v1/phrases"
+        case let .updatePhrase(recordID):
+            return "/open/api/v1/phrases/\(recordID)"
         }
     }
 
@@ -55,7 +58,7 @@ enum InterpretationRoute: Equatable, Sendable {
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
         case .createInterpretation, .createPhrase:
             break
-        case let .updateInterpretation(recordID):
+        case let .updateInterpretation(recordID), let .updatePhrase(recordID):
             guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
         }
         guard let url = components.url,

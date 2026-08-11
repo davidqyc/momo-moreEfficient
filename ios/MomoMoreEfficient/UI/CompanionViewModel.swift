@@ -26,6 +26,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var pendingConfirmation: OperationGroup?
     @Published private(set) var pendingBatchConfirmation: PendingBatchConfirmation?
     @Published private(set) var pendingPhraseConfirmation: PendingPhraseConfirmation?
+    @Published private(set) var selectedPhraseCandidateKey: Int?
     @Published private(set) var isPreviewStale = false
     @Published private(set) var history: [ExecutionReceipt] = []
     @Published private(set) var completionAcknowledgement: String?
@@ -75,7 +76,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private struct ArmedPhraseApprovalIntent {
-        let approval: PhraseCreateApproval
+        enum Authority {
+            case create(PhraseCreateApproval)
+            case replacement(PhraseReplacementApproval)
+        }
+
+        let authority: Authority
         let sessionID: UUID
     }
 
@@ -280,6 +286,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                     control: control,
                     onEntryStarted: progress
                 )
+                selectedPhraseCandidateKey = nil
                 phraseSnapshot = built
                 phrasePreview = built.presentation
                 snapshot = nil
@@ -398,22 +405,53 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         guard contentMode == .phrase,
               let phraseSnapshot,
               let sessionID,
-              phraseSnapshot.createCount > 0,
               phraseSnapshot.blockedCount == 0,
               isConnected,
               !isBusy,
               !isPreviewStale
         else { return }
         do {
-            let plan = try PhraseCreateBinding.makePlan(snapshot: phraseSnapshot)
-            armedPhraseApproval = ArmedPhraseApprovalIntent(
-                approval: try PhraseCreateBinding.makeApproval(snapshot: phraseSnapshot),
-                sessionID: sessionID
-            )
-            pendingPhraseConfirmation = PendingPhraseConfirmation(
-                spellings: plan.items.map(\.entry.spelling),
-                bindingDigest: plan.bindingDigest
-            )
+            if phraseSnapshot.replaceRequiredCount == 0 {
+                guard phraseSnapshot.createCount > 0 else { return }
+                let plan = try PhraseCreateBinding.makePlan(snapshot: phraseSnapshot)
+                armedPhraseApproval = ArmedPhraseApprovalIntent(
+                    authority: .create(
+                        try PhraseCreateBinding.makeApproval(snapshot: phraseSnapshot)
+                    ),
+                    sessionID: sessionID
+                )
+                pendingPhraseConfirmation = PendingPhraseConfirmation(
+                    operationGroup: .create,
+                    spellings: plan.items.map(\.entry.spelling),
+                    bindingDigest: plan.bindingDigest,
+                    replacementComparison: nil
+                )
+            } else {
+                guard phraseSnapshot.items.count == 1,
+                      phraseSnapshot.replaceRequiredCount == 1,
+                      phraseSnapshot.createCount == 0,
+                      let candidateKey = selectedPhraseCandidateKey
+                else { return }
+                let approval = try PhraseReplacementBinding.makeApproval(
+                    snapshot: phraseSnapshot,
+                    candidateKey: candidateKey,
+                    sessionID: sessionID
+                )
+                let comparison = try PhraseReplacementBinding.comparison(
+                    snapshot: phraseSnapshot,
+                    candidateKey: candidateKey
+                )
+                armedPhraseApproval = ArmedPhraseApprovalIntent(
+                    authority: .replacement(approval),
+                    sessionID: sessionID
+                )
+                pendingPhraseConfirmation = PendingPhraseConfirmation(
+                    operationGroup: .update,
+                    spellings: [phraseSnapshot.items[0].entry.spelling],
+                    bindingDigest: approval.bindingDigest,
+                    replacementComparison: comparison
+                )
+            }
             errorMessage = nil
         } catch let error as CompanionError {
             errorMessage = error.description
@@ -435,11 +473,26 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             errorMessage = CompanionError.approvalRequired.description
             return nil
         }
+        let operationGroup: OperationGroup
         do {
-            guard intent.approval == (try PhraseCreateBinding.makeApproval(snapshot: displayed))
-            else {
-                errorMessage = CompanionError.stalePreview.description
-                return nil
+            switch intent.authority {
+            case let .create(approval):
+                guard approval == (try PhraseCreateBinding.makeApproval(snapshot: displayed))
+                else {
+                    errorMessage = CompanionError.stalePreview.description
+                    return nil
+                }
+                operationGroup = .create
+            case let .replacement(approval):
+                guard approval == (try PhraseReplacementBinding.makeApproval(
+                    snapshot: displayed,
+                    candidateKey: approval.candidateKey,
+                    sessionID: currentSessionID
+                )) else {
+                    errorMessage = CompanionError.stalePreview.description
+                    return nil
+                }
+                operationGroup = .update
             }
         } catch let error as CompanionError {
             errorMessage = error.description
@@ -458,13 +511,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         let control = ExecutionControl()
         activeControl = control
         let assertion = backgroundAssertionFactory()
-        assertion.begin(reason: "momo-phrase-create-batch") {
+        assertion.begin(reason: operationGroup == .create
+            ? "momo-phrase-create-batch"
+            : "momo-phrase-replacement") {
             control.requestCancellation()
         }
         return Task {
             await executeAuthorizedPhrase(
                 displayed: displayed,
                 intent: intent,
+                operationGroup: operationGroup,
                 control: control,
                 assertion: assertion
             )
@@ -474,6 +530,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func executeAuthorizedPhrase(
         displayed: PhrasePreviewSnapshot,
         intent: ArmedPhraseApprovalIntent,
+        operationGroup: OperationGroup,
         control: ExecutionControl,
         assertion: BackgroundExecutionAssertion
     ) async {
@@ -494,16 +551,32 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 credential: lease,
                 sleeper: sleeperFactory()
             )
-            let result = await PhraseWriteExecutor(api: api).execute(
-                displayedSnapshot: displayed,
-                approval: intent.approval,
-                control: control,
-                progress: progress
-            )
+            let result: PhraseExecutionSummary
+            switch intent.authority {
+            case let .create(approval):
+                result = await PhraseWriteExecutor(api: api).execute(
+                    displayedSnapshot: displayed,
+                    approval: approval,
+                    control: control,
+                    progress: progress
+                )
+            case let .replacement(approval):
+                result = await PhraseReplacementExecutor(api: api).execute(
+                    displayedSnapshot: displayed,
+                    approval: approval,
+                    sessionID: intent.sessionID,
+                    control: control,
+                    progress: progress
+                )
+            }
             if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
             } else {
-                receipt = appendPhraseReceipt(displayed: displayed, result: result)
+                receipt = appendPhraseReceipt(
+                    operationGroup: operationGroup,
+                    displayed: displayed,
+                    result: result
+                )
                 observations = result.results.flatMap(\.observations)
                 fullySucceeded = result.isFullSuccess
                 if result.failed > 0 {
@@ -528,14 +601,15 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         if let receipt, fullySucceeded {
             let localHistoryError = historyErrorMessage
             sourceText = ""
-            completionAcknowledgement = "已完成 \(receipt.succeeded) 条例句 · 新建 \(receipt.succeeded)"
+            let verb = operationGroup == .create ? "新建" : "更新"
+            completionAcknowledgement = "已完成 \(receipt.succeeded) 条例句 · \(verb) \(receipt.succeeded)"
             phraseObservationMessage = phraseObservationSummary(observations)
             historyErrorMessage = localHistoryError
         } else if let receipt {
             hasExecutionFeedback = true
             finalSummary = FinalSummary(
-                created: receipt.succeeded,
-                updated: 0,
+                created: operationGroup == .create ? receipt.succeeded : 0,
+                updated: operationGroup == .update ? receipt.succeeded : 0,
                 alreadyMatching: 0,
                 failed: receipt.failed,
                 notAttempted: receipt.notAttempted,
@@ -967,14 +1041,20 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     @discardableResult
     private func appendPhraseReceipt(
+        operationGroup: OperationGroup,
         displayed: PhrasePreviewSnapshot,
         result: PhraseExecutionSummary
     ) -> ExecutionReceipt {
         let selectedSpellings = displayed.items
-            .filter { $0.classification == .create }
+            .filter {
+                operationGroup == .create
+                    ? $0.classification == .create
+                    : $0.classification == .replaceRequired
+            }
             .map(\.entry.spelling)
         let receipt = ExecutionReceipt(
             timestamp: dateProvider(),
+            operationGroup: operationGroup,
             selectedSpellings: selectedSpellings,
             result: result
         )
@@ -1096,7 +1176,58 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
               isConnected,
               !isBusy
         else { return false }
-        return phraseSnapshot.createCount > 0 && phraseSnapshot.blockedCount == 0
+        guard phraseSnapshot.blockedCount == 0 else { return false }
+        if phraseSnapshot.replaceRequiredCount == 0 {
+            return phraseSnapshot.createCount > 0
+        }
+        return phraseSnapshot.items.count == 1
+            && phraseSnapshot.replaceRequiredCount == 1
+            && phraseSnapshot.createCount == 0
+            && selectedPhraseCandidateKey != nil
+    }
+
+    var phraseExecutionActionTitle: String {
+        if phraseSnapshot?.replaceRequiredCount == 1,
+           phraseSnapshot?.items.count == 1 {
+            return "替换这 1 条例句"
+        }
+        return "新建 \(phrasePreview?.createCount ?? 0) 条例句"
+    }
+
+    var phraseWriteGuidance: String? {
+        guard let phraseSnapshot, phraseSnapshot.replaceRequiredCount > 0 else { return nil }
+        if phraseSnapshot.items.count > 1 {
+            return "此预览含需替换项，所有例句写入已禁用。请把需替换项单独粘贴并重新预览。"
+        }
+        if selectedPhraseCandidateKey == nil {
+            return "请恰好选择 1 条旧例句；不会自动选择替换目标。"
+        }
+        return nil
+    }
+
+    var selectedPhraseReplacementComparison: PhraseReplacementComparison? {
+        guard let phraseSnapshot, let selectedPhraseCandidateKey else { return nil }
+        return try? PhraseReplacementBinding.comparison(
+            snapshot: phraseSnapshot,
+            candidateKey: selectedPhraseCandidateKey
+        )
+    }
+
+    func selectPhraseReplacementCandidate(rowOrdinal: Int, candidateKey: Int) {
+        guard contentMode == .phrase,
+              let phraseSnapshot,
+              phraseSnapshot.items.count == 1,
+              phraseSnapshot.items[0].entry.ordinal == rowOrdinal,
+              phraseSnapshot.items[0].classification == .replaceRequired,
+              candidateKey > 0,
+              phraseSnapshot.items[0].replacementCandidates.indices.contains(candidateKey - 1),
+              !isBusy,
+              !isPreviewStale
+        else { return }
+        guard selectedPhraseCandidateKey != candidateKey else { return }
+        invalidateArmedApproval()
+        selectedPhraseCandidateKey = candidateKey
+        errorMessage = nil
     }
 
     func editInput() {
@@ -1145,6 +1276,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func invalidateExecutionAuthorization() {
         snapshot = nil
         phraseSnapshot = nil
+        selectedPhraseCandidateKey = nil
         // A source edit, token change or explicit invalidation also discards any
         // Preview held aside across an interruption.
         suspendedPreview = nil

@@ -57,7 +57,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         await task.value
     }
 
-    func testPhrasePreviewShowsSafeCreateMatchingAndBlockedRows() async {
+    func testPhrasePreviewShowsSafeCreateMatchingAndReplacementRows() async {
         let document = phraseDocument + """
 
 
@@ -101,7 +101,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
         XCTAssertEqual(model.phrasePreview?.createCount, 1)
         XCTAssertEqual(model.phrasePreview?.alreadyMatchingCount, 1)
-        XCTAssertEqual(model.phrasePreview?.blockedCount, 1)
+        XCTAssertEqual(model.phrasePreview?.replaceRequiredCount, 1)
+        XCTAssertEqual(model.phrasePreview?.blockedCount, 0)
         XCTAssertEqual(
             model.phrasePreview?.rows[2].blockedReason,
             "相同英文已存在，但中文或来源不一致"
@@ -110,12 +111,159 @@ final class PhraseUIIntegrationTests: XCTestCase {
             model.phrasePreview?.rows[1].observations,
             [.tagsDiffer, .highlightMissing, .chineseRangeUnavailable]
         )
-        XCTAssertFalse(model.canExecutePhrase)
+        XCTAssertFalse(model.canExecutePhrase, "multi-entry replacement disables every write")
 
         let rendered = String(describing: model.phrasePreview)
         for forbidden in [fakeToken, "INVALID_VOC", "INVALID_MATCHING", "INVALID_CONFLICT"] {
             XCTAssertFalse(rendered.contains(forbidden), forbidden)
         }
+    }
+
+    func testSingleReplacementRequiresSelectionAndSelectionChangeInvalidatesApproval() async {
+        let records = capacityRecords()
+        let model = connectedModel(transports: [FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse(records),
+        ])])
+        model.selectMode(.phrase)
+        model.sourceText = phraseDocument
+        await model.previewCurrentInput()
+
+        XCTAssertEqual(model.phrasePreview?.replaceRequiredCount, 1)
+        XCTAssertEqual(model.phrasePreview?.rows[0].replacementCandidates.count, 5)
+        XCTAssertNil(model.selectedPhraseCandidateKey)
+        XCTAssertFalse(model.canExecutePhrase)
+        model.askToExecutePhrase()
+        XCTAssertNil(model.pendingPhraseConfirmation)
+
+        model.selectPhraseReplacementCandidate(rowOrdinal: 1, candidateKey: 1)
+        XCTAssertEqual(model.selectedPhraseCandidateKey, 1)
+        XCTAssertNotNil(model.selectedPhraseReplacementComparison)
+        XCTAssertTrue(model.canExecutePhrase)
+        model.askToExecutePhrase()
+        XCTAssertEqual(model.pendingPhraseConfirmation?.operationGroup, .update)
+        XCTAssertTrue(model.pendingPhraseConfirmation?.message.contains("CURRENT") == true)
+        XCTAssertTrue(model.pendingPhraseConfirmation?.message.contains("PROPOSED") == true)
+
+        model.selectPhraseReplacementCandidate(rowOrdinal: 1, candidateKey: 2)
+        XCTAssertNil(model.pendingPhraseConfirmation)
+        XCTAssertEqual(model.selectedPhraseCandidateKey, 2)
+        XCTAssertNil(model.executeConfirmedPhrase())
+        XCTAssertEqual(model.errorMessage, CompanionError.approvalRequired.description)
+    }
+
+    func testMultiEntryWithReplacementDisablesEveryPhraseWrite() async {
+        let secondDocument = phraseDocument + """
+
+
+        ## liquidity
+        EN: Liquidity matters.
+        ZH: 流动性很重要。
+        SOURCE: 自编
+        """
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC_A", "acquisition"),
+            phraseResponse(capacityRecords()),
+            vocabularyResponse("INVALID_VOC_B", "liquidity"),
+            phraseResponse([]),
+        ])
+        let model = connectedModel(transports: [transport])
+        model.selectMode(.phrase)
+        model.sourceText = secondDocument
+        await model.previewCurrentInput()
+
+        XCTAssertEqual(model.phrasePreview?.replaceRequiredCount, 1)
+        XCTAssertEqual(model.phrasePreview?.createCount, 1)
+        XCTAssertFalse(model.canExecutePhrase)
+        XCTAssertTrue(model.phraseWriteGuidance?.contains("所有例句写入已禁用") == true)
+        model.askToExecutePhrase()
+        XCTAssertNil(model.pendingPhraseConfirmation)
+        XCTAssertNil(model.executeConfirmedPhrase())
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testReplacementRunsFreshPreflightUpdateReadbackAndNonSensitiveHistory() async throws {
+        let records = capacityRecords()
+        var updated = records
+        updated[0] = phraseRecord(
+            id: "INVALID_CAPACITY_1",
+            english: english,
+            chinese: chinese,
+            tags: ["MBA"],
+            highlight: nil
+        )
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse(records)],
+            [
+                vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse(records),
+                .failure(.transport), phraseResponse(updated),
+            ],
+        ])
+        let history = InMemoryHistoryStore()
+        let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: history,
+            transportFactory: factory.make,
+            sleeperFactory: { RecordingSleeper() },
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+        )
+        var token = fakeToken
+        model.connect(token: &token)
+        model.selectMode(.phrase)
+        model.sourceText = phraseDocument
+        await model.previewCurrentInput()
+        model.selectPhraseReplacementCandidate(rowOrdinal: 1, candidateKey: 1)
+        model.askToExecutePhrase()
+        await model.executeConfirmedPhrase()?.value
+
+        XCTAssertEqual(factory.transports.last?.postCount, 1)
+        XCTAssertEqual(
+            factory.transports.last?.requests.suffix(2).map(\.route.method),
+            [.post, .get]
+        )
+        XCTAssertEqual(model.completionAcknowledgement, "已完成 1 条例句 · 更新 1")
+        XCTAssertEqual(model.sourceText, "")
+        XCTAssertEqual(model.history.first?.contentKind, .phrase)
+        XCTAssertEqual(model.history.first?.operationGroup, .update)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.recovered])
+
+        let encoded = try XCTUnwrap(history.encodedData)
+        let text = String(decoding: encoded, as: UTF8.self)
+        for forbidden in [
+            english, chinese, "自编", "INVALID_CAPACITY_1", "MBA", "highlight",
+            "binding", "request", "response",
+        ] {
+            XCTAssertFalse(text.contains(forbidden), forbidden)
+        }
+    }
+
+    func testRehearsalCapacityFixtureCompletesExplicitReplacementChain() async {
+        let model = CompanionViewModel.makeRehearsal(
+            perRequestDelaySeconds: 0,
+            sleeperFactory: { RecordingSleeper() },
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+        )
+        model.selectMode(.phrase)
+        model.sourceText = """
+        ## capacity
+        EN: Capacity rehearsal proposed phrase.
+        ZH: 容量演练拟写例句。
+        SOURCE: 演练新来源
+        """
+
+        await model.previewCurrentInput()
+        XCTAssertEqual(model.phrasePreview?.replaceRequiredCount, 1)
+        XCTAssertEqual(model.phrasePreview?.rows[0].replacementCandidates.count, 5)
+        model.selectPhraseReplacementCandidate(rowOrdinal: 1, candidateKey: 3)
+        XCTAssertNotNil(model.selectedPhraseReplacementComparison)
+        model.askToExecutePhrase()
+        XCTAssertEqual(model.pendingPhraseConfirmation?.operationGroup, .update)
+        await model.executeConfirmedPhrase()?.value
+
+        XCTAssertEqual(model.completionAcknowledgement, "已完成 1 条例句 · 更新 1")
+        XCTAssertEqual(model.history.first?.contentKind, .phrase)
+        XCTAssertEqual(model.history.first?.operationGroup, .update)
+        XCTAssertTrue(model.history.first?.isFullSuccess == true)
+        XCTAssertEqual(model.sourceText, "")
     }
 
     func testPhraseRehearsalRunsParserApprovalCreateReadbackAndPreservesInterpretationDraft() async {
@@ -435,6 +583,17 @@ final class PhraseUIIntegrationTests: XCTestCase {
         if let tags { record["tags"] = tags }
         if let highlight { record["highlight"] = highlight }
         return record
+    }
+
+    private func capacityRecords() -> [[String: Any]] {
+        (1...5).map { index in
+            phraseRecord(
+                id: "INVALID_CAPACITY_\(index)",
+                english: "Old capacity phrase \(index).",
+                chinese: "旧容量例句 \(index)。",
+                source: "旧来源 \(index)"
+            )
+        }
     }
 
     private func phraseResponse(_ records: [[String: Any]]) -> StubbedResult {

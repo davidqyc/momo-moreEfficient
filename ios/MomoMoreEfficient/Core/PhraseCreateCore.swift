@@ -4,6 +4,7 @@ import Foundation
 enum PhrasePreviewClassification: String, Equatable, Sendable {
     case create = "CREATE"
     case alreadyMatching = "ALREADY_MATCHING"
+    case replaceRequired = "REPLACE_REQUIRED"
     case blocked = "BLOCKED"
 }
 
@@ -12,6 +13,7 @@ extension PhrasePreviewClassification {
         switch self {
         case .create: return "新建"
         case .alreadyMatching: return "一致"
+        case .replaceRequired: return "需替换"
         case .blocked: return "阻断"
         }
     }
@@ -59,6 +61,18 @@ struct PhraseRecord: Equatable, Sendable {
             && interpretation == entry.chinese
             && origin == entry.source
             && status == CompanionConstants.status
+    }
+
+    var isActive: Bool { status == CompanionConstants.status }
+
+    /// Tags/highlight are deliberately absent: D-018 keeps them as closed,
+    /// non-blocking observations rather than write authority.
+    func hasSameHardBaseline(as other: PhraseRecord) -> Bool {
+        id == other.id
+            && phrase == other.phrase
+            && interpretation == other.interpretation
+            && origin == other.origin
+            && status == other.status
     }
 
     func observations(for entry: PhraseBatchEntry) -> [PhraseObservation] {
@@ -115,17 +129,47 @@ struct PhrasePreflightItem: Equatable, Sendable {
     let entry: PhraseBatchEntry
     let classification: PhrasePreviewClassification
     let vocabularyID: String?
-    /// Only same-English records are retained. Unrelated phrases are deliberately
-    /// excluded from the approval baseline because they cannot affect CREATE.
-    let sameEnglishBaseline: [PhraseRecord]
+    /// The full authenticated collection, canonicalized by safe record identity.
+    /// Capacity and replacement make unrelated and DELETED membership relevant
+    /// to stale-authority detection even though only active PUBLISHED records can
+    /// be candidates.
+    let collectionBaseline: [PhraseRecord]
+    /// A safe active subset only. No target is ever selected automatically.
+    let replacementCandidates: [PhraseRecord]
     let reason: String?
 
+    var sameEnglishBaseline: [PhraseRecord] {
+        collectionBaseline.filter { $0.phrase == entry.english }
+    }
+
+    var activeCount: Int { collectionBaseline.count(where: \.isActive) }
+
     var observations: [PhraseObservation] {
-        guard classification == .alreadyMatching, sameEnglishBaseline.count == 1 else {
+        let exact = collectionBaseline.filter { $0.isActive && $0.hardMatches(entry) }
+        guard classification == .alreadyMatching, exact.count == 1 else {
             return []
         }
-        return sameEnglishBaseline[0].observations(for: entry)
+        return exact[0].observations(for: entry)
     }
+}
+
+struct PhraseSafeContent: Equatable, Sendable {
+    let english: String
+    let chinese: String
+    let source: String
+}
+
+struct PhraseReplacementCandidate: Equatable, Identifiable, Sendable {
+    /// Preview-local key only. It contains no server identity material.
+    let key: Int
+    let current: PhraseSafeContent
+
+    var id: Int { key }
+}
+
+struct PhraseReplacementComparison: Equatable, Sendable {
+    let current: PhraseSafeContent
+    let proposed: PhraseSafeContent
 }
 
 struct PhrasePreviewRow: Equatable, Identifiable, Sendable {
@@ -137,6 +181,7 @@ struct PhrasePreviewRow: Equatable, Identifiable, Sendable {
     let source: String
     let blockedReason: String?
     let observations: [PhraseObservation]
+    let replacementCandidates: [PhraseReplacementCandidate]
 
     var id: Int { ordinal }
     var canExpand: Bool { true }
@@ -146,6 +191,7 @@ struct PhrasePreviewPresentation: Equatable, Sendable {
     let rows: [PhrasePreviewRow]
     let createCount: Int
     let alreadyMatchingCount: Int
+    let replaceRequiredCount: Int
     let blockedCount: Int
 }
 
@@ -154,6 +200,7 @@ struct PhrasePreviewBindingContext: Equatable, Sendable {
     let vocabularyPath: String
     let collectionPath: String
     let createPath: String
+    let updatePathTemplate: String
     let tags: [String]
     let expectedStatus: String
     let createBatchDigest: String?
@@ -170,6 +217,9 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
     var alreadyMatchingCount: Int {
         items.filter { $0.classification == .alreadyMatching }.count
     }
+    var replaceRequiredCount: Int {
+        items.filter { $0.classification == .replaceRequired }.count
+    }
     var blockedCount: Int { items.filter { $0.classification == .blocked }.count }
 
     var presentation: PhrasePreviewPresentation {
@@ -183,11 +233,23 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
                     chinese: item.entry.chinese,
                     source: item.entry.source,
                     blockedReason: Self.safeBlockedReason(item.reason),
-                    observations: item.observations
+                    observations: item.observations,
+                    replacementCandidates: item.replacementCandidates.enumerated().map {
+                        index, record in
+                        PhraseReplacementCandidate(
+                            key: index + 1,
+                            current: PhraseSafeContent(
+                                english: record.phrase,
+                                chinese: record.interpretation,
+                                source: record.origin
+                            )
+                        )
+                    }
                 )
             },
             createCount: createCount,
             alreadyMatchingCount: alreadyMatchingCount,
+            replaceRequiredCount: replaceRequiredCount,
             blockedCount: blockedCount
         )
     }
@@ -198,6 +260,10 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
             return "相同英文已存在，但中文或来源不一致"
         case "AMBIGUOUS_SAME_ENGLISH":
             return "存在多条相同英文例句，无法安全判断"
+        case "CAPACITY_EXCEEDED":
+            return "active 例句已超过当前安全上限，已阻断"
+        case "CAPACITY_FULL":
+            return "已达到当前安全上限 \(CompanionConstants.maxActivePhrasesPerVocabulary) 条"
         case "READ_FAILED":
             return "无法安全读取例句状态"
         default:
@@ -284,24 +350,66 @@ struct PhrasePreflightPlanner {
                     vocabularyID: vocabulary.id,
                     control: control
                 )
-                let sameEnglish = records.filter { $0.phrase == entry.english }
-                if sameEnglish.isEmpty {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .create,
-                            vocabularyID: vocabulary.id,
-                            sameEnglishBaseline: [],
-                            reason: nil
-                        )
-                    )
-                } else if sameEnglish.count == 1, sameEnglish[0].hardMatches(entry) {
+                let baseline = records.sorted { $0.id < $1.id }
+                let active = baseline.filter(\.isActive)
+                let sameEnglish = active.filter { $0.phrase == entry.english }
+                let exact = sameEnglish.filter { $0.hardMatches(entry) }
+
+                // The no-write exact-match result is intentionally first. Even a
+                // legacy collection above the conservative ceiling cannot turn a
+                // proven no-op into write authority.
+                if exact.count == 1 {
                     planned.append(
                         PhrasePreflightItem(
                             entry: entry,
                             classification: .alreadyMatching,
                             vocabularyID: vocabulary.id,
-                            sameEnglishBaseline: sameEnglish,
+                            collectionBaseline: baseline,
+                            replacementCandidates: [],
+                            reason: nil
+                        )
+                    )
+                } else if active.count > CompanionConstants.maxActivePhrasesPerVocabulary {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .blocked,
+                            vocabularyID: vocabulary.id,
+                            collectionBaseline: baseline,
+                            replacementCandidates: [],
+                            reason: "CAPACITY_EXCEEDED"
+                        )
+                    )
+                } else if exact.count > 1 {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .blocked,
+                            vocabularyID: vocabulary.id,
+                            collectionBaseline: baseline,
+                            replacementCandidates: [],
+                            reason: "AMBIGUOUS_SAME_ENGLISH"
+                        )
+                    )
+                } else if !sameEnglish.isEmpty {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .replaceRequired,
+                            vocabularyID: vocabulary.id,
+                            collectionBaseline: baseline,
+                            replacementCandidates: sameEnglish,
+                            reason: "CONFLICTING_SAME_ENGLISH"
+                        )
+                    )
+                } else if active.count < CompanionConstants.maxActivePhrasesPerVocabulary {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .create,
+                            vocabularyID: vocabulary.id,
+                            collectionBaseline: baseline,
+                            replacementCandidates: [],
                             reason: nil
                         )
                     )
@@ -309,12 +417,11 @@ struct PhrasePreflightPlanner {
                     planned.append(
                         PhrasePreflightItem(
                             entry: entry,
-                            classification: .blocked,
+                            classification: .replaceRequired,
                             vocabularyID: vocabulary.id,
-                            sameEnglishBaseline: sameEnglish,
-                            reason: sameEnglish.count == 1
-                                ? "CONFLICTING_SAME_ENGLISH"
-                                : "AMBIGUOUS_SAME_ENGLISH"
+                            collectionBaseline: baseline,
+                            replacementCandidates: active,
+                            reason: "CAPACITY_FULL"
                         )
                     )
                 }
@@ -326,7 +433,8 @@ struct PhrasePreflightPlanner {
                         entry: entry,
                         classification: .blocked,
                         vocabularyID: nil,
-                        sameEnglishBaseline: [],
+                        collectionBaseline: [],
+                        replacementCandidates: [],
                         reason: "READ_FAILED"
                     )
                 )
@@ -347,6 +455,7 @@ enum PhraseCreateBinding {
     static let vocabularyPath = "/open/api/v1/vocabulary"
     static let collectionPath = "/open/api/v1/phrases"
     static let createPath = "/open/api/v1/phrases"
+    static let updatePathTemplate = "/open/api/v1/phrases/{selected-record-id}"
 
     static func sourceIdentity(_ entries: [PhraseBatchEntry]) throws -> String {
         try ConfirmationBinding.digest([
@@ -371,6 +480,7 @@ enum PhraseCreateBinding {
             vocabularyPath: vocabularyPath,
             collectionPath: collectionPath,
             createPath: createPath,
+            updatePathTemplate: updatePathTemplate,
             tags: CompanionConstants.tags,
             expectedStatus: CompanionConstants.status,
             createBatchDigest: createItems.isEmpty ? nil : try batchDigest(createItems)
@@ -387,6 +497,7 @@ enum PhraseCreateBinding {
                 "vocabulary_path": snapshot.bindingContext.vocabularyPath,
                 "collection_path": snapshot.bindingContext.collectionPath,
                 "create_path": snapshot.bindingContext.createPath,
+                "update_path_template": snapshot.bindingContext.updatePathTemplate,
                 "tags": snapshot.bindingContext.tags,
                 "expected_status": snapshot.bindingContext.expectedStatus,
                 "create_batch_digest": optionalJSON(
@@ -403,9 +514,9 @@ enum PhraseCreateBinding {
                     "classification": item.classification.rawValue,
                     "vocabulary_id": optionalJSON(item.vocabularyID),
                     "reason": optionalJSON(item.reason),
-                    // Tags/highlight are intentionally excluded. They are
-                    // observations, not CREATE admission fields.
-                    "same_english_baseline": item.sameEnglishBaseline.map { record in
+                    // Canonical full-collection baseline. Tags/highlight are
+                    // intentionally excluded as D-018 observations.
+                    "collection_baseline": item.collectionBaseline.map { record in
                         [
                             "id": record.id,
                             "phrase": record.phrase,
@@ -420,7 +531,9 @@ enum PhraseCreateBinding {
     }
 
     static func makePlan(snapshot: PhrasePreviewSnapshot) throws -> PhraseConfirmationPlan {
-        guard snapshot.items.allSatisfy({ $0.classification != .blocked }) else {
+        guard snapshot.items.allSatisfy({
+            $0.classification != .blocked && $0.classification != .replaceRequired
+        }) else {
             throw CompanionError.blocked
         }
         let items = try confirmationItems(snapshot.items)
@@ -431,6 +544,7 @@ enum PhraseCreateBinding {
               context.vocabularyPath == vocabularyPath,
               context.collectionPath == collectionPath,
               context.createPath == createPath,
+              context.updatePathTemplate == updatePathTemplate,
               context.tags == CompanionConstants.tags,
               context.expectedStatus == CompanionConstants.status,
               context.createBatchDigest == digest,
@@ -446,6 +560,7 @@ enum PhraseCreateBinding {
             "vocabulary_path": context.vocabularyPath,
             "collection_path": context.collectionPath,
             "create_path": context.createPath,
+            "update_path_template": context.updatePathTemplate,
             "account_mode": snapshot.accountMode,
             "account_label": CompanionConstants.accountLabel,
             "credential_fingerprint": snapshot.credentialFingerprint,
@@ -506,7 +621,10 @@ enum PhraseCreateBinding {
     ) throws -> [PhraseConfirmationPlan.Item] {
         try source.filter { $0.classification == .create }.map { item in
             guard let vocabularyID = item.vocabularyID,
-                  item.sameEnglishBaseline.isEmpty
+                  item.activeCount < CompanionConstants.maxActivePhrasesPerVocabulary,
+                  item.collectionBaseline
+                      .filter({ $0.isActive && $0.phrase == item.entry.english })
+                      .isEmpty
             else {
                 throw CompanionError.blocked
             }
@@ -542,6 +660,385 @@ enum PhraseCreateBinding {
     }
 }
 
+struct PhraseReplacementPlan {
+    let entry: PhraseBatchEntry
+    let vocabularyID: String
+    let selectedRecord: PhraseRecord
+    let collectionBaseline: [PhraseRecord]
+    let credentialFingerprint: String
+    let sessionID: UUID
+    let snapshotIdentity: String
+    let bindingDigest: String
+}
+
+struct PhraseReplacementApproval: Equatable, Sendable {
+    let candidateKey: Int
+    /// Authenticated raw identity. This type is internal authority only and is
+    /// never exposed through presentation or History.
+    let selectedRecordID: String
+    let sessionID: UUID
+    let snapshotIdentity: String
+    let bindingDigest: String
+}
+
+enum PhraseReplacementBinding {
+    static func comparison(
+        snapshot: PhrasePreviewSnapshot,
+        candidateKey: Int
+    ) throws -> PhraseReplacementComparison {
+        let (_, selected) = try selectedCandidate(
+            snapshot: snapshot,
+            candidateKey: candidateKey
+        )
+        let entry = snapshot.items[0].entry
+        return PhraseReplacementComparison(
+            current: PhraseSafeContent(
+                english: selected.phrase,
+                chinese: selected.interpretation,
+                source: selected.origin
+            ),
+            proposed: PhraseSafeContent(
+                english: entry.english,
+                chinese: entry.chinese,
+                source: entry.source
+            )
+        )
+    }
+
+    static func makeApproval(
+        snapshot: PhrasePreviewSnapshot,
+        candidateKey: Int,
+        sessionID: UUID
+    ) throws -> PhraseReplacementApproval {
+        let plan = try makePlan(
+            snapshot: snapshot,
+            candidateKey: candidateKey,
+            sessionID: sessionID
+        )
+        return PhraseReplacementApproval(
+            candidateKey: candidateKey,
+            selectedRecordID: plan.selectedRecord.id,
+            sessionID: sessionID,
+            snapshotIdentity: plan.snapshotIdentity,
+            bindingDigest: plan.bindingDigest
+        )
+    }
+
+    static func makePlan(
+        snapshot: PhrasePreviewSnapshot,
+        candidateKey: Int,
+        sessionID: UUID
+    ) throws -> PhraseReplacementPlan {
+        let (_, selected) = try selectedCandidate(
+            snapshot: snapshot,
+            candidateKey: candidateKey
+        )
+        return try makePlan(
+            snapshot: snapshot,
+            selectedRecordID: selected.id,
+            sessionID: sessionID
+        )
+    }
+
+    static func makePlan(
+        snapshot: PhrasePreviewSnapshot,
+        selectedRecordID: String,
+        sessionID: UUID
+    ) throws -> PhraseReplacementPlan {
+        guard snapshot.items.count == 1,
+              let item = snapshot.items.first,
+              item.classification == .replaceRequired,
+              let vocabularyID = item.vocabularyID,
+              let selected = item.replacementCandidates.first(where: {
+                  $0.id == selectedRecordID
+              }),
+              selected.isActive,
+              item.collectionBaseline.contains(where: {
+                  $0.id == selected.id && $0.hasSameHardBaseline(as: selected)
+              }),
+              snapshot.accountMode == CompanionConstants.accountMode
+        else {
+            throw CompanionError.blocked
+        }
+
+        let context = snapshot.bindingContext
+        guard context.host == CompanionConstants.productionBaseURL.absoluteString,
+              context.vocabularyPath == PhraseCreateBinding.vocabularyPath,
+              context.collectionPath == PhraseCreateBinding.collectionPath,
+              context.createPath == PhraseCreateBinding.createPath,
+              context.updatePathTemplate == PhraseCreateBinding.updatePathTemplate,
+              context.tags == CompanionConstants.tags,
+              context.expectedStatus == CompanionConstants.status
+        else {
+            throw CompanionError.stalePreview
+        }
+
+        let snapshotIdentity = try PhraseCreateBinding.snapshotIdentity(snapshot)
+        let route = InterpretationRoute.updatePhrase(recordID: selected.id)
+        let body = requestBody(entry: item.entry)
+        let binding: [String: Any] = [
+            "content_mode": ContentMode.phrase.rawValue,
+            "operation": "phrase-update-replacement",
+            "host": context.host,
+            "method": "POST",
+            "vocabulary_path": context.vocabularyPath,
+            "collection_path": context.collectionPath,
+            "update_path_template": context.updatePathTemplate,
+            "selected_update_path": route.reviewedPath,
+            "account_mode": snapshot.accountMode,
+            "account_label": CompanionConstants.accountLabel,
+            "credential_fingerprint": snapshot.credentialFingerprint,
+            "session_id": sessionID.uuidString.lowercased(),
+            "snapshot_identity": snapshotIdentity,
+            "spelling": item.entry.spelling,
+            "vocabulary_id": vocabularyID,
+            "selected_record_id": selected.id,
+            "selected_baseline": hardBaseline(selected),
+            "proposed": [
+                "english": item.entry.english,
+                "chinese": item.entry.chinese,
+                "source": item.entry.source,
+                "tags": CompanionConstants.tags,
+            ] as [String: Any],
+            "collection_cardinality": item.collectionBaseline.count,
+            "collection_safe_id_set": item.collectionBaseline.map(\.id),
+            "collection_baseline": item.collectionBaseline.map(hardBaseline),
+            "write_policy": CompanionConstants.writePolicy,
+            "request_body": body,
+        ]
+        let digest = String(try ConfirmationBinding.digest(binding).prefix(16))
+        return PhraseReplacementPlan(
+            entry: item.entry,
+            vocabularyID: vocabularyID,
+            selectedRecord: selected,
+            collectionBaseline: item.collectionBaseline,
+            credentialFingerprint: snapshot.credentialFingerprint,
+            sessionID: sessionID,
+            snapshotIdentity: snapshotIdentity,
+            bindingDigest: digest
+        )
+    }
+
+    static func requestBody(entry: PhraseBatchEntry) -> [String: Any] {
+        [
+            "phrase": [
+                "phrase": entry.english,
+                "interpretation": entry.chinese,
+                "tags": CompanionConstants.tags,
+                "origin": entry.source,
+            ],
+        ]
+    }
+
+    static func requestData(entry: PhraseBatchEntry) throws -> Data {
+        try ConfirmationBinding.canonicalData(requestBody(entry: entry))
+    }
+
+    private static func selectedCandidate(
+        snapshot: PhrasePreviewSnapshot,
+        candidateKey: Int
+    ) throws -> (PhrasePreflightItem, PhraseRecord) {
+        guard snapshot.items.count == 1,
+              let item = snapshot.items.first,
+              item.classification == .replaceRequired,
+              candidateKey > 0,
+              item.replacementCandidates.indices.contains(candidateKey - 1)
+        else {
+            throw CompanionError.blocked
+        }
+        return (item, item.replacementCandidates[candidateKey - 1])
+    }
+
+    private static func hardBaseline(_ record: PhraseRecord) -> [String: Any] {
+        [
+            "id": record.id,
+            "phrase": record.phrase,
+            "interpretation": record.interpretation,
+            "origin": record.origin,
+            "status": record.status,
+        ]
+    }
+}
+
+struct PhraseReplacementExecutor {
+    let api: MaimemoTransport
+
+    func execute(
+        displayedSnapshot: PhrasePreviewSnapshot,
+        approval: PhraseReplacementApproval,
+        sessionID: UUID,
+        control: ExecutionControl,
+        progress: ExecutionProgressReporter? = nil
+    ) async -> PhraseExecutionSummary {
+        do {
+            guard sessionID == approval.sessionID,
+                  api.credentialFingerprint == displayedSnapshot.credentialFingerprint,
+                  approval == (try PhraseReplacementBinding.makeApproval(
+                      snapshot: displayedSnapshot,
+                      candidateKey: approval.candidateKey,
+                      sessionID: sessionID
+                  ))
+            else {
+                return .stale
+            }
+
+            progress?.report(.securing)
+            let fresh = try await PhrasePreflightPlanner(api: api).buildSnapshot(
+                entries: displayedSnapshot.items.map(\.entry),
+                credentialFingerprint: api.credentialFingerprint,
+                control: control
+            )
+            guard try PhraseCreateBinding.snapshotIdentity(fresh) == approval.snapshotIdentity
+            else {
+                return .stale
+            }
+            let plan = try PhraseReplacementBinding.makePlan(
+                snapshot: fresh,
+                selectedRecordID: approval.selectedRecordID,
+                sessionID: sessionID
+            )
+            guard plan.bindingDigest == approval.bindingDigest else { return .stale }
+            return await perform(plan: plan, control: control, progress: progress)
+        } catch CompanionError.cancelled {
+            return PhraseExecutionSummary(
+                succeeded: 0,
+                failed: 0,
+                cancelled: true,
+                stalePreview: false,
+                results: []
+            )
+        } catch {
+            return .stale
+        }
+    }
+
+    private func perform(
+        plan: PhraseReplacementPlan,
+        control: ExecutionControl,
+        progress: ExecutionProgressReporter?
+    ) async -> PhraseExecutionSummary {
+        defer { progress?.report(.finishing(group: .update)) }
+        guard !control.isCancellationRequested else {
+            return PhraseExecutionSummary(
+                succeeded: 0,
+                failed: 0,
+                cancelled: true,
+                stalePreview: false,
+                results: [PhraseItemExecutionResult(
+                    spelling: plan.entry.spelling,
+                    outcome: .notAttempted,
+                    observations: []
+                )]
+            )
+        }
+
+        progress?.report(
+            .writing(
+                group: .update,
+                item: 1,
+                total: 1,
+                spelling: plan.entry.spelling
+            )
+        )
+        do {
+            let body = try PhraseReplacementBinding.requestData(entry: plan.entry)
+            let dispatch = await api.post(
+                route: .updatePhrase(recordID: plan.selectedRecord.id),
+                body: body,
+                control: control
+            )
+            guard dispatch != .notDispatched else {
+                return PhraseExecutionSummary(
+                    succeeded: 0,
+                    failed: 0,
+                    cancelled: control.isCancellationRequested,
+                    stalePreview: false,
+                    results: [PhraseItemExecutionResult(
+                        spelling: plan.entry.spelling,
+                        outcome: .notAttempted,
+                        observations: []
+                    )]
+                )
+            }
+
+            let records: [PhraseRecord]
+            do {
+                records = try await api.phrases(
+                    vocabularyID: plan.vocabularyID,
+                    control: control,
+                    readback: true
+                ).sorted { $0.id < $1.id }
+            } catch {
+                control.finishPostResolution()
+                return notVerified(spelling: plan.entry.spelling, cancelled: false)
+            }
+            control.finishPostResolution()
+
+            guard verifiesReadback(records, for: plan),
+                  let selected = records.first(where: { $0.id == plan.selectedRecord.id })
+            else {
+                return notVerified(spelling: plan.entry.spelling, cancelled: false)
+            }
+            return PhraseExecutionSummary(
+                succeeded: 1,
+                failed: 0,
+                cancelled: control.isCancellationRequested,
+                stalePreview: false,
+                results: [PhraseItemExecutionResult(
+                    spelling: plan.entry.spelling,
+                    outcome: dispatch == .clean ? .confirmed : .recovered,
+                    observations: selected.observations(for: plan.entry)
+                )]
+            )
+        } catch {
+            if control.allowsInFlightReadback() { control.finishPostResolution() }
+            return notVerified(
+                spelling: plan.entry.spelling,
+                cancelled: control.isCancellationRequested
+            )
+        }
+    }
+
+    private func verifiesReadback(
+        _ records: [PhraseRecord],
+        for plan: PhraseReplacementPlan
+    ) -> Bool {
+        guard records.map(\.id) == plan.collectionBaseline.map(\.id),
+              let selected = records.first(where: { $0.id == plan.selectedRecord.id }),
+              selected.hardMatches(plan.entry)
+        else {
+            return false
+        }
+        let sameEnglish = records.filter {
+            $0.isActive && $0.phrase == plan.entry.english
+        }
+        guard sameEnglish.count == 1, sameEnglish[0].id == selected.id else { return false }
+
+        let originalByID = Dictionary(
+            uniqueKeysWithValues: plan.collectionBaseline.map { ($0.id, $0) }
+        )
+        return records.allSatisfy { current in
+            if current.id == selected.id { return true }
+            guard let original = originalByID[current.id] else { return false }
+            return current.hasSameHardBaseline(as: original)
+        }
+    }
+
+    private func notVerified(spelling: String, cancelled: Bool) -> PhraseExecutionSummary {
+        PhraseExecutionSummary(
+            succeeded: 0,
+            failed: 1,
+            cancelled: cancelled,
+            stalePreview: false,
+            results: [PhraseItemExecutionResult(
+                spelling: spelling,
+                outcome: .notVerified,
+                observations: []
+            )]
+        )
+    }
+}
+
 struct PhraseWriteExecutor {
     let api: MaimemoTransport
 
@@ -552,7 +1049,8 @@ struct PhraseWriteExecutor {
         progress: ExecutionProgressReporter? = nil
     ) async -> PhraseExecutionSummary {
         do {
-            guard approval == (try PhraseCreateBinding.makeApproval(snapshot: displayedSnapshot))
+            guard api.credentialFingerprint == displayedSnapshot.credentialFingerprint,
+                  approval == (try PhraseCreateBinding.makeApproval(snapshot: displayedSnapshot))
             else {
                 return .stale
             }
@@ -560,7 +1058,7 @@ struct PhraseWriteExecutor {
             progress?.report(.securing)
             let fresh = try await PhrasePreflightPlanner(api: api).buildSnapshot(
                 entries: displayedSnapshot.items.map(\.entry),
-                credentialFingerprint: displayedSnapshot.credentialFingerprint,
+                credentialFingerprint: api.credentialFingerprint,
                 control: control
             )
             guard try PhraseCreateBinding.snapshotIdentity(fresh) == approval.snapshotIdentity else {
@@ -649,7 +1147,9 @@ struct PhraseWriteExecutor {
                 }
                 control.finishPostResolution()
 
-                let sameEnglish = records.filter { $0.phrase == item.entry.english }
+                let sameEnglish = records.filter {
+                    $0.isActive && $0.phrase == item.entry.english
+                }
                 guard sameEnglish.count == 1, sameEnglish[0].hardMatches(item.entry) else {
                     failed += 1
                     results.append(

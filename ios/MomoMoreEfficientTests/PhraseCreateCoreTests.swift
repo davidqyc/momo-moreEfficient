@@ -10,7 +10,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     SOURCE: 自编
     """
 
-    func testPhraseRoutesAreLockedToReviewedGETAndCREATEPaths() throws {
+    func testPhraseRoutesAreLockedToReviewedGETCREATEAndUPDATEPaths() throws {
         let collection = InterpretationRoute.phrases(vocabularyID: "INVALID_VOC")
         XCTAssertEqual(collection.method, .get)
         XCTAssertEqual(collection.reviewedPath, "/open/api/v1/phrases")
@@ -22,6 +22,13 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(
             try InterpretationRoute.createPhrase.url().absoluteString,
             "https://open.maimemo.com/open/api/v1/phrases"
+        )
+        let update = InterpretationRoute.updatePhrase(recordID: "INVALID_RECORD")
+        XCTAssertEqual(update.method, .post)
+        XCTAssertEqual(update.reviewedPath, "/open/api/v1/phrases/INVALID_RECORD")
+        XCTAssertEqual(
+            try update.url().absoluteString,
+            "https://open.maimemo.com/open/api/v1/phrases/INVALID_RECORD"
         )
     }
 
@@ -156,11 +163,14 @@ final class PhraseCreateCoreTests: XCTestCase {
         )
     }
 
-    func testSameEnglishConflictAndMultipleCandidatesAreBlocked() async throws {
+    func testSameEnglishConflictsRequireExplicitReplacementCandidates() async throws {
         let conflicts = [
             [phraseRecord(chinese: "不同翻译。")],
             [phraseRecord(source: "词典")],
-            [phraseRecord(id: "INVALID_A"), phraseRecord(id: "INVALID_B")],
+            [
+                phraseRecord(id: "INVALID_A", chinese: "不同翻译 A。"),
+                phraseRecord(id: "INVALID_B", chinese: "不同翻译 B。"),
+            ],
         ]
         for records in conflicts {
             let (snapshot, _, _) = try await makePhraseSnapshot(
@@ -170,9 +180,25 @@ final class PhraseCreateCoreTests: XCTestCase {
                     phrasesResponse(records),
                 ]
             )
-            XCTAssertEqual(snapshot.blockedCount, 1)
+            XCTAssertEqual(snapshot.replaceRequiredCount, 1)
+            XCTAssertEqual(snapshot.items[0].replacementCandidates.count, records.count)
             XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: snapshot))
         }
+    }
+
+    func testMultipleExactSameEnglishRecordsAreBlockedAsAmbiguous() async throws {
+        let (snapshot, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse([
+                    phraseRecord(id: "INVALID_A"),
+                    phraseRecord(id: "INVALID_B"),
+                ]),
+            ]
+        )
+        XCTAssertEqual(snapshot.blockedCount, 1)
+        XCTAssertEqual(snapshot.items[0].reason, "AMBIGUOUS_SAME_ENGLISH")
     }
 
     func testReadAndSchemaFailuresBecomeBlocked() async throws {
@@ -191,6 +217,395 @@ final class PhraseCreateCoreTests: XCTestCase {
             )
             XCTAssertEqual(snapshot.items[0].classification, .blocked)
             XCTAssertEqual(snapshot.items[0].reason, "READ_FAILED")
+        }
+    }
+
+    func testCapacityPlanningUsesOnlyActivePublishedRecords() async throws {
+        for count in [0, 1, 4] {
+            let (snapshot, transport, _) = try await makePhraseSnapshot(
+                document: document,
+                results: [
+                    vocabularyResponse("INVALID_VOC", "acquisition"),
+                    phrasesResponse(unrelatedRecords(count)),
+                ]
+            )
+            XCTAssertEqual(snapshot.createCount, 1, "active count \(count)")
+            XCTAssertEqual(snapshot.replaceRequiredCount, 0)
+            XCTAssertEqual(transport.postCount, 0)
+        }
+
+        let five = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(unrelatedRecords(5)),
+            ]
+        ).0
+        XCTAssertEqual(five.replaceRequiredCount, 1)
+        XCTAssertEqual(five.items[0].replacementCandidates.count, 5)
+
+        let six = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(unrelatedRecords(6)),
+            ]
+        ).0
+        XCTAssertEqual(six.blockedCount, 1)
+        XCTAssertEqual(six.items[0].reason, "CAPACITY_EXCEEDED")
+    }
+
+    func testExactMatchRemainsZeroWriteNoOpAboveCapacity() async throws {
+        let records = unrelatedRecords(6) + [phraseRecord(id: "INVALID_EXACT")]
+        let (snapshot, transport, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(records),
+            ]
+        )
+        XCTAssertEqual(snapshot.alreadyMatchingCount, 1)
+        XCTAssertEqual(snapshot.blockedCount, 0)
+        XCTAssertEqual(transport.postCount, 0)
+        XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: snapshot))
+    }
+
+    func testDeletedRecordsDoNotConsumeCapacityConflictOrCandidateSlots() async throws {
+        let deletedSameEnglish = phraseRecord(
+            id: "INVALID_DELETED",
+            chinese: "旧翻译。",
+            status: "DELETED"
+        )
+        let below = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(unrelatedRecords(4) + [deletedSameEnglish]),
+            ]
+        ).0
+        XCTAssertEqual(below.createCount, 1)
+        XCTAssertEqual(below.items[0].activeCount, 4)
+
+        let full = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(unrelatedRecords(5) + [deletedSameEnglish]),
+            ]
+        ).0
+        XCTAssertEqual(full.replaceRequiredCount, 1)
+        XCTAssertEqual(full.items[0].replacementCandidates.count, 5)
+        XCTAssertFalse(full.items[0].replacementCandidates.contains { $0.status == "DELETED" })
+        XCTAssertEqual(full.items[0].collectionBaseline.count, 6)
+    }
+
+    func testUnsupportedPhraseStatusFailsClosed() async throws {
+        let (snapshot, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse([
+                    phraseRecord(
+                        id: "INVALID_UNSUPPORTED",
+                        phrase: "Other sentence.",
+                        chinese: "其他。",
+                        status: "UNPUBLISHED"
+                    ),
+                ]),
+            ]
+        )
+        XCTAssertEqual(snapshot.blockedCount, 1)
+        XCTAssertEqual(snapshot.items[0].reason, "READ_FAILED")
+    }
+
+    func testServerResponseReorderDoesNotCreateFalseStaleAuthority() async throws {
+        let baseline = unrelatedRecords(2)
+        let shown = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(baseline),
+            ]
+        ).0
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"),
+            phrasesResponse(Array(baseline.reversed())),
+            jsonResponse([:], status: 201),
+            phrasesResponse(Array(baseline.reversed()) + [phraseRecord()]),
+        ])
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+        XCTAssertEqual(summary.succeeded, 1)
+        XCTAssertEqual(transport.postCount, 1)
+    }
+
+    func testReplacementSelectionAndBindingAreCanonicalAndSessionBound() async throws {
+        let records = unrelatedRecords(5)
+        let shown = try await replacementSnapshot(records: records)
+        let reordered = try await replacementSnapshot(records: Array(records.reversed()))
+        let session = UUID(uuidString: "00000000-0000-0000-0000-000000000089")!
+        let first = try PhraseReplacementBinding.makeApproval(
+            snapshot: shown,
+            candidateKey: 1,
+            sessionID: session
+        )
+        let reorderedApproval = try PhraseReplacementBinding.makeApproval(
+            snapshot: reordered,
+            candidateKey: 1,
+            sessionID: session
+        )
+        XCTAssertEqual(first, reorderedApproval)
+        XCTAssertNotEqual(
+            first,
+            try PhraseReplacementBinding.makeApproval(
+                snapshot: shown,
+                candidateKey: 2,
+                sessionID: session
+            )
+        )
+        XCTAssertNotEqual(
+            first,
+            try PhraseReplacementBinding.makeApproval(
+                snapshot: shown,
+                candidateKey: 1,
+                sessionID: UUID()
+            )
+        )
+
+        let rendered = String(describing: shown.presentation)
+        XCTAssertFalse(rendered.contains("INVALID_CAPACITY_"))
+        XCTAssertEqual(shown.presentation.rows[0].replacementCandidates.map(\.key), [1, 2, 3, 4, 5])
+    }
+
+    func testReplacementUsesExactDocumentedRouteBodyAndHardReadback() async throws {
+        let baseline = unrelatedRecords(5)
+        let shown = try await replacementSnapshot(records: baseline)
+        var updated = baseline
+        updated[1] = phraseRecord(id: "INVALID_CAPACITY_2")
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"),
+            phrasesResponse(Array(baseline.reversed())),
+            jsonResponse([:]),
+            phrasesResponse(Array(updated.reversed())),
+        ])
+        let summary = try await executeReplacement(
+            snapshot: shown,
+            candidateKey: 2,
+            transport: transport
+        )
+        XCTAssertEqual(summary.succeeded, 1)
+        XCTAssertEqual(summary.results.map(\.outcome), [.confirmed])
+        XCTAssertEqual(
+            transport.requests.map(\.route),
+            [
+                .vocabulary(spelling: "acquisition"),
+                .phrases(vocabularyID: "INVALID_VOC"),
+                .updatePhrase(recordID: "INVALID_CAPACITY_2"),
+                .phrases(vocabularyID: "INVALID_VOC"),
+            ]
+        )
+        XCTAssertEqual(transport.postCount, 1)
+
+        let body = try XCTUnwrap(transport.requests[2].body)
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(Set(root.keys), ["phrase"])
+        let phrase = try XCTUnwrap(root["phrase"] as? [String: Any])
+        XCTAssertEqual(Set(phrase.keys), ["phrase", "interpretation", "tags", "origin"])
+        XCTAssertEqual(phrase["phrase"] as? String, english)
+        XCTAssertEqual(phrase["interpretation"] as? String, chinese)
+        XCTAssertEqual(phrase["origin"] as? String, "自编")
+        XCTAssertEqual(phrase["tags"] as? [String], CompanionConstants.tags)
+        for forbidden in ["voc_id", "id", "status", "highlight", "range", "chinese_range"] {
+            XCTAssertNil(phrase[forbidden], forbidden)
+        }
+    }
+
+    func testReplacementUncertainPOSTRecoversWithGETOnlyAndNeverReplays() async throws {
+        let baseline = unrelatedRecords(5)
+        let shown = try await replacementSnapshot(records: baseline)
+        var updated = baseline
+        updated[0] = phraseRecord(id: "INVALID_CAPACITY_1")
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse(baseline),
+            .failure(.transport), phrasesResponse(updated),
+        ])
+        let summary = try await executeReplacement(
+            snapshot: shown,
+            candidateKey: 1,
+            transport: transport
+        )
+        XCTAssertEqual(summary.results.map(\.outcome), [.recovered])
+        XCTAssertEqual(transport.postCount, 1)
+        XCTAssertEqual(transport.requests.suffix(2).map(\.route.method), [.post, .get])
+    }
+
+    func testReplacementWrongTargetContentSourceStatusOrDuplicateIsNotVerified() async throws {
+        let baseline = unrelatedRecords(5)
+        let cases: [[[String: Any]]] = {
+            var wrongTarget = baseline
+            wrongTarget[1] = phraseRecord(id: "INVALID_CAPACITY_2")
+            var wrongText = baseline
+            wrongText[0] = phraseRecord(id: "INVALID_CAPACITY_1", phrase: "Wrong text.")
+            var wrongSource = baseline
+            wrongSource[0] = phraseRecord(id: "INVALID_CAPACITY_1", source: "错误来源")
+            var wrongStatus = baseline
+            wrongStatus[0] = phraseRecord(id: "INVALID_CAPACITY_1", status: "DELETED")
+            var duplicate = baseline
+            duplicate[0] = phraseRecord(id: "INVALID_CAPACITY_1")
+            duplicate[1] = phraseRecord(id: "INVALID_CAPACITY_2")
+            return [wrongTarget, wrongText, wrongSource, wrongStatus, duplicate]
+        }()
+
+        for readback in cases {
+            let shown = try await replacementSnapshot(records: baseline)
+            let transport = FakeHTTPTransport([
+                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse(baseline),
+                jsonResponse([:]), phrasesResponse(readback),
+            ])
+            let summary = try await executeReplacement(
+                snapshot: shown,
+                candidateKey: 1,
+                transport: transport
+            )
+            XCTAssertEqual(summary.failed, 1)
+            XCTAssertEqual(summary.results.map(\.outcome), [.notVerified])
+            XCTAssertEqual(transport.postCount, 1)
+        }
+    }
+
+    func testReplacementTagAndHighlightDifferencesRemainNonBlockingObservations() async throws {
+        let baseline = unrelatedRecords(5)
+        let shown = try await replacementSnapshot(records: baseline)
+        var updated = baseline
+        updated[0] = phraseRecord(
+            id: "INVALID_CAPACITY_1",
+            tags: ["MBA"],
+            highlight: nil
+        )
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse(baseline),
+            jsonResponse([:]), phrasesResponse(updated),
+        ])
+        let summary = try await executeReplacement(
+            snapshot: shown,
+            candidateKey: 1,
+            transport: transport
+        )
+        XCTAssertEqual(summary.succeeded, 1)
+        XCTAssertEqual(
+            summary.results[0].observations,
+            [.tagsDiffer, .highlightMissing, .chineseRangeUnavailable]
+        )
+    }
+
+    func testReplacementDraftCredentialCandidateBaselineAndCollectionChangesSendZeroPOST() async throws {
+        let baseline = unrelatedRecords(5)
+        let shown = try await replacementSnapshot(records: baseline)
+        let session = UUID(uuidString: "00000000-0000-0000-0000-000000000089")!
+        let approval = try PhraseReplacementBinding.makeApproval(
+            snapshot: shown,
+            candidateKey: 1,
+            sessionID: session
+        )
+
+        let changedDocument = document.replacingOccurrences(of: chinese, with: "改变。")
+        let changedDraft = try await replacementSnapshot(
+            records: baseline,
+            document: changedDocument
+        )
+        XCTAssertNotEqual(
+            approval,
+            try PhraseReplacementBinding.makeApproval(
+                snapshot: changedDraft,
+                candidateKey: 1,
+                sessionID: session
+            )
+        )
+        let changedCredential = try await replacementSnapshot(
+            records: baseline,
+            token: "FAKE_OTHER_TOKEN_NOT_VALID"
+        )
+        XCTAssertNotEqual(
+            approval,
+            try PhraseReplacementBinding.makeApproval(
+                snapshot: changedCredential,
+                candidateKey: 1,
+                sessionID: session
+            )
+        )
+
+        let changedDraftTransport = FakeHTTPTransport([])
+        let changedDraftSummary = try await executeReplacement(
+            snapshot: changedDraft,
+            candidateKey: 1,
+            transport: changedDraftTransport,
+            approval: approval,
+            sessionID: session
+        )
+        XCTAssertTrue(changedDraftSummary.stalePreview)
+        XCTAssertEqual(changedDraftTransport.postCount, 0)
+        XCTAssertTrue(changedDraftTransport.requests.isEmpty)
+
+        let changedCredentialTransport = FakeHTTPTransport([])
+        let changedCredentialSummary = try await executeReplacement(
+            snapshot: shown,
+            candidateKey: 1,
+            transport: changedCredentialTransport,
+            approval: approval,
+            sessionID: session,
+            token: "FAKE_OTHER_TOKEN_NOT_VALID"
+        )
+        XCTAssertTrue(changedCredentialSummary.stalePreview)
+        XCTAssertEqual(changedCredentialTransport.postCount, 0)
+        XCTAssertTrue(changedCredentialTransport.requests.isEmpty)
+
+        let changedSessionTransport = FakeHTTPTransport([])
+        let changedSessionSummary = try await executeReplacement(
+            snapshot: shown,
+            candidateKey: 1,
+            transport: changedSessionTransport,
+            approval: approval,
+            sessionID: UUID()
+        )
+        XCTAssertTrue(changedSessionSummary.stalePreview)
+        XCTAssertEqual(changedSessionTransport.postCount, 0)
+        XCTAssertTrue(changedSessionTransport.requests.isEmpty)
+
+        var changedBaseline = baseline
+        changedBaseline[0] = phraseRecord(
+            id: "INVALID_CAPACITY_1",
+            phrase: "Changed baseline.",
+            chinese: "改变基线。"
+        )
+        let freshChanges = [
+            changedBaseline,
+            baseline + [phraseRecord(
+                id: "INVALID_DELETED_EXTRA",
+                phrase: "Deleted extra.",
+                chinese: "已删除。",
+                status: "DELETED"
+            )],
+            Array(baseline.dropFirst()) + [phraseRecord(
+                id: "INVALID_CAPACITY_CHANGED",
+                phrase: "Changed identity.",
+                chinese: "身份改变。"
+            )],
+        ]
+        for fresh in freshChanges {
+            let transport = FakeHTTPTransport([
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(fresh),
+            ])
+            let summary = try await executeReplacement(
+                snapshot: shown,
+                candidateKey: 1,
+                transport: transport,
+                approval: approval,
+                sessionID: session
+            )
+            XCTAssertTrue(summary.stalePreview)
+            XCTAssertEqual(transport.postCount, 0)
         }
     }
 
@@ -236,7 +651,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             entry: shown.items[0].entry,
             classification: .blocked,
             vocabularyID: "INVALID_VOC",
-            sameEnglishBaseline: [PhraseRecord(
+            collectionBaseline: [PhraseRecord(
                 id: "INVALID_RECORD",
                 phrase: english,
                 interpretation: "changed",
@@ -245,6 +660,7 @@ final class PhraseCreateCoreTests: XCTestCase {
                 status: "PUBLISHED",
                 highlight: .missing
             )],
+            replacementCandidates: [],
             reason: "CONFLICTING_SAME_ENGLISH"
         )
         let changedBaseline = PhrasePreviewSnapshot(
@@ -312,7 +728,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(transport.postCount, 0)
     }
 
-    func testUnrelatedFreshBaselineChangeDoesNotInvalidateCreate() async throws {
+    func testUnrelatedFreshMembershipChangeInvalidatesCreate() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
             vocabularyResponse("INVALID_VOC", "acquisition"),
@@ -327,8 +743,8 @@ final class PhraseCreateCoreTests: XCTestCase {
             phrasesResponse([phraseRecord()]),
         ])
         let summary = try await executePhrase(snapshot: shown, transport: transport)
-        XCTAssertEqual(summary.succeeded, 1)
-        XCTAssertEqual(transport.postCount, 1)
+        XCTAssertTrue(summary.stalePreview)
+        XCTAssertEqual(transport.postCount, 0)
     }
 
     func testUncertainPOSTUsesGETOnlyRecoveryAndNeverRetries() async throws {
@@ -528,14 +944,15 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(transport.requests.suffix(2).map(\.route.method), [.post, .get])
     }
 
-    func testPhraseCoreDefinesNoUpdateDeleteOrReplayRoute() throws {
+    func testPhraseCoreDefinesReviewedUpdateButNoDeleteRollbackOrReplayRoute() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let core = testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("MomoMoreEfficient/Core")
         let sources = try ["HTTPTransport.swift", "PhraseCreateCore.swift"].map {
             try String(contentsOf: core.appendingPathComponent($0), encoding: .utf8)
         }.joined(separator: "\n")
-        for forbidden in ["updatePhrase", "deletePhrase", "replayPhrase", "rollbackPhrase"] {
+        XCTAssertTrue(sources.contains("updatePhrase"))
+        for forbidden in ["deletePhrase", "replayPhrase", "rollbackPhrase"] {
             XCTAssertFalse(sources.contains(forbidden), forbidden)
         }
     }
@@ -670,6 +1087,64 @@ final class PhraseCreateCoreTests: XCTestCase {
         return summary
     }
 
+    private func unrelatedRecords(_ count: Int) -> [[String: Any]] {
+        (0..<count).map { offset in
+            let index = offset + 1
+            return phraseRecord(
+                id: "INVALID_CAPACITY_\(index)",
+                phrase: "Unrelated capacity phrase \(index).",
+                chinese: "无关容量例句 \(index)。",
+                source: "来源 \(index)"
+            )
+        }
+    }
+
+    private func replacementSnapshot(
+        records: [[String: Any]],
+        document: String? = nil,
+        token: String = fakeToken
+    ) async throws -> PhrasePreviewSnapshot {
+        try await makePhraseSnapshot(
+            document: document ?? self.document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(records),
+            ],
+            token: token
+        ).0
+    }
+
+    private func executeReplacement(
+        snapshot: PhrasePreviewSnapshot,
+        candidateKey: Int,
+        transport: FakeHTTPTransport,
+        approval: PhraseReplacementApproval? = nil,
+        sessionID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000089")!,
+        token: String = fakeToken
+    ) async throws -> PhraseExecutionSummary {
+        let lease = try credentialLease(token)
+        let executor = PhraseReplacementExecutor(
+            api: MaimemoTransport(
+                transport: transport,
+                credential: lease,
+                sleeper: RecordingSleeper()
+            )
+        )
+        let effectiveApproval = try approval ?? PhraseReplacementBinding.makeApproval(
+            snapshot: snapshot,
+            candidateKey: candidateKey,
+            sessionID: sessionID
+        )
+        let summary = await executor.execute(
+            displayedSnapshot: snapshot,
+            approval: effectiveApproval,
+            sessionID: sessionID,
+            control: ExecutionControl()
+        )
+        lease.clear()
+        return summary
+    }
+
     private func replacingContext(
         _ snapshot: PhrasePreviewSnapshot,
         tags: [String],
@@ -684,6 +1159,7 @@ final class PhraseCreateCoreTests: XCTestCase {
                 vocabularyPath: snapshot.bindingContext.vocabularyPath,
                 collectionPath: snapshot.bindingContext.collectionPath,
                 createPath: createPath,
+                updatePathTemplate: snapshot.bindingContext.updatePathTemplate,
                 tags: tags,
                 expectedStatus: snapshot.bindingContext.expectedStatus,
                 createBatchDigest: snapshot.bindingContext.createBatchDigest

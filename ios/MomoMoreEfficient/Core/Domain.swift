@@ -6,6 +6,7 @@ enum CompanionConstants {
     static let accountLabel = "主账号"
     static let tags = ["MBA", "BEC", "GMAT"]
     static let status = "PUBLISHED"
+    static let maxActivePhrasesPerVocabulary = 5
     static let maxBatchItems = 30
     static let maxInputBytes = 262_144
     static let maxInterpretationCharacters = 2_000
@@ -354,22 +355,43 @@ struct PendingBatchConfirmation: Equatable, Sendable {
     }
 }
 
-/// The one native destructive confirmation for a phrase CREATE plan. It carries
-/// only Owner-safe presentation data; exact content and write authority remain in
-/// the separately armed `PhraseCreateApproval`.
+/// The one native destructive confirmation for a phrase write. It carries only
+/// Owner-safe presentation data; raw target identity and exact authority remain
+/// in the separately armed approval.
 struct PendingPhraseConfirmation: Equatable, Sendable {
+    let operationGroup: OperationGroup
     let spellings: [String]
     let bindingDigest: String
+    let replacementComparison: PhraseReplacementComparison?
 
     var count: Int { spellings.count }
-    var title: String { "确认新建 \(count) 条例句？" }
-    var actionTitle: String { "确认新建 \(count) 条例句" }
+    var title: String {
+        operationGroup == .create ? "确认新建 \(count) 条例句？" : "确认替换这 1 条例句？"
+    }
+    var actionTitle: String {
+        operationGroup == .create ? "确认新建 \(count) 条例句" : "替换这 1 条例句"
+    }
     var message: String {
-        [
+        var lines = [
             "共 \(count) 条：" + spellings.joined(separator: "、"),
             "授权指纹 \(bindingDigest)",
             "将先执行一次新的完整鉴权预检；只有与当前预览严格一致才会写入。每项最多一次 POST，不重试。",
-        ].joined(separator: "\n")
+        ]
+        if let replacementComparison {
+            lines.insert(
+                "CURRENT：\(replacementComparison.current.english) / "
+                    + "\(replacementComparison.current.chinese) / "
+                    + replacementComparison.current.source,
+                at: 1
+            )
+            lines.insert(
+                "PROPOSED：\(replacementComparison.proposed.english) / "
+                    + "\(replacementComparison.proposed.chinese) / "
+                    + replacementComparison.proposed.source,
+                at: 2
+            )
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
