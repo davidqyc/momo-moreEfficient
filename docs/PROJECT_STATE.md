@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-11
-sourceMainSha=6482f2c74768acdaddf9c5f064529d931ac68afc
+sourceMainSha=acab0613e7ada71d559bca658ab9bf0e8f22d704
 sourceMainShaIsSnapshotOnly=true
 
 ## 1. Authority
@@ -24,10 +24,10 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_MAIN_AT_SNAPSHOT=6482f2c74768acdaddf9c5f064529d931ac68afc
+CURRENT_MAIN_AT_SNAPSHOT=acab0613e7ada71d559bca658ab9bf0e8f22d704
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#2
-CURRENT_UNIQUE_NEXT=PHRASE_CONTRACT_RECHECK_THEN_ISSUE_4
+CURRENT_PRIMARY_ISSUE=#4
+CURRENT_UNIQUE_NEXT=ISSUE_4_IMPLEMENTATION_PLAN_AND_OFFLINE_BUILD
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -43,21 +43,28 @@ ACTIVE_WIP=none
 - #78 / PR #79 已完成进行中 Preview 的 interruption resilience：普通短暂后台可继续/完成；若后台时间到期则干净中断；前台返回不会重复启动 Preview，也不会复活旧 approval；
 - #76 / PR #80 已完成 mixed actionable batch 的最终日常 UX：一次 Preview → 一次 Run → 一次 native confirmation → 内部自动 CREATE 再 UPDATE。Owner 已在实体 iPhone DEBUG rehearsal 验收中确认 CREATE 期间切 App 后仍可继续安全确认并自动 UPDATE，无第二次 Preview/确认；
 - execution-time whole-batch fresh preflight 继续保留，但 UI 只显示 `安全确认中…`；逐项 `n/N` 只用于真实 CREATE/UPDATE 写入进度；
-- phrase/example 路线已由 Owner 于 2026-08-11 明确选为当前产品优先级。来源/origin 是当前必须可靠写入并回读的 phrase-specific 门槛；英文目标高亮、中文翻译字符/语义范围和精确三标签 round-trip 均改为 best-effort，不再作为整条例句线路的阻断项；
-- 既有副账号 phrase CREATE 已真实证明 `origin == 自编` 可随已记录请求写入并经 authenticated GET 回读；当前仍先做一次窄的第一方合同复核，然后进入 #4；
+- phrase/example 路线已由 Owner 于 2026-08-11 明确选为当前产品优先级；来源/origin 是必须可靠写入并回读的 phrase-specific 门槛，英文目标高亮、中文翻译字符/语义范围和精确三标签 round-trip 均为 best-effort，不再阻断产品完成；
+- 既有副账号 phrase CREATE 已真实证明 `origin == 自编` 随 documented request 写入并经 authenticated GET 回读；2026-08-11 当前第一方 Open API 演示仍明确描述例句支持“标签和来源标注”。按 Owner 新门槛，#4 已可施工；
 - 桌面快速查词仍未实现。
 
 ## 3. Current unique next step
 
 ```text
-PHRASE_CONTRACT_RECHECK_THEN_ISSUE_4
+ISSUE_4_IMPLEMENTATION_PLAN_AND_OFFLINE_BUILD
 ```
 
-Owner 已选择先完成例句线路。当前只需对最新第一方 phrase CREATE/UPDATE contract 做一次窄的只读复核：确认 source/origin 仍为受支持的可写字段，并顺带记录 tags、English highlight、Chinese translation range 当前是否有受支持的写入机制；不得探测 undocumented fields。
+#4 现在是当前主线。先按现有工程规则为 phrase/example importer 做最小实现设计和离线/假 transport 验证，复用已经成熟的 Preview、fresh preflight、one-POST-max、no retry、authenticated readback、stale authority 和 iOS interruption safety 语义，不借机重构整个产品。
 
-只要 source/origin 仍受支持，#4 即进入实现，不再因高亮/字符范围或精确标签语义不完美而继续 blocked。高亮/范围能可靠实现就做；不能实现则明确记录限制并继续产品交付。
+例句产品要求：
 
-本状态选择**不授权任何新的真实 phrase POST、Token 使用或主账号写入**。真实写入仍需遵守现有独立授权与安全门槛。
+- source/origin 必须写入并回读一致；
+- tags 在受支持范围内保留，但精确三标签 round-trip / shared discoverability 不阻断；
+- English highlight / target range：有 documented reliable path 就实现，没有则明确显示/记录 limitation；
+- Chinese translation semantic/character range：有 documented reliable path 就实现，没有则接受缺失，不做 undocumented-field probing；
+- Preview 必须让 Owner 看见最终英文句子、中文翻译、来源及将写入的其他受支持字段；
+- 写后必须鉴权回读；结果不确定只 GET-only recovery。
+
+当前**只授权产品实现与离线验证**。本状态不授权任何新的真实 phrase POST、Token 使用或主账号写入；真实写入仍需在实现、独立审阅后单独获得明确 Owner 授权。
 
 ## 4. Other active routes
 
@@ -80,11 +87,11 @@ Issue #72 = OPEN / RESEARCH_CANDIDATE_ONLY
 ### Phrase / example automation
 
 ```text
-Issue #2 = CURRENT_PRIMARY / CONTRACT_RECHECK
-Issue #4 = NEXT_IMPLEMENTATION_ROUTE
+Issue #2 = OPEN / SUPPORTING_EVIDENCE_AND_LIMITATIONS
+Issue #4 = CURRENT_PRIMARY / IMPLEMENTATION
 ```
 
-旧的硬阻断标准已被 Owner 2026-08-11 决策放宽：source/origin 可靠写入+回读是当前必须项；tags、English highlight、Chinese translation range 均为尽力实现但非阻断。不要再按旧 D-005 条件无限延后 #4。
+旧的硬阻断标准已被 Owner 2026-08-11 决策放宽：source/origin 可靠写入+回读是当前必须项；tags、English highlight、Chinese translation range 均为尽力实现但非阻断。#2 不再作为 #4 的产品 gate，只保存 API 能力证据、已知限制和后续可选研究。
 
 ### Desktop quick lookup
 
