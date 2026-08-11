@@ -128,7 +128,7 @@ final class TransportAndPlanningTests: XCTestCase {
             results: [
                 vocabularyResponse("INVALID_VOC", "word"),
                 interpretationsResponse([
-                    interpretation("INVALID_RECORD", "n. 相同", tags: ["BEC", "GMAT", "MBA"]),
+                    interpretation("INVALID_RECORD", "n. 相同", tags: []),
                 ]),
             ]
         )

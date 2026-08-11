@@ -57,16 +57,18 @@ struct PhraseRecord: Equatable, Sendable {
     func hardMatches(_ entry: PhraseBatchEntry) -> Bool {
         phrase == entry.english
             && interpretation == entry.chinese
-            && origin == entry.source
+            && (entry.source.map { origin == $0 } ?? true)
             && status == CompanionConstants.status
     }
 
-    func observations(for entry: PhraseBatchEntry) -> [PhraseObservation] {
+    func observations(for entry: PhraseBatchEntry, tags intendedTags: [String])
+        -> [PhraseObservation]
+    {
         let tagObservation: PhraseObservation
         if let tags {
-            tagObservation = tags.count == CompanionConstants.tags.count
-                && Set(tags).count == CompanionConstants.tags.count
-                && Set(tags) == Set(CompanionConstants.tags)
+            tagObservation = tags.count == intendedTags.count
+                && Set(tags).count == intendedTags.count
+                && Set(tags) == Set(intendedTags)
                 ? .tagsMatchRequested
                 : .tagsDiffer
         } else {
@@ -120,11 +122,11 @@ struct PhrasePreflightItem: Equatable, Sendable {
     let sameEnglishBaseline: [PhraseRecord]
     let reason: String?
 
-    var observations: [PhraseObservation] {
+    func observations(tags: [String]) -> [PhraseObservation] {
         guard classification == .alreadyMatching, sameEnglishBaseline.count == 1 else {
             return []
         }
-        return sameEnglishBaseline[0].observations(for: entry)
+        return sameEnglishBaseline[0].observations(for: entry, tags: tags)
     }
 }
 
@@ -134,7 +136,7 @@ struct PhrasePreviewRow: Equatable, Identifiable, Sendable {
     let classification: PhrasePreviewClassification
     let english: String
     let chinese: String
-    let source: String
+    let source: String?
     let blockedReason: String?
     let observations: [PhraseObservation]
 
@@ -183,7 +185,7 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
                     chinese: item.entry.chinese,
                     source: item.entry.source,
                     blockedReason: Self.safeBlockedReason(item.reason),
-                    observations: item.observations
+                    observations: item.observations(tags: bindingContext.tags)
                 )
             },
             createCount: createCount,
@@ -221,6 +223,7 @@ struct PhraseConfirmationPlan {
     }
 
     let credentialFingerprint: String
+    let tags: [String]
     let items: [Item]
     let batchDigest: String
     let bindingDigest: String
@@ -268,11 +271,15 @@ struct PhrasePreflightPlanner {
 
     func buildSnapshot(
         entries: [PhraseBatchEntry],
+        tags: [String],
         credentialFingerprint: String,
         control: ExecutionControl? = nil,
         onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PhrasePreviewSnapshot {
-        guard !entries.isEmpty, entries.count <= CompanionConstants.maxBatchItems else {
+        guard !entries.isEmpty,
+              entries.count <= CompanionConstants.maxBatchItems,
+              (try? WriteTagPreference.canonicalized(tags)) == tags
+        else {
             throw CompanionError.inputRejected
         }
 
@@ -362,7 +369,10 @@ struct PhrasePreflightPlanner {
             sourceIdentity: try PhraseCreateBinding.sourceIdentity(entries),
             credentialFingerprint: credentialFingerprint,
             accountMode: CompanionConstants.accountMode,
-            bindingContext: try PhraseCreateBinding.makePreviewBindingContext(items: planned),
+            bindingContext: try PhraseCreateBinding.makePreviewBindingContext(
+                items: planned,
+                tags: tags
+            ),
             items: planned
         )
     }
@@ -381,24 +391,30 @@ enum PhraseCreateBinding {
                     "spelling": entry.spelling,
                     "english": entry.english,
                     "chinese": entry.chinese,
-                    "source": entry.source,
+                    "source": optionalJSON(entry.source),
                 ] as [String: Any]
             },
         ])
     }
 
     static func makePreviewBindingContext(
-        items: [PhrasePreflightItem]
+        items: [PhrasePreflightItem],
+        tags: [String]
     ) throws -> PhrasePreviewBindingContext {
+        guard try WriteTagPreference.canonicalized(tags) == tags else {
+            throw CompanionError.inputRejected
+        }
         let createItems = try confirmationItems(items)
         return PhrasePreviewBindingContext(
             host: CompanionConstants.productionBaseURL.absoluteString,
             vocabularyPath: vocabularyPath,
             collectionPath: collectionPath,
             createPath: createPath,
-            tags: CompanionConstants.tags,
+            tags: tags,
             expectedStatus: CompanionConstants.status,
-            createBatchDigest: createItems.isEmpty ? nil : try batchDigest(createItems)
+            createBatchDigest: createItems.isEmpty
+                ? nil
+                : try batchDigest(createItems, tags: tags)
         )
     }
 
@@ -424,7 +440,7 @@ enum PhraseCreateBinding {
                     "spelling": item.entry.spelling,
                     "english": item.entry.english,
                     "chinese": item.entry.chinese,
-                    "source": item.entry.source,
+                    "source": optionalJSON(item.entry.source),
                     "classification": item.classification.rawValue,
                     "vocabulary_id": optionalJSON(item.vocabularyID),
                     "reason": optionalJSON(item.reason),
@@ -450,13 +466,15 @@ enum PhraseCreateBinding {
         }
         let items = try confirmationItems(snapshot.items)
         guard !items.isEmpty else { throw CompanionError.blocked }
-        let digest = try batchDigest(items)
         let context = snapshot.bindingContext
+        guard try WriteTagPreference.canonicalized(context.tags) == context.tags else {
+            throw CompanionError.stalePreview
+        }
+        let digest = try batchDigest(items, tags: context.tags)
         guard context.host == CompanionConstants.productionBaseURL.absoluteString,
               context.vocabularyPath == vocabularyPath,
               context.collectionPath == collectionPath,
               context.createPath == createPath,
-              context.tags == CompanionConstants.tags,
               context.expectedStatus == CompanionConstants.status,
               context.createBatchDigest == digest,
               snapshot.accountMode == CompanionConstants.accountMode
@@ -486,15 +504,16 @@ enum PhraseCreateBinding {
                     "spelling": item.entry.spelling,
                     "english": item.entry.english,
                     "chinese": item.entry.chinese,
-                    "source": item.entry.source,
+                    "source": optionalJSON(item.entry.source),
                     "voc_id_fingerprint": item.vocabularyFingerprint,
                 ] as [String: Any]
             },
-            "request_bodies": items.map(requestBody),
+            "request_bodies": items.map { requestBody($0, tags: context.tags) },
         ]
         let bindingDigest = String(try ConfirmationBinding.digest(binding).prefix(16))
         return PhraseConfirmationPlan(
             credentialFingerprint: snapshot.credentialFingerprint,
+            tags: context.tags,
             items: items,
             batchDigest: digest,
             bindingDigest: bindingDigest,
@@ -510,20 +529,26 @@ enum PhraseCreateBinding {
         )
     }
 
-    static func requestBody(_ item: PhraseConfirmationPlan.Item) -> [String: Any] {
+    static func requestBody(
+        _ item: PhraseConfirmationPlan.Item,
+        tags: [String]
+    ) -> [String: Any] {
         [
             "phrase": [
                 "voc_id": item.vocabularyID,
                 "phrase": item.entry.english,
                 "interpretation": item.entry.chinese,
-                "tags": CompanionConstants.tags,
-                "origin": item.entry.source,
+                "tags": tags,
+                "origin": item.entry.source ?? "",
             ],
         ]
     }
 
-    static func requestData(_ item: PhraseConfirmationPlan.Item) throws -> Data {
-        try ConfirmationBinding.canonicalData(requestBody(item))
+    static func requestData(
+        _ item: PhraseConfirmationPlan.Item,
+        tags: [String]
+    ) throws -> Data {
+        try ConfirmationBinding.canonicalData(requestBody(item, tags: tags))
     }
 
     private static func confirmationItems(
@@ -539,7 +564,10 @@ enum PhraseCreateBinding {
         }
     }
 
-    private static func batchDigest(_ items: [PhraseConfirmationPlan.Item]) throws -> String {
+    private static func batchDigest(
+        _ items: [PhraseConfirmationPlan.Item],
+        tags: [String]
+    ) throws -> String {
         try ConfirmationBinding.digest([
             "operation": "batch-phrase-create",
             "host": CompanionConstants.productionBaseURL.absoluteString,
@@ -547,7 +575,7 @@ enum PhraseCreateBinding {
             "vocabulary_path": vocabularyPath,
             "collection_path": collectionPath,
             "create_path": createPath,
-            "tags": CompanionConstants.tags,
+            "tags": tags,
             "expected_status": CompanionConstants.status,
             "item_count": items.count,
             "items": items.map { item in
@@ -556,7 +584,7 @@ enum PhraseCreateBinding {
                     "spelling": item.entry.spelling,
                     "english": item.entry.english,
                     "chinese": item.entry.chinese,
-                    "source": item.entry.source,
+                    "source": optionalJSON(item.entry.source),
                 ] as [String: Any]
             },
         ])
@@ -585,6 +613,7 @@ struct PhraseWriteExecutor {
             progress?.report(.securing)
             let fresh = try await PhrasePreflightPlanner(api: api).buildSnapshot(
                 entries: displayedSnapshot.items.map(\.entry),
+                tags: displayedSnapshot.bindingContext.tags,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
@@ -640,7 +669,7 @@ struct PhraseWriteExecutor {
             )
 
             do {
-                let body = try PhraseCreateBinding.requestData(item)
+                let body = try PhraseCreateBinding.requestData(item, tags: plan.tags)
                 let dispatch = await api.post(route: .createPhrase, body: body, control: control)
                 guard dispatch != .notDispatched else {
                     results.append(
@@ -695,7 +724,10 @@ struct PhraseWriteExecutor {
                     PhraseItemExecutionResult(
                         spelling: item.entry.spelling,
                         outcome: dispatch == .clean ? .confirmed : .recovered,
-                        observations: sameEnglish[0].observations(for: item.entry)
+                        observations: sameEnglish[0].observations(
+                            for: item.entry,
+                            tags: plan.tags
+                        )
                     )
                 )
             } catch {

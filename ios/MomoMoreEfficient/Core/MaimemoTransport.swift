@@ -128,7 +128,7 @@ final class MaimemoTransport {
                     value["interpretation"],
                     maximumCharacters: CompanionConstants.maxInterpretationCharacters
                   ),
-                  let origin = safeSingleLine(value["origin"], maximumCharacters: 256),
+                  let origin = safeOrigin(value["origin"]),
                   let status = value["status"] as? String,
                   reviewedPhraseStatuses.contains(status)
             else {
@@ -219,6 +219,15 @@ final class MaimemoTransport {
             return nil
         }
         return value
+    }
+
+    /// The documented origin field must always be present and String-typed. An
+    /// exact empty string is the no-source representation from Issue #87; other
+    /// non-empty values retain the existing safe single-line validation.
+    private func safeOrigin(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        if value.isEmpty { return value }
+        return safeSingleLine(value, maximumCharacters: 256)
     }
 
     private func phraseTags(_ record: [String: Any]) throws -> [String]? {

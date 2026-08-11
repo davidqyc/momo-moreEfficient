@@ -39,7 +39,7 @@ final class BindingAndExecutionTests: XCTestCase {
                     reason: nil
                 )
             }
-            let rows = privateItems.map(\.publicRow)
+            let rows = privateItems.map { $0.publicRow(tags: legacyTestTags) }
             let presentation = PreviewPresentation(
                 rows: rows,
                 counts: PreviewCounts(
@@ -55,7 +55,8 @@ final class BindingAndExecutionTests: XCTestCase {
                 credentialFingerprint: fixture.credentialFingerprint,
                 accountMode: CompanionConstants.accountMode,
                 bindingContext: try ConfirmationBinding.makePreviewBindingContext(
-                    items: privateItems
+                    items: privateItems,
+                    tags: legacyTestTags
                 ),
                 items: privateItems,
                 presentation: presentation
@@ -95,6 +96,72 @@ final class BindingAndExecutionTests: XCTestCase {
         XCTAssertEqual(snapshot.bindingContext.tags, ["MBA", "BEC", "GMAT"])
         XCTAssertEqual(snapshot.bindingContext.status, "PUBLISHED")
         XCTAssertEqual(snapshot.bindingContext.createBatchDigest, plan.batchDigest)
+    }
+
+    func testInterpretationCreateBodiesUseEmptyAndSelectedTags() throws {
+        let empty = try syntheticSnapshot(group: .create, tags: [])
+        let emptyPlan = try ConfirmationBinding.makePlan(snapshot: empty, group: .create)
+        let emptyBody = ConfirmationBinding.requestBody(
+            try XCTUnwrap(emptyPlan.items.first),
+            group: .create,
+            tags: emptyPlan.tags
+        )
+        let emptyPayload = try XCTUnwrap(emptyBody["interpretation"] as? [String: Any])
+        XCTAssertEqual(emptyPayload["tags"] as? [String], [])
+
+        let selected = try syntheticSnapshot(group: .create, tags: ["MBA", "BEC"])
+        let selectedPlan = try ConfirmationBinding.makePlan(
+            snapshot: selected,
+            group: .create
+        )
+        let selectedBody = ConfirmationBinding.requestBody(
+            try XCTUnwrap(selectedPlan.items.first),
+            group: .create,
+            tags: selectedPlan.tags
+        )
+        let selectedPayload = try XCTUnwrap(
+            selectedBody["interpretation"] as? [String: Any]
+        )
+        XCTAssertEqual(selectedPayload["tags"] as? [String], ["MBA", "BEC"])
+    }
+
+    func testTagOnlyInterpretationDifferenceIsVisibleAndExecutesApprovedTags() async throws {
+        let document = "word\nn. 保持正文"
+        let old = interpretation("INVALID_RECORD", "n. 保持正文", tags: [])
+        let (shown, _, _) = try await makeSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "word"),
+                interpretationsResponse([old]),
+            ],
+            tags: ["MBA"]
+        )
+        XCTAssertEqual(shown.presentation.counts.update, 1)
+        XCTAssertEqual(shown.presentation.rows[0].current, "n. 保持正文")
+        XCTAssertEqual(shown.presentation.rows[0].proposed, "n. 保持正文")
+        XCTAssertEqual(shown.presentation.rows[0].currentTags, [])
+        XCTAssertEqual(shown.presentation.rows[0].proposedTags, ["MBA"])
+
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old]),
+            jsonResponse([:]),
+            interpretationsResponse([
+                interpretation("INVALID_RECORD", "n. 保持正文", tags: ["MBA"]),
+            ]),
+        ])
+        let (summary, requests) = try await execute(
+            snapshot: shown,
+            group: .update,
+            transport: transport
+        )
+        XCTAssertEqual(summary.succeeded, 1)
+        XCTAssertEqual(transport.postCount, 1)
+        let post = try XCTUnwrap(requests.first(where: { $0.route.method == .post }))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(post.body)) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(object["interpretation"] as? [String: Any])
+        XCTAssertEqual(payload["tags"] as? [String], ["MBA"])
     }
 
     func testExactFreshCreatePlanExecutesOnePOSTAndImmediateReadback() async throws {
@@ -337,7 +404,7 @@ final class BindingAndExecutionTests: XCTestCase {
         })
         let source = sources.values.joined(separator: "\n")
         for forbidden in [
-            "UserDefaults", "UIPasteboard", "os_log", "NSUbiquitousKeyValueStore",
+            "UIPasteboard", "os_log", "NSUbiquitousKeyValueStore",
             "localStorage", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
@@ -349,6 +416,21 @@ final class BindingAndExecutionTests: XCTestCase {
         for (path, contents) in sources where path != "Core/TokenStore.swift" {
             XCTAssertFalse(contents.contains("SecItem"), path)
             XCTAssertFalse(contents.contains("kSecAttr"), path)
+        }
+
+        let defaultsFiles = Set(
+            sources.compactMap { path, contents in
+                contents.contains("UserDefaults") ? path : nil
+            }
+        )
+        XCTAssertEqual(defaultsFiles, Set(["Core/Domain.swift", "UI/CompanionViewModel.swift"]))
+        XCTAssertFalse(try XCTUnwrap(sources["Core/ExecutionHistory.swift"]).contains("selectedTags"))
+        XCTAssertFalse(try XCTUnwrap(sources["Core/TokenStore.swift"]).contains("selectedTags"))
+
+        let contentView = try XCTUnwrap(sources["UI/ContentView.swift"])
+        XCTAssertFalse(contentView.contains("主账号"))
+        for requiredCopy in ["墨墨账号", "录入偏好", "发布", "公开", "未填写"] {
+            XCTAssertTrue(contentView.contains(requiredCopy), requiredCopy)
         }
     }
 
@@ -374,7 +456,10 @@ final class BindingAndExecutionTests: XCTestCase {
         return (summary, transport.requests)
     }
 
-    private func syntheticSnapshot(group: OperationGroup) throws -> PreviewSnapshot {
+    private func syntheticSnapshot(
+        group: OperationGroup,
+        tags: [String] = legacyTestTags
+    ) throws -> PreviewSnapshot {
         let entry = BatchEntry(
             ordinal: 1,
             spelling: "word",
@@ -397,7 +482,7 @@ final class BindingAndExecutionTests: XCTestCase {
             reason: nil
         )
         let presentation = PreviewPresentation(
-            rows: [item.publicRow],
+            rows: [item.publicRow(tags: tags)],
             counts: PreviewCounts(
                 create: group == .create ? 1 : 0,
                 update: group == .update ? 1 : 0,
@@ -409,7 +494,10 @@ final class BindingAndExecutionTests: XCTestCase {
             sourceIdentity: try ConfirmationBinding.sourceIdentity([entry]),
             credentialFingerprint: try InMemoryCredential(token: fakeToken).fingerprint,
             accountMode: CompanionConstants.accountMode,
-            bindingContext: try ConfirmationBinding.makePreviewBindingContext(items: [item]),
+            bindingContext: try ConfirmationBinding.makePreviewBindingContext(
+                items: [item],
+                tags: tags
+            ),
             items: [item],
             presentation: presentation
         )

@@ -1,8 +1,96 @@
+import Foundation
 import XCTest
 @testable import MomoMoreEfficient
 
 @MainActor
 final class CompanionViewModelTests: XCTestCase {
+    func testWriteTagPreferenceDefaultsToEmptyPersistsCanonicalZeroToThreeTags() throws {
+        let (defaults, suite) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let first = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: defaults
+        )
+        XCTAssertEqual(first.selectedTags, [])
+        XCTAssertEqual(first.selectedTagsSummary, "标签：无")
+
+        first.toggleTag("GMAT")
+        first.toggleTag("MBA")
+        first.toggleTag("BEC")
+        XCTAssertEqual(first.selectedTags, ["MBA", "BEC", "GMAT"])
+        XCTAssertEqual(first.selectedTagsSummary, "标签：MBA · BEC · GMAT")
+        XCTAssertFalse(first.canToggleTag("SAT"))
+        first.toggleTag("SAT")
+        XCTAssertEqual(first.selectedTags, ["MBA", "BEC", "GMAT"])
+
+        let reconstructed = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: defaults
+        )
+        XCTAssertEqual(reconstructed.selectedTags, ["MBA", "BEC", "GMAT"])
+
+        reconstructed.toggleTag("BEC")
+        XCTAssertEqual(reconstructed.selectedTags, ["MBA", "GMAT"])
+    }
+
+    func testInvalidSubmittedOrStoredTagPreferencesFailSafely() throws {
+        let (defaults, suite) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertEqual(
+            try WriteTagPreference.save(["GMAT", "MBA", "BEC"], to: defaults),
+            ["MBA", "BEC", "GMAT"]
+        )
+        XCTAssertThrowsError(
+            try WriteTagPreference.save(["MBA", "BEC", "GMAT", "SAT"], to: defaults)
+        )
+        XCTAssertThrowsError(try WriteTagPreference.save(["MBA", "未记录标签"], to: defaults))
+        XCTAssertThrowsError(try WriteTagPreference.save(["MBA", "MBA"], to: defaults))
+        XCTAssertEqual(WriteTagPreference.load(from: defaults), ["MBA", "BEC", "GMAT"])
+
+        defaults.set(["MBA", "BEC", "GMAT", "SAT"], forKey: WriteTagPreference.userDefaultsKey)
+        XCTAssertEqual(WriteTagPreference.load(from: defaults), [])
+        defaults.set(["unsupported"], forKey: WriteTagPreference.userDefaultsKey)
+        XCTAssertEqual(WriteTagPreference.load(from: defaults), [])
+    }
+
+    func testChangingSavedTagsInvalidatesPreviewApprovalAndExecutableAuthority() async {
+        let (defaults, suite) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let historyStore = InMemoryHistoryStore()
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+        ])
+        let model = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: historyStore,
+            transportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() },
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: defaults
+        )
+        var token = fakeToken
+        model.connect(token: &token)
+        model.sourceText = "word\nn. 新建"
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+        XCTAssertNotNil(model.preview)
+        XCTAssertNotNil(model.pendingConfirmation)
+        XCTAssertTrue(model.hasExecutablePreview)
+
+        model.toggleTag("MBA")
+
+        XCTAssertEqual(model.selectedTags, ["MBA"])
+        XCTAssertNil(model.preview)
+        XCTAssertNil(model.pendingConfirmation)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertTrue(model.executionActions.isEmpty)
+        XCTAssertEqual(historyStore.saveCount, 0)
+    }
+
     func testTokenStorePersistsAcrossViewModelReconstruction() {
         let store = FakeTokenStore()
         var draft = fakeToken
@@ -123,7 +211,12 @@ final class CompanionViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.details(for: row),
-            PreviewRowDetails(current: "n. 旧版", proposed: "n. 新版")
+            PreviewRowDetails(
+                current: "n. 旧版",
+                proposed: "n. 新版",
+                currentTags: ["考研"],
+                proposedTags: []
+            )
         )
     }
 
@@ -984,6 +1077,13 @@ final class CompanionViewModelTests: XCTestCase {
         model.connect(token: &draft)
         XCTAssertTrue(draft.isEmpty)
         return model
+    }
+
+    private func isolatedDefaults() -> (UserDefaults, String) {
+        let suite = "MomoMoreEfficientTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return (defaults, suite)
     }
 }
 

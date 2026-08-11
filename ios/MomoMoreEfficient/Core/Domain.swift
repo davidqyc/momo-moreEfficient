@@ -4,7 +4,6 @@ enum CompanionConstants {
     static let productionBaseURL = URL(string: "https://open.maimemo.com")!
     static let accountMode = "main"
     static let accountLabel = "主账号"
-    static let tags = ["MBA", "BEC", "GMAT"]
     static let status = "PUBLISHED"
     static let maxBatchItems = 30
     static let maxInputBytes = 262_144
@@ -12,6 +11,52 @@ enum CompanionConstants {
     static let maxTokenCharacters = 8_192
     static let pacingSeconds = 1.6
     static let writePolicy = "EXACTLY ONE POST PER ITEM / NO RETRY / IMMEDIATE READBACK"
+}
+
+/// The one shared interpretation/phrase write preference from Issue #92.
+///
+/// Tags are non-sensitive local preference data. The canonical catalog is the
+/// documented intersection accepted by both write endpoints; no remote state,
+/// credential state or History record participates in this preference.
+enum WriteTagPreference {
+    static let availableTags = [
+        "小学", "初中", "高中", "四级", "六级", "专升本", "专四", "专八", "考研", "考博",
+        "雅思", "托福", "托业", "新概念", "GRE", "MBA", "BEC", "GMAT", "SAT", "ACT",
+        "法学", "医学",
+    ]
+    static let maximumSelectionCount = 3
+    static let userDefaultsKey = "write-tag-preference-v1"
+
+    static func canonicalized(_ tags: [String]) throws -> [String] {
+        let selected = Set(tags)
+        guard tags.count <= maximumSelectionCount,
+              selected.count == tags.count,
+              selected.isSubset(of: Set(availableTags))
+        else {
+            throw CompanionError.inputRejected
+        }
+        return availableTags.filter(selected.contains)
+    }
+
+    static func load(from defaults: UserDefaults) -> [String] {
+        guard let stored = defaults.array(forKey: userDefaultsKey) as? [String],
+              let canonical = try? canonicalized(stored)
+        else {
+            return []
+        }
+        return canonical
+    }
+
+    @discardableResult
+    static func save(_ tags: [String], to defaults: UserDefaults) throws -> [String] {
+        let canonical = try canonicalized(tags)
+        defaults.set(canonical, forKey: userDefaultsKey)
+        return canonical
+    }
+
+    static func compactLabel(_ tags: [String]) -> String {
+        tags.isEmpty ? "无" : tags.joined(separator: " · ")
+    }
 }
 
 enum ContentMode: String, CaseIterable, Equatable, Sendable {
@@ -48,7 +93,7 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
         case .credentialRejected:
             return "Token 输入无效；未连接。"
         case .notConnected:
-            return "请先连接主账号。"
+            return "请先连接墨墨账号。"
         case .previewRequired:
             return "请先预览当前输入。"
         case .approvalRequired:
@@ -126,6 +171,11 @@ struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
     let classification: PreviewClassification
     let current: String?
     let proposed: String
+    /// Populated only for an UPDATE whose stored tags differ from the intended
+    /// selected tags, so tag-only writes are visible without repeating tags on
+    /// every row.
+    let currentTags: [String]?
+    let proposedTags: [String]?
     let reason: String?
 
     var id: Int { ordinal }
@@ -143,6 +193,8 @@ struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
 struct PreviewRowDetails: Equatable, Sendable {
     let current: String?
     let proposed: String
+    let currentTags: [String]?
+    let proposedTags: [String]?
 }
 
 struct PreviewCounts: Codable, Equatable, Sendable {
@@ -420,10 +472,11 @@ struct InterpretationRecord: Equatable, Sendable {
     let tags: [String]
     let status: String
 
-    func matchesIntendedState(_ proposed: String) -> Bool {
+    func matchesIntendedState(_ proposed: String, tags intendedTags: [String]) -> Bool {
         interpretation == proposed
-            && tags.count == CompanionConstants.tags.count
-            && Set(tags) == Set(CompanionConstants.tags)
+            && tags.count == intendedTags.count
+            && Set(tags).count == intendedTags.count
+            && Set(tags) == Set(intendedTags)
             && status == CompanionConstants.status
     }
 }
@@ -435,13 +488,19 @@ struct PrivatePreflightItem: Equatable, Sendable {
     let baseline: InterpretationRecord?
     let reason: String?
 
-    var publicRow: PreviewRow {
-        PreviewRow(
+    func publicRow(tags intendedTags: [String]) -> PreviewRow {
+        let tagsDiffer = classification == .update
+            && baseline.map {
+                $0.tags.count != intendedTags.count || Set($0.tags) != Set(intendedTags)
+            } == true
+        return PreviewRow(
             ordinal: entry.ordinal,
             spelling: entry.spelling,
             classification: classification,
             current: baseline?.interpretation,
             proposed: entry.interpretation,
+            currentTags: tagsDiffer ? baseline?.tags : nil,
+            proposedTags: tagsDiffer ? intendedTags : nil,
             reason: reason
         )
     }

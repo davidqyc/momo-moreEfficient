@@ -2,6 +2,96 @@ import XCTest
 @testable import MomoMoreEfficient
 
 final class PhraseBatchParserTests: XCTestCase {
+    func testNativeThreeLineRecordHasNoSourceAndPreservesText() throws {
+        let entries = try PhraseBatchParser.parse(
+            "acquisition\nThe  acquisition strengthened our position\n这次收购加强了地位"
+        )
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].spelling, "acquisition")
+        XCTAssertEqual(entries[0].english, "The  acquisition strengthened our position")
+        XCTAssertEqual(entries[0].chinese, "这次收购加强了地位")
+        XCTAssertNil(entries[0].source)
+    }
+
+    func testNativeFourLineRecordPreservesExactSource() throws {
+        let entries = try PhraseBatchParser.parse(
+            "liquidity\nLiquidity matters\n流动性很重要\n课堂笔记 / unit  2"
+        )
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].source, "课堂笔记 / unit  2")
+    }
+
+    func testNativeSourceMayStartWithNonLegacyHashText() throws {
+        let entries = try PhraseBatchParser.parse(
+            "liquidity\nLiquidity matters\n流动性很重要\n#1 classroom note"
+        )
+        XCTAssertEqual(entries[0].source, "#1 classroom note")
+    }
+
+    func testNativeBatchMixesThreeAndFourLineRecordsAcrossArbitraryBlankLines() throws {
+        let document = """
+
+        acquisition
+
+        The acquisition strengthened our position
+
+        这次收购加强了地位
+
+
+        liquidity
+        Liquidity matters
+
+        流动性很重要
+        WSJ
+
+        """
+        let entries = try PhraseBatchParser.parse(document)
+        XCTAssertEqual(entries.map(\.spelling), ["acquisition", "liquidity"])
+        XCTAssertEqual(entries.map(\.source), [nil, "WSJ"])
+    }
+
+    func testSegmentationEngineAcceptsOneCompleteSolutionAndRejectsAmbiguity() throws {
+        let unique = try PhraseBatchParser.uniqueSegmentation(lineCount: 7) { range in
+            range == 0..<3 || range == 3..<7
+        }
+        XCTAssertEqual(unique, [0..<3, 3..<7])
+
+        XCTAssertThrowsError(
+            try PhraseBatchParser.uniqueSegmentation(lineCount: 12) { _ in true }
+        ) {
+            XCTAssertEqual($0 as? CompanionError, .inputRejected)
+        }
+    }
+
+    func testMalformedIncompleteAndMixedGrammarNativeInputFailsClosed() {
+        assertRejected("word\nEnglish only")
+        assertRejected("中文词\nAn English sentence\n中文翻译")
+        assertRejected("word\n英文和 English 混合\n中文翻译")
+        assertRejected("word\n12345\n中文翻译")
+        assertRejected("word\nAn English sentence\nChinese translation")
+        assertRejected("word\nAn English sentence\n中文翻译\n" + String(repeating: "s", count: 257))
+        assertRejected("""
+        ## word
+        EN: sentence
+        ZH: 翻译
+        SOURCE: 自编
+        another
+        Another sentence
+        另一条翻译
+        """)
+    }
+
+    func testNativeDuplicateSpellingUsesExistingNormalizationRule() {
+        assertRejected("""
+        Word
+        First sentence
+        第一条翻译
+        word
+        Second sentence
+        第二条翻译
+        """)
+    }
+
     func testValidMultiEntryBatchPreservesExactValues() throws {
         let document = """
         ## acquisition

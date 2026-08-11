@@ -125,16 +125,22 @@ struct RehearsalSleeper: RequestSleeper {
 /// An in-process stand-in for the Maimemo API. It performs no networking of any
 /// kind — it only builds JSON that the production parsers accept.
 final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
+    private struct StoredInterpretation {
+        let text: String
+        let tags: [String]
+    }
+
     private struct StoredPhrase {
         let id: String
         let english: String
         let chinese: String
         let source: String
+        let tags: [String]
     }
 
     private let lock = NSLock()
     private var vocabularyIDs: [String: String] = [:]
-    private var stored: [String: String] = [:]
+    private var stored: [String: StoredInterpretation] = [:]
     private var storedPhrases: [String: [StoredPhrase]] = [:]
     private var nextVocabularyNumber = 1
     private var nextPhraseNumber = 1
@@ -165,21 +171,23 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         case .createInterpretation:
             let payload = try interpretationPayload(request.body)
             guard let vocabularyID = payload["voc_id"] as? String,
-                  let text = payload["interpretation"] as? String
+                  let text = payload["interpretation"] as? String,
+                  let tags = payload["tags"] as? [String]
             else {
                 return TransportResponse(status: 400, body: Data("{}".utf8))
             }
-            store(text, for: vocabularyID)
+            store(text, tags: tags, for: vocabularyID)
             return try json([:], status: 201)
 
         case let .updateInterpretation(recordID):
             let payload = try interpretationPayload(request.body)
             guard let text = payload["interpretation"] as? String,
+                  let tags = payload["tags"] as? [String],
                   let vocabularyID = vocabularyID(forRecord: recordID)
             else {
                 return TransportResponse(status: 400, body: Data("{}".utf8))
             }
-            store(text, for: vocabularyID)
+            store(text, tags: tags, for: vocabularyID)
             return try json([:])
 
         case let .phrases(vocabularyID):
@@ -190,7 +198,8 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
             guard let vocabularyID = payload["voc_id"] as? String,
                   let english = payload["phrase"] as? String,
                   let chinese = payload["interpretation"] as? String,
-                  let source = payload["origin"] as? String
+                  let source = payload["origin"] as? String,
+                  let tags = payload["tags"] as? [String]
             else {
                 return TransportResponse(status: 400, body: Data("{}".utf8))
             }
@@ -198,6 +207,7 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
                 english: english,
                 chinese: chinese,
                 source: source,
+                tags: tags,
                 for: vocabularyID
             )
             return try json([:], status: 201)
@@ -213,7 +223,10 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         nextVocabularyNumber += 1
         vocabularyIDs[normalized] = identifier
         if RehearsalMode.seededExistingSpellings.contains(normalized) {
-            stored[identifier] = "n. 演练用旧释义"
+            stored[identifier] = StoredInterpretation(
+                text: "n. 演练用旧释义",
+                tags: ["考研"]
+            )
         }
         return identifier
     }
@@ -227,21 +240,21 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
     private func records(for vocabularyID: String) -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        guard let text = stored[vocabularyID] else { return [] }
+        guard let stored = stored[vocabularyID] else { return [] }
         let number = vocabularyID.dropFirst("REHEARSAL_VOC_".count)
         return [
             [
                 "id": "REHEARSAL_REC_\(number)",
-                "interpretation": text,
-                "tags": CompanionConstants.tags,
+                "interpretation": stored.text,
+                "tags": stored.tags,
                 "status": CompanionConstants.status,
             ],
         ]
     }
 
-    private func store(_ text: String, for vocabularyID: String) {
+    private func store(_ text: String, tags: [String], for vocabularyID: String) {
         lock.lock()
-        stored[vocabularyID] = text
+        stored[vocabularyID] = StoredInterpretation(text: text, tags: tags)
         lock.unlock()
     }
 
@@ -253,7 +266,7 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
                 "id": phrase.id,
                 "phrase": phrase.english,
                 "interpretation": phrase.chinese,
-                "tags": CompanionConstants.tags,
+                "tags": phrase.tags,
                 "origin": phrase.source,
                 "status": CompanionConstants.status,
                 // A deterministic, structurally reviewed non-blocking observation.
@@ -266,6 +279,7 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         english: String,
         chinese: String,
         source: String,
+        tags: [String],
         for vocabularyID: String
     ) {
         lock.lock()
@@ -273,7 +287,8 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
             id: "REHEARSAL_PHRASE_\(nextPhraseNumber)",
             english: english,
             chinese: chinese,
-            source: source
+            source: source,
+            tags: tags
         )
         nextPhraseNumber += 1
         storedPhrases[vocabularyID, default: []].append(phrase)
