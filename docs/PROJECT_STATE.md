@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-12
-sourceMainSha=f61adf88a68af7a2c2e9f626dc460cb102314bf0
+sourceMainSha=0541c239acfa6d2585f3fc8eaeed9a00646c718b
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#89
-CURRENT_UNIQUE_NEXT=REDUCED_CAPACITY_GUARD_AND_DELETED_FIX
+CURRENT_PRIMARY_ISSUE=#87
+CURRENT_UNIQUE_NEXT=NATIVE_FOUR_LINE_PHRASE_INPUT_PLUS_NEUTRAL_ACCOUNT_WORDING
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -25,54 +25,53 @@ ACTIVE_WIP=none
 - phrase CREATE core + iPhone UI are merged and production-validated;
 - first real main-account phrase CREATE canary passed exact English/Chinese/source/`PUBLISHED` hard readback; current run also round-tripped `MBA/BEC/GMAT`;
 - Maimemo App visually highlighted the English target although Open API readback did not return highlight; Chinese semantic range remains manual/unavailable through documented writable API;
+- #89 / PR #91 merged as `0541c239acfa6d2585f3fc8eaeed9a00646c718b`: only `PUBLISHED` phrases count active, `DELETED` tombstones do not consume capacity or block re-creation, 5 active phrases block another CREATE with a manual fallback, and >5 fails closed;
 - current merged safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery.
 
-## Architecture reset — 2026-08-12
+## Lightweight architecture reset
 
-Owner accepted a fresh Fable 5 architecture/governance audit and Coordinator adjudication:
+Owner accepted the 2026-08-12 fresh Fable 5 audit and Coordinator adjudication:
 
-- current merged app = keep mostly as-is; no broad refactor;
-- engineering/governance had begun to drift overweight;
+- current merged app stays mostly as-is; no broad refactor;
 - low-frequency edge cases with cheap manual fallback default to guard/defer, not complete automation;
 - scope subtraction is preferred over generic abstraction;
 - review/rehearsal/evidence strength must match realistic risk;
 - real use should interrupt feature accumulation when it is more informative than the next hypothetical feature.
 
-`AGENTS.md`, `docs/CODEX_REASONING_DEPTH_POLICY.md`, `docs/AGENT_SKILLS_CONNECTOR.md`, and `davidqyc/agent-skills` carry the durable routing rules. Do not duplicate them here.
+Durable routing lives in `AGENTS.md`, `docs/CODEX_REASONING_DEPTH_POLICY.md`, `docs/AGENT_SKILLS_CONNECTOR.md`, and `davidqyc/agent-skills`; do not duplicate those rules here.
 
-## Current primary — #89
+## Current primary — #87
 
-#89 is reduced to **phrase CREATE capacity guard + DELETED tombstone handling**.
-
-Required behavior:
+Accept the Owner's native phrase paste format directly:
 
 ```text
-exact active hard match -> ALREADY_MATCHING / 0 POST
-0-4 active, no active same-English conflict -> current CREATE
-5 active -> BLOCKED / 0 POST / tell user to edit or delete one old phrase in Maimemo and Preview again
->5 active -> BLOCKED / server-rule mismatch
-DELETED -> not active, not capacity, not same-English CREATE conflict
+spelling
+English sentence
+Chinese translation
+source/origin
 ```
 
-Closed PR #90 (`b65e21e...`) is intentionally **unmerged** and preserved only as a shelf. Automatic phrase replacement/UPDATE is deferred until real usage proves it is worth reviving.
+Keep the existing strict labeled grammar for backward compatibility, but the Owner must not have to add `##`, `EN:`, `ZH:` or `SOURCE:` for ordinary use.
 
-#89 is a block-only guard + existing CREATE correctness fix. It does **not** require fresh independent review, replacement rehearsal, or any real phrase UPDATE.
+In the same small UI-touching round, complete the minimum #88 correction:
 
-## Next after #89
+```text
+主账号 -> 墨墨账号
+```
 
-1. #87 — accept Owner-native four-line phrase paste format;
-2. implement the minimal #88 correction in the same UI-touching round: change static `主账号` wording to neutral `墨墨账号`; optional local labels / nickname/OAuth are deferred;
-3. then pause feature work and use the app for several real batches. Re-open engineering from repeated real friction, a safety incident, or an explicit decision to start external distribution.
+Do not build nickname/profile fetching, local account labels, OAuth/OIDC, account switching, or identity frameworks in this round.
+
+After #87 + the neutral account wording reach the Owner's iPhone, pause feature work and use the app for real batches. Re-open engineering from repeated real friction, a safety incident, or an explicit external-distribution decision.
 
 ## Deferred routes
 
 ```text
+phrase automatic replacement / phrase UPDATE = DEFER; closed PR #90 remains shelf only
 #71 public distribution = DEFER until Owner still wants external users after real-use pause
 #72 OAuth/OIDC = DEFER until real external onboarding friction exists
 #5 desktop quick lookup = DROP UNLESS REQUESTED
 #7 open-source evidence = passive ledger only
-#88 local account labels / verified nickname = DEFER; neutral wording only is current minimum
-phrase automatic replacement = DEFER; closed #90 branch is shelf only
+#88 local labels / verified nickname = DEFER; neutral wording only is current minimum
 ```
 
 ## Safety boundaries still current
@@ -88,4 +87,4 @@ phrase automatic replacement = DEFER; closed #90 branch is shelf only
 
 ## Maintenance rule
 
-Keep this file to current state, one next step, and live boundaries only. Update it at real merged milestones, preferably inside the same product PR; do not create standalone `docs: advance...` chronology commits between micro-steps.
+Keep this file to current state, one next step, and live boundaries only. Update it at real merged milestones, preferably inside the same product PR; do not create standalone chronology commits between micro-steps.
