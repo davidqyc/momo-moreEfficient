@@ -28,6 +28,7 @@ final class ExecutionHistoryTests: XCTestCase {
         XCTAssertEqual(receipt.failed, 0)
         XCTAssertEqual(receipt.notAttempted, 0)
         XCTAssertFalse(receipt.stopped)
+        XCTAssertEqual(receipt.contentKind, .interpretation)
     }
 
     func testPartialReceiptCountsFailureAndFillsMissingTailAsNotAttempted() {
@@ -107,7 +108,7 @@ final class ExecutionHistoryTests: XCTestCase {
             "batch_digest",
             "requestBody",
             "request_body",
-            "interpretation",
+            "interpretationBody",
             "/open/api/",
             "Authorization",
         ] {
@@ -115,6 +116,73 @@ final class ExecutionHistoryTests: XCTestCase {
         }
         XCTAssertTrue(encoded.contains("safe-word"))
         XCTAssertTrue(encoded.contains("\"version\":1"))
+    }
+
+    func testLegacyHistoryV1WithoutContentKindDefaultsToInterpretation() throws {
+        let json = """
+        {
+          "version": 1,
+          "receipts": [{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "timestamp": "2026-08-10T00:00:00Z",
+            "operationGroup": "create",
+            "succeeded": 1,
+            "failed": 0,
+            "notAttempted": 0,
+            "stopped": false,
+            "items": [{"spelling":"legacy","finalOutcome":"confirmed"}]
+          }]
+        }
+        """
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent(
+            "com.davidqyc.momoMoreEfficient",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(json.utf8).write(to: directory.appendingPathComponent("history-v1.json"))
+
+        let receipts = try FileHistoryStore(applicationSupportDirectory: root).loadReceipts()
+
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertEqual(receipts[0].contentKind, .interpretation)
+        XCTAssertEqual(receipts[0].items.map(\.spelling), ["legacy"])
+    }
+
+    func testPhraseReceiptEncodingContainsOnlyAllowedReceiptFields() throws {
+        let summary = PhraseExecutionSummary(
+            succeeded: 1,
+            failed: 0,
+            cancelled: false,
+            stalePreview: false,
+            results: [
+                PhraseItemExecutionResult(
+                    spelling: "acquisition",
+                    outcome: .confirmed,
+                    observations: [.tagsDiffer, .highlightMissing, .chineseRangeUnavailable]
+                ),
+            ]
+        )
+        let receipt = ExecutionReceipt(
+            selectedSpellings: ["acquisition"],
+            result: summary
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(receipt)
+        let text = String(decoding: encoded, as: UTF8.self)
+
+        XCTAssertEqual(receipt.contentKind, .phrase)
+        XCTAssertTrue(text.contains("\"contentKind\":\"phrase\""))
+        for forbidden in [
+            "The acquisition", "这次收购", "自编", "tags", "highlight",
+            "record", "binding", "request", "response", "INVALID_",
+        ] {
+            XCTAssertFalse(text.localizedCaseInsensitiveContains(forbidden), forbidden)
+        }
     }
 
     func testFileStoreClearDeletesOnlyHistoryArchive() throws {

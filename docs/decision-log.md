@@ -188,3 +188,14 @@ iOS production Keychain 项固定使用 `kSecClassGenericPassword`、项目自�
 Issue #69 将活动草稿与已完成执行结果分离。每次非 stale 的已授权 CREATE/UPDATE 执行生成一条不可变回执，使用 Foundation Codable 原子写入应用自己的 Application Support 版本化文件，并尽力排除 iCloud 备份；不使用 `UserDefaults`、数据库、后端或云同步。
 
 回执只保存时间、操作组、汇总计数、停止状态、拼写和最终结果。Token、Authorization、凭证指纹、词汇/记录 ID、binding/batch digest、请求体、原始响应/API 路径和释义正文均不得进入 History。History 保存失败只作为本地辅助记录错误展示，不得改变已经完成的墨墨写入/回读结果、不得重试 POST。清空 History 只删除本地回执，不影响 Token、草稿或墨墨数据。
+
+## D-018：例句完成门槛以 documented origin 与安全回读为硬门禁
+
+**日期：** 2026-08-11
+**状态：** 有效；显式取代 D-005 的阻断级别，D-005 仅保留为历史上下文
+
+Owner 在 Issue #4 / #84 中重新确认例句产品门槛。例句 CREATE 必须通过 documented `origin` 写入与鉴权回读；英文原文、中文翻译、`PUBLISHED`、安全记录身份和唯一 same-English readback 仍是硬门禁。任一硬门禁失败都不得判为成功。
+
+`MBA` / `BEC` / `GMAT` 标签和英文 highlight 在返回结构合法时属于尽力实现、闭集呈现的非阻断观察；缺失或与请求不同不得把已经通过硬门禁的写入改判失败。中文 translation range 在 documented API 没有可写字段时允许显示为 unavailable，同样不阻断完成。不得探测或写入 undocumented fields，也不得暗示未实际提供的语义位置能力。
+
+例句能力保持 CREATE-only；UPDATE、DELETE、自动 replay/rollback 只有新的 Issue 和 Owner 明确授权后才可增加。本条只取代 D-005 的旧 blocker levels，不改写其历史文字，也不放宽既有 Preview、fresh preflight、one-POST-max、no POST retry、immediate authenticated readback、uncertain POST 的 GET-only recovery 与 stale-authority 边界。

@@ -1,6 +1,6 @@
 # iOS companion（Issue #66，未发布）
 
-这是第一版原生 iOS 释义录入 companion。它使用 Swift、SwiftUI、Foundation、CryptoKit 和 XCTest，不含第三方依赖。
+这是原生 iOS 日常录入 companion。一个应用内提供独立的“释义 / 例句”进程内草稿；释义保持默认，例句只开放经审阅的 CREATE 路径。它使用 Swift、SwiftUI、Foundation、CryptoKit 和 XCTest，不含第三方依赖。
 
 安全边界：
 
@@ -11,9 +11,24 @@
 - Production transport 只使用 `URLSessionConfiguration.ephemeral`，host 固定为 `https://open.maimemo.com`。
 - Preview 只有 GET；CREATE 与 UPDATE 分开确认，执行前完整 fresh-preflight，严格比较不可变预览快照。
 - 每个变更项最多一次 POST、无 POST 重试、立即鉴权 GET 回读；不提供 DELETE 或后台写入。
-- Issue #82 新增了尚未接入 UI 的 phrase/example CREATE-only core：只开放 reviewed phrase collection GET 与 CREATE POST route，不开放 phrase UPDATE/DELETE；`origin` 是 hard readback gate，tags/highlight 是结构安全的非阻断观察。
+- phrase/example 只开放 reviewed phrase collection GET 与 CREATE POST route，不开放 phrase UPDATE/DELETE；`origin`、英文、中文、`PUBLISHED` 与唯一 same-English readback 是 hard gate，tags/highlight 是结构安全的非阻断观察。
 
-Issue #82 的 phrase core 实现与测试全程使用 fake transport，未读取真实 Token、未发送真实墨墨请求；独立评审和后续 UI integration 之前不得执行真实 phrase POST。
+Issue #84 的 UI integration 与测试全程使用 fake/rehearsal transport，未读取真实 Token、未发送真实墨墨请求；独立评审与 Owner 实体 iPhone DEBUG rehearsal 通过前不得执行真实 phrase POST。
+
+## 实体 iPhone DEBUG 演练（零网络）
+
+在 Xcode 的 Scheme → Run → Arguments 中加入 `-MomoRehearsalMode`，再把 DEBUG app 运行到 iPhone。顶部必须显示紫色“演练模式”横幅；看不到横幅就立即停止，不要继续。
+
+切到“例句”，粘贴以下合成数据：
+
+```markdown
+## acquisition
+EN: The acquisition strengthened the company's position in the market.
+ZH: 这次收购加强了公司在市场中的地位。
+SOURCE: 自编
+```
+
+依次确认 `预览 → 新建 1 条例句 → 原生确认 → 安全确认中… → 正在新建 1/1 → 正在收尾…`。完成后应只清空例句草稿，History 显示“例句 · 新建”，释义草稿不变。演练 transport、placeholder credential 和 History 全在进程内；不读取 production Keychain/History，不创建 `URLSession` 网络请求。
 
 ## 本地构建与测试
 

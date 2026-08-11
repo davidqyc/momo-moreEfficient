@@ -125,10 +125,19 @@ struct RehearsalSleeper: RequestSleeper {
 /// An in-process stand-in for the Maimemo API. It performs no networking of any
 /// kind — it only builds JSON that the production parsers accept.
 final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
+    private struct StoredPhrase {
+        let id: String
+        let english: String
+        let chinese: String
+        let source: String
+    }
+
     private let lock = NSLock()
     private var vocabularyIDs: [String: String] = [:]
     private var stored: [String: String] = [:]
+    private var storedPhrases: [String: [StoredPhrase]] = [:]
     private var nextVocabularyNumber = 1
+    private var nextPhraseNumber = 1
     private let perRequestDelaySeconds: Double
 
     init(perRequestDelaySeconds: Double = RehearsalMode.perRequestDelaySeconds) {
@@ -173,10 +182,25 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
             store(text, for: vocabularyID)
             return try json([:])
 
-        // Issue #82 adds an offline-reviewed phrase core, not phrase support to
-        // the existing interpretation UI rehearsal path.
-        case .phrases, .createPhrase:
-            throw CompanionError.responseRejected
+        case let .phrases(vocabularyID):
+            return try json(["phrases": phraseRecords(for: vocabularyID)])
+
+        case .createPhrase:
+            let payload = try phrasePayload(request.body)
+            guard let vocabularyID = payload["voc_id"] as? String,
+                  let english = payload["phrase"] as? String,
+                  let chinese = payload["interpretation"] as? String,
+                  let source = payload["origin"] as? String
+            else {
+                return TransportResponse(status: 400, body: Data("{}".utf8))
+            }
+            storePhrase(
+                english: english,
+                chinese: chinese,
+                source: source,
+                for: vocabularyID
+            )
+            return try json([:], status: 201)
         }
     }
 
@@ -221,10 +245,55 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         lock.unlock()
     }
 
+    private func phraseRecords(for vocabularyID: String) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return (storedPhrases[vocabularyID] ?? []).map { phrase in
+            [
+                "id": phrase.id,
+                "phrase": phrase.english,
+                "interpretation": phrase.chinese,
+                "tags": CompanionConstants.tags,
+                "origin": phrase.source,
+                "status": CompanionConstants.status,
+                // A deterministic, structurally reviewed non-blocking observation.
+                "highlight": [],
+            ]
+        }
+    }
+
+    private func storePhrase(
+        english: String,
+        chinese: String,
+        source: String,
+        for vocabularyID: String
+    ) {
+        lock.lock()
+        let phrase = StoredPhrase(
+            id: "REHEARSAL_PHRASE_\(nextPhraseNumber)",
+            english: english,
+            chinese: chinese,
+            source: source
+        )
+        nextPhraseNumber += 1
+        storedPhrases[vocabularyID, default: []].append(phrase)
+        lock.unlock()
+    }
+
     private func interpretationPayload(_ body: Data?) throws -> [String: Any] {
         guard let body,
               let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
               let payload = object["interpretation"] as? [String: Any]
+        else {
+            throw CompanionError.responseRejected
+        }
+        return payload
+    }
+
+    private func phrasePayload(_ body: Data?) throws -> [String: Any] {
+        guard let body,
+              let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let payload = object["phrase"] as? [String: Any]
         else {
             throw CompanionError.responseRejected
         }
