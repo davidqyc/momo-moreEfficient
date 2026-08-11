@@ -10,9 +10,10 @@
 - “更换 Token”会替换 Keychain 项并使既有预览/确认失效；“移除 Token”会删除 Keychain 项和瞬态凭证状态。
 - Production transport 只使用 `URLSessionConfiguration.ephemeral`，host 固定为 `https://open.maimemo.com`。
 - Preview 只有 GET；CREATE 与 UPDATE 分开确认，执行前完整 fresh-preflight，严格比较不可变预览快照。
-- 每个变更项最多一次 POST、无 POST 重试、立即鉴权 GET 回读；不提供 DELETE、phrase 路由或后台写入。
+- 每个变更项最多一次 POST、无 POST 重试、立即鉴权 GET 回读；不提供 DELETE 或后台写入。
+- Issue #82 新增了尚未接入 UI 的 phrase/example CREATE-only core：只开放 reviewed phrase collection GET 与 CREATE POST route，不开放 phrase UPDATE/DELETE；`origin` 是 hard readback gate，tags/highlight 是结构安全的非阻断观察。
 
-本 Issue 的实现与测试必须全程离线。不要在独立评审通过前输入真实 Token 或运行真实请求。
+Issue #82 的 phrase core 实现与测试全程使用 fake transport，未读取真实 Token、未发送真实墨墨请求；独立评审和后续 UI integration 之前不得执行真实 phrase POST。
 
 ## 本地构建与测试
 

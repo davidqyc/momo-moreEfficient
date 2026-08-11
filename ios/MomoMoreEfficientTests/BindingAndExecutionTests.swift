@@ -338,7 +338,7 @@ final class BindingAndExecutionTests: XCTestCase {
         let source = sources.values.joined(separator: "\n")
         for forbidden in [
             "UserDefaults", "UIPasteboard", "os_log", "NSUbiquitousKeyValueStore",
-            "localStorage", "/open/api/v1/phrases", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
+            "localStorage", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
         }
