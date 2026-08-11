@@ -130,7 +130,7 @@ final class MaimemoTransport {
                   ),
                   let origin = safeSingleLine(value["origin"], maximumCharacters: 256),
                   let status = value["status"] as? String,
-                  documentedStatuses.contains(status)
+                  reviewedPhraseStatuses.contains(status)
             else {
                 throw CompanionError.responseRejected
             }
@@ -301,6 +301,7 @@ final class MaimemoTransport {
     }
 
     private let documentedStatuses = ["PUBLISHED", "UNPUBLISHED", "DELETED"]
+    private let reviewedPhraseStatuses = ["PUBLISHED", "DELETED"]
     private let documentedTags = [
         "简明", "详细", "英英", "小学", "初中", "高中", "四级", "六级", "专升本",
         "专四", "专八", "考研", "考博", "雅思", "托福", "托业", "新概念", "法学",

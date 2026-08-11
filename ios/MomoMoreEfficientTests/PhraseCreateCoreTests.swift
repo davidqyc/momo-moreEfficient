@@ -140,6 +140,119 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertTrue(transport.requests.allSatisfy { $0.route.method == .get })
     }
 
+    func testZeroThroughFourActivePhrasesAllowCreate() async throws {
+        for activeCount in 0...4 {
+            let records = (0..<activeCount).map { index in
+                phraseRecord(
+                    id: "INVALID_ACTIVE_\(index)",
+                    phrase: "Unrelated active phrase \(index).",
+                    chinese: "无关例句 \(index)。"
+                )
+            }
+            let (snapshot, transport, _) = try await makePhraseSnapshot(
+                document: document,
+                results: [
+                    vocabularyResponse("INVALID_VOC", "acquisition"),
+                    phrasesResponse(records),
+                ]
+            )
+
+            XCTAssertEqual(snapshot.createCount, 1, "active count \(activeCount)")
+            XCTAssertEqual(snapshot.blockedCount, 0, "active count \(activeCount)")
+            XCTAssertEqual(transport.postCount, 0)
+        }
+    }
+
+    func testFiveActivePhrasesBlockCreateWithCompactCapacityReason() async throws {
+        let records = (0..<5).map { index in
+            phraseRecord(
+                id: "INVALID_ACTIVE_\(index)",
+                phrase: "Unrelated active phrase \(index).",
+                chinese: "无关例句 \(index)。"
+            )
+        }
+        let (snapshot, transport, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(records),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.blockedCount, 1)
+        XCTAssertEqual(snapshot.items[0].reason, "ACTIVE_CAPACITY_REACHED")
+        XCTAssertEqual(
+            snapshot.presentation.rows[0].blockedReason,
+            "已达到当前安全上限 5 条，请先在墨墨中编辑或删除一条旧例句后重新预览"
+        )
+        XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: snapshot))
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testMoreThanFiveActivePhrasesFailClosedBeforeCreate() async throws {
+        let records = (0..<6).map { index in
+            phraseRecord(
+                id: "INVALID_ACTIVE_\(index)",
+                phrase: "Unrelated active phrase \(index).",
+                chinese: "无关例句 \(index)。"
+            )
+        }
+        let (snapshot, transport, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(records),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.blockedCount, 1)
+        XCTAssertEqual(snapshot.items[0].reason, "ACTIVE_CAPACITY_EXCEEDED")
+        XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: snapshot))
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testDeletedPhrasesDoNotConsumeActiveCapacity() async throws {
+        let active = (0..<4).map { index in
+            phraseRecord(
+                id: "INVALID_ACTIVE_\(index)",
+                phrase: "Unrelated active phrase \(index).",
+                chinese: "无关例句 \(index)。"
+            )
+        }
+        let deleted = (0..<3).map { index in
+            phraseRecord(
+                id: "INVALID_DELETED_\(index)",
+                phrase: "Deleted phrase \(index).",
+                chinese: "已删除例句 \(index)。",
+                status: "DELETED"
+            )
+        }
+        let (snapshot, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse(active + deleted),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.createCount, 1)
+        XCTAssertEqual(snapshot.blockedCount, 0)
+    }
+
+    func testDeletedSameEnglishTombstoneDoesNotBlockCreate() async throws {
+        let tombstone = phraseRecord(id: "INVALID_DELETED", status: "DELETED")
+        let (snapshot, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyResponse("INVALID_VOC", "acquisition"),
+                phrasesResponse([tombstone]),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.createCount, 1)
+        XCTAssertEqual(snapshot.items[0].sameEnglishBaseline, [])
+    }
+
     func testExactHardMatchIsAlreadyMatchingDespiteTagAndHighlightGaps() async throws {
         let exact = phraseRecord(tags: nil, highlight: nil)
         let (snapshot, _, _) = try await makePhraseSnapshot(
@@ -180,6 +293,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             .failure(.transport),
             jsonResponse(["unexpected": []]),
             phrasesResponse([phraseRecord(id: "bad/id")]),
+            phrasesResponse([phraseRecord(status: "UNPUBLISHED")]),
         ]
         for failure in failures {
             let (snapshot, _, _) = try await makePhraseSnapshot(
@@ -299,6 +413,24 @@ final class PhraseCreateCoreTests: XCTestCase {
         for forbidden in ["highlight", "status", "id", "range", "chinese_range"] {
             XCTAssertNil(phrase[forbidden])
         }
+    }
+
+    func testPostCreateReadbackIgnoresDeletedSameEnglishTombstone() async throws {
+        let shown = try await createSnapshot(document: document)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            jsonResponse([:], status: 201),
+            phrasesResponse([
+                phraseRecord(id: "INVALID_DELETED", status: "DELETED"),
+                phraseRecord(id: "INVALID_ACTIVE"),
+            ]),
+        ])
+
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+        XCTAssertEqual(summary.succeeded, 1)
+        XCTAssertEqual(summary.results.map(\.outcome), [.confirmed])
+        XCTAssertEqual(transport.postCount, 1)
     }
 
     func testFreshConflictInvalidatesApprovalBeforePOST() async throws {

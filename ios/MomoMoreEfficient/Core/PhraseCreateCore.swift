@@ -198,6 +198,10 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
             return "相同英文已存在，但中文或来源不一致"
         case "AMBIGUOUS_SAME_ENGLISH":
             return "存在多条相同英文例句，无法安全判断"
+        case "ACTIVE_CAPACITY_REACHED":
+            return "已达到当前安全上限 5 条，请先在墨墨中编辑或删除一条旧例句后重新预览"
+        case "ACTIVE_CAPACITY_EXCEEDED":
+            return "当前例句数量超过安全上限 5 条，无法安全新建"
         case "READ_FAILED":
             return "无法安全读取例句状态"
         default:
@@ -284,18 +288,9 @@ struct PhrasePreflightPlanner {
                     vocabularyID: vocabulary.id,
                     control: control
                 )
-                let sameEnglish = records.filter { $0.phrase == entry.english }
-                if sameEnglish.isEmpty {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .create,
-                            vocabularyID: vocabulary.id,
-                            sameEnglishBaseline: [],
-                            reason: nil
-                        )
-                    )
-                } else if sameEnglish.count == 1, sameEnglish[0].hardMatches(entry) {
+                let active = records.filter { $0.status == CompanionConstants.status }
+                let sameEnglish = active.filter { $0.phrase == entry.english }
+                if sameEnglish.count == 1, sameEnglish[0].hardMatches(entry) {
                     planned.append(
                         PhrasePreflightItem(
                             entry: entry,
@@ -305,7 +300,17 @@ struct PhrasePreflightPlanner {
                             reason: nil
                         )
                     )
-                } else {
+                } else if active.count > 5 {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .blocked,
+                            vocabularyID: vocabulary.id,
+                            sameEnglishBaseline: sameEnglish,
+                            reason: "ACTIVE_CAPACITY_EXCEEDED"
+                        )
+                    )
+                } else if !sameEnglish.isEmpty {
                     planned.append(
                         PhrasePreflightItem(
                             entry: entry,
@@ -315,6 +320,26 @@ struct PhrasePreflightPlanner {
                             reason: sameEnglish.count == 1
                                 ? "CONFLICTING_SAME_ENGLISH"
                                 : "AMBIGUOUS_SAME_ENGLISH"
+                        )
+                    )
+                } else if active.count == 5 {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .blocked,
+                            vocabularyID: vocabulary.id,
+                            sameEnglishBaseline: [],
+                            reason: "ACTIVE_CAPACITY_REACHED"
+                        )
+                    )
+                } else {
+                    planned.append(
+                        PhrasePreflightItem(
+                            entry: entry,
+                            classification: .create,
+                            vocabularyID: vocabulary.id,
+                            sameEnglishBaseline: [],
+                            reason: nil
                         )
                     )
                 }
@@ -649,7 +674,10 @@ struct PhraseWriteExecutor {
                 }
                 control.finishPostResolution()
 
-                let sameEnglish = records.filter { $0.phrase == item.entry.english }
+                let sameEnglish = records.filter {
+                    $0.status == CompanionConstants.status
+                        && $0.phrase == item.entry.english
+                }
                 guard sameEnglish.count == 1, sameEnglish[0].hardMatches(item.entry) else {
                     failed += 1
                     results.append(
