@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-12
-sourceMainSha=51ec2be7259a14e6756ae27dfeb6762d983c33d3
+sourceMainSha=f7647ffae086e6141c6ef50244df01b1acd52fbd
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,7 +13,7 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
 CURRENT_PRIMARY_ISSUE=#71
-CURRENT_UNIQUE_NEXT=PREPARE_FIRST_SMALL_TESTFLIGHT_COHORT
+CURRENT_UNIQUE_NEXT=TESTFLIGHT_PREP_PR_THEN_OWNER_TEST
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -22,25 +22,29 @@ ACTIVE_WIP=none
 
 - interpretation batch CREATE/UPDATE is production-validated;
 - phrase CREATE + final 3/4-line usability path are production/device validated;
-- iOS companion stores personal API Token device-locally in `WhenUnlockedThisDeviceOnly` Keychain;
+- iOS companion stores each user's personal API Token device-locally in `WhenUnlockedThisDeviceOnly` Keychain;
 - final physical-iPhone smoke passed: neutral account wording, persisted tag preference, mixed 3/4-line Preview, optional-source UI;
 - current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
-- on 2026-08-12, Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server: `第一种用法是完全没问题的，开放平台目前主要是更方便进行授权，后续一些功能可能会只在开放平台上提供`.
+- Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server;
+- OIDC/PKCE is therefore not required for the first external cohort and remains a future convenience/enhancement route.
 
 ## Current route — #71 first small TestFlight cohort
 
-OIDC is no longer a prerequisite.
+Current user-visible product name: `小黑鸟伴侣`.
 
-Use the existing local personal-Token flow for the first external cohort. Before the first invite, do only what is actually needed for a safe low-friction TestFlight:
+Prepare one narrow TestFlight-prep PR before the first invite:
 
-- make Token onboarding understandable to a stranger and state the local-only storage boundary;
-- use an independent non-official app identity suitable for TestFlight;
-- provide only the privacy/support/repository explanation actually required;
-- produce one Owner-tested TestFlight build;
-- invite a deliberately small cohort and learn from real use;
-- record genuine external-use evidence in #7.
+- set only the user-visible iOS display name; keep internal target/module/repository identifiers unchanged;
+- make personal-Token onboarding understandable to a stranger and state the device-local storage boundary;
+- add a small in-app About / Privacy / Support surface;
+- add a public repository privacy policy and update the README first screen to the actual iPhone workflow;
+- prepare only the Apple/TestFlight metadata text that is actually needed;
+- leave the final AppIcon asset pending until the Owner approves the dedicated visual-design result, then add that asset as a small delta to the same PR if practical;
+- no OIDC, analytics, backend, database, marketing site, demo video, account dashboard or broad launch work.
 
-Do not add a backend, database, analytics stack or paid infrastructure solely for distribution.
+For TestFlight App Review, do not build a new demo subsystem merely for review. If Apple requires credentials to exercise the authenticated workflow, provide a dedicated test credential only through App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
+
+After the PR is merged, build/upload one Owner-tested TestFlight build, invite a deliberately small external cohort, and learn from real use.
 
 ## Deferred routes
 
