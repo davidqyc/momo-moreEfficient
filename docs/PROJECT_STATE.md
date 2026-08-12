@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-12
-sourceMainSha=e5a10faf18f85408b18f94842a7f05f5db774cb5
+sourceMainSha=7ea6b0082babafae349437aa0b3d985b588eea85
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,7 +13,7 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
 CURRENT_PRIMARY_ISSUE=#71
-CURRENT_UNIQUE_NEXT=TESTFLIGHT_PREP_PR_THEN_OWNER_TEST
+CURRENT_UNIQUE_NEXT=ONE_LIGHT_UI_POLISH_THEN_TESTFLIGHT_UPLOAD
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -26,25 +26,25 @@ ACTIVE_WIP=none
 - final physical-iPhone smoke passed: neutral account wording, persisted tag preference, mixed 3/4-line Preview, optional-source UI;
 - current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
 - Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server;
-- OIDC/PKCE is therefore not required for the first external cohort and remains a future convenience/enhancement route.
+- OIDC/PKCE is therefore not required for the first external cohort and remains a future convenience/enhancement route;
+- PR #94 merged at `7ea6b0082babafae349437aa0b3d985b588eea85`: user-visible name `小黑鸟伴侣`, final approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md` are now on `main`.
 
 ## Current route — #71 first small TestFlight cohort
 
-Current user-visible product name: `小黑鸟伴侣`.
+Before TestFlight upload, perform exactly one short visual-polish pass over the current iPhone interface using Fable 5 / Claude Design as a design reviewer.
 
-Prepare one narrow TestFlight-prep PR before the first invite:
+Target quality is intentionally modest: bring the current functional UI to a clean, coherent ~60/100 visual baseline suitable for a first small external cohort.
 
-- set only the user-visible iOS display name; keep internal target/module/repository identifiers unchanged;
-- make personal-Token onboarding understandable to a stranger and state the device-local storage boundary;
-- add a small in-app About / Privacy / Support surface;
-- add a public repository privacy policy and update the README first screen to the actual iPhone workflow;
-- prepare only the Apple/TestFlight metadata text that is actually needed;
-- leave the final AppIcon asset pending until the Owner approves the dedicated visual-design result, then add that asset as a small delta to the same PR if practical;
-- no OIDC, analytics, backend, database, marketing site, demo video, account dashboard or broad launch work.
+Constraints:
 
-For TestFlight App Review, do not build a new demo subsystem merely for review. If Apple requires credentials to exercise the authenticated workflow, provide a dedicated test credential only through App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
+- preserve current information architecture and product behavior;
+- prefer spacing, hierarchy, grouping, typography, control emphasis and small native SwiftUI adjustments;
+- no redesign system, custom component library, animation system, illustration program, onboarding framework or navigation rewrite;
+- no API / Token / write-authority changes;
+- one small implementation PR only after the design recommendation is accepted;
+- after Owner smoke on-device, upload the resulting build to TestFlight and invite a deliberately small external cohort.
 
-After the PR is merged, build/upload one Owner-tested TestFlight build, invite a deliberately small external cohort, and learn from real use.
+For TestFlight App Review, do not build a new demo subsystem merely for review. If Apple requires credentials to exercise the authenticated workflow, provide a dedicated test credential only through private App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
 
 ## Deferred routes
 
