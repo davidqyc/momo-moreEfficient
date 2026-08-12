@@ -11,7 +11,7 @@
 
 个人墨墨 API Token 只保存在这台 iPhone 的设备本地 Keychain，不会上传给开发者或任何项目服务器。详情见[隐私说明](PRIVACY.md)。
 
-> **分发状态：** 正在准备第一批小规模 TestFlight 外部测试，尚未在 App Store 提供。最终 AppIcon 仍待 Owner 的独立视觉方案确认。
+> **分发状态：** 正在准备第一批小规模 TestFlight 外部测试，尚未在 App Store 提供。
 
 ## 旧版 CLI（v0.1.0）
 
