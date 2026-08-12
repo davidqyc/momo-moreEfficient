@@ -34,6 +34,14 @@ struct ContentView: View {
             .navigationTitle(viewModel.contentMode.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        AboutView()
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .accessibilityLabel("关于")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink("历史") {
                         HistoryListView(viewModel: viewModel)
@@ -523,12 +531,33 @@ struct ContentView: View {
     private var tokenSheet: some View {
         NavigationStack {
             Form {
-                SecureField("墨墨账号 Token", text: $tokenDraft)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Text("请在确认登录目标墨墨账号后手动粘贴。应用无法证明 Token 属于哪个账号。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Section("个人 Token") {
+                    SecureField("墨墨账号 Token", text: $tokenDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Text("这是你自己的墨墨 API Token。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("获取方式") {
+                    Text("墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API")
+                    Text("请先登录你准备操作的墨墨账号，再获取并手动粘贴 Token。小黑鸟伴侣无法独立证明一个手动提供的 Token 属于哪个账号。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("只保存在本机") {
+                    Text("Token 只保存在这台 iPhone 的设备本地 Keychain 中，不会上传给开发者或任何项目服务器。选择“移除 Token”（断开连接）会删除本机保存的 Token。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Text("小黑鸟伴侣是兼容墨墨的独立第三方工具，不是墨墨官方应用。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             .navigationTitle(viewModel.isConnected ? "更换 Token" : "连接墨墨账号")
             .toolbar {
@@ -610,6 +639,34 @@ struct ContentView: View {
 
     private func clearTokenDraft() {
         tokenDraft.removeAll(keepingCapacity: false)
+    }
+}
+
+private struct AboutView: View {
+    private let privacyURL = URL(
+        string: "https://github.com/davidqyc/momo-moreEfficient/blob/main/PRIVACY.md"
+    )!
+    private let supportURL = URL(
+        string: "https://github.com/davidqyc/momo-moreEfficient/issues"
+    )!
+
+    var body: some View {
+        List {
+            Section {
+                Text("小黑鸟伴侣")
+                    .font(.headline)
+                Text("把你准备好的释义和例句安全录入墨墨。")
+                Text("小黑鸟伴侣是兼容墨墨的独立第三方工具，不是墨墨官方应用。")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Link("隐私说明", destination: privacyURL)
+                Link("项目与反馈", destination: supportURL)
+            }
+        }
+        .navigationTitle("关于")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

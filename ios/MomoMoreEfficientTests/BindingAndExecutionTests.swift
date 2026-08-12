@@ -429,9 +429,23 @@ final class BindingAndExecutionTests: XCTestCase {
 
         let contentView = try XCTUnwrap(sources["UI/ContentView.swift"])
         XCTAssertFalse(contentView.contains("主账号"))
-        for requiredCopy in ["墨墨账号", "录入偏好", "发布", "公开", "未填写"] {
+        for requiredCopy in [
+            "墨墨账号", "录入偏好", "发布", "公开", "未填写",
+            "墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API",
+            "设备本地 Keychain", "不会上传给开发者或任何项目服务器",
+            "独立第三方工具", "不是墨墨官方应用", "隐私说明", "项目与反馈",
+        ] {
             XCTAssertTrue(contentView.contains(requiredCopy), requiredCopy)
         }
+
+        let projectFile = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("MomoMoreEfficient.xcodeproj/project.pbxproj")
+        let project = try String(contentsOf: projectFile, encoding: .utf8)
+        XCTAssertEqual(
+            project.components(separatedBy: "INFOPLIST_KEY_CFBundleDisplayName = \"小黑鸟伴侣\";").count - 1,
+            2
+        )
     }
 
     private func execute(
