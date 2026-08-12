@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-12
-sourceMainSha=f8a5fcd6e78bf52fa48af311160bb5f089d555f1
+sourceMainSha=51ec2be7259a14e6756ae27dfeb6762d983c33d3
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,50 +12,46 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#4
-CURRENT_UNIQUE_NEXT=REAL_USE_PAUSE
+CURRENT_PRIMARY_ISSUE=#71
+CURRENT_UNIQUE_NEXT=PREPARE_FIRST_SMALL_TESTFLIGHT_COHORT
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
 
 ## What is already proven
 
-- interpretation batch CREATE/UPDATE is production-validated on the intended account;
-- iOS companion is in real use; iOS Token follows D-016 device-only Keychain policy;
-- phrase CREATE core + iPhone UI are merged and production-validated;
-- #89 / PR #91 added active-capacity + DELETED-tombstone handling without phrase UPDATE;
-- #87 + #92 + #88 final usability shipped in PR #93; fresh Opus review passed;
-- merged `main` @ `f8a5fcd6e78bf52fa48af311160bb5f089d555f1` built, installed and launched successfully on the Owner's physical iPhone;
-- `墨墨账号 ✓ 已连接` neutral wording is correct on device;
-- shared `MBA / BEC / GMAT` tag preference persisted across app termination/relaunch;
-- mixed native 3-line + 4-line phrase input parsed correctly on device;
-- no-source Preview displayed `SOURCE 未填写`, source-present Preview preserved `Financial Times`, and the selected tag summary displayed correctly;
-- final smoke reached `新建 2 / 一致 0 / 阻断 0` with Preview only; no synthetic phrase write was executed;
-- first real main-account phrase CREATE canary previously passed exact English/Chinese/source/`PUBLISHED` hard readback and round-tripped `MBA/BEC/GMAT`;
-- current merged safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery.
+- interpretation batch CREATE/UPDATE is production-validated;
+- phrase CREATE + final 3/4-line usability path are production/device validated;
+- iOS companion stores personal API Token device-locally in `WhenUnlockedThisDeviceOnly` Keychain;
+- final physical-iPhone smoke passed: neutral account wording, persisted tag preference, mixed 3/4-line Preview, optional-source UI;
+- current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
+- on 2026-08-12, Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server: `第一种用法是完全没问题的，开放平台目前主要是更方便进行授权，后续一些功能可能会只在开放平台上提供`.
 
-## Current route — REAL_USE_PAUSE
+## Current route — #71 first small TestFlight cohort
 
-No further feature-building step is scheduled.
+OIDC is no longer a prerequisite.
 
-Use the app for real batches. Re-open engineering only from:
+Use the existing local personal-Token flow for the first external cohort. Before the first invite, do only what is actually needed for a safe low-friction TestFlight:
 
-- repeated real friction;
-- a safety incident;
-- an explicit decision to start external distribution.
+- make Token onboarding understandable to a stranger and state the local-only storage boundary;
+- use an independent non-official app identity suitable for TestFlight;
+- provide only the privacy/support/repository explanation actually required;
+- produce one Owner-tested TestFlight build;
+- invite a deliberately small cohort and learn from real use;
+- record genuine external-use evidence in #7.
 
-The first genuinely wanted 3-line/no-source phrase may naturally validate production handling of empty `origin`. Do not create a synthetic extra write merely for characterization.
+Do not add a backend, database, analytics stack or paid infrastructure solely for distribution.
 
 ## Deferred routes
 
 ```text
-phrase automatic replacement / phrase UPDATE = DEFER; closed PR #90 remains shelf only
-#71 public distribution = DEFER until Owner still wants external users after real-use pause
-#72 OAuth/OIDC = DEFER until real external onboarding friction exists
-#5 desktop quick lookup = DEFER unless explicitly requested after real-use pause
-#7 open-source evidence = passive ledger only
-#88 local labels / verified nickname / identity framework = DEFER; neutral wording only is current minimum
-separate interpretation/phrase tag profiles = DEFER unless real users need them
+#72 OIDC/PKCE = OPTIONAL FUTURE ENHANCEMENT; reopen only for real auth friction or Open-Platform-only features
+phrase automatic replacement / phrase UPDATE = DEFER
+nickname/avatar account identity = DEFER with OIDC
+study/profile dashboard = DEFER
+broad public launch / demo / social campaign = DEFER until small-cohort evidence
+#5 desktop quick lookup = DEFER unless explicitly requested
+#7 open-source evidence = passive ledger for real events only
 ```
 
 ## Safety boundaries still current
@@ -65,10 +61,11 @@ separate interpretation/phrase tag profiles = DEFER unless real users need them
 - dispatched POST gets immediate authenticated readback; uncertain outcome gets GET-only recovery;
 - UPDATE targets only explicit authenticated-user records; ambiguity blocks;
 - no automatic delete/rollback/replay;
-- source/origin equality is hard when the user supplied source; no-source semantics are governed by D-019 / #87;
+- personal API Token remains device-local and inaccessible to the developer/server;
+- source/origin equality is hard when supplied; no-source semantics follow D-019 / #87;
 - unknown/malformed server schema fails closed;
-- no new product feature is justified merely because an Issue already exists.
+- no new feature is justified merely because an Issue already exists.
 
 ## Maintenance rule
 
-Keep this file to current state, one next step, and live boundaries only. During `REAL_USE_PAUSE`, do not update it for ordinary successful batches; update only when the project re-enters engineering for a real reason.
+Keep this file to current state, one next step and live boundaries only. Update at real milestones, not micro-steps.
