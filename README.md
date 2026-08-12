@@ -1,20 +1,21 @@
-# momo-moreEfficient
+# 小黑鸟伴侣
 
-一个**独立的第三方命令行工具**，用于把你自己写好的自建词汇释义批量、安全地发布出去，替代逐条手工录入的重复操作。
+小黑鸟伴侣是当前项目的 iPhone companion：一款**兼容墨墨的独立第三方工具**，不是墨墨官方应用。它帮助你把自己准备好的释义和例句安全录入墨墨；应用不会生成、改写、润色或翻译正文。
 
-An independent command-line utility for safer batch publishing of user-curated vocabulary interpretations through a supported third-party Open API.
+当前 iPhone 功能包括：
 
-**兼容的服务：** 本工具通过公开发布的墨墨开放 API（`open.maimemo.com`）与墨墨背单词交互。这里提到该名称只是为了说明兼容对象，它不是本项目的品牌标识——参见[免责声明与商标说明](#免责声明与商标说明)。
+- 自建释义 `CREATE` / `UPDATE`；
+- 例句/短语 `CREATE`；输入使用原生 3 行或 4 行格式（单词、英文例句、中文翻译，以及可选来源）；
+- 由用户选择并持久保存的 0–3 个标签，而不是通用硬编码的 `MBA` / `BEC` / `GMAT`；
+- 安全流程：粘贴 → Preview → 明确确认 → fresh preflight → 写入 → 鉴权回读。
 
-> **当前版本：v0.1.0。** 释义批量录入闭环（`dry-run` / `create` / `update`）已经在副账号上完成真实端到端验证，是本版本唯一支持的能力。例句/短语自动化仍被阻断，桌面快速查词尚未开始实现。
->
-> **未发布（`main` 分支）：** 同一条闭环新增了显式的主账号 opt-in `--allow-main-account`（默认关闭）。不给该开关时行为与 `v0.1.0` 完全一致。见[主账号模式](#4-主账号模式显式-opt-in)与 [#51](https://github.com/davidqyc/momo-moreEfficient/issues/51)。
->
-> **Issue #54 开发中：** `main` 之上的开发分支正在加入一个 macOS 本地日常 UI。它只是现有导入器的 localhost 适配层，不改变 `v0.1.0`、不增加第二套写入逻辑，也不是 Issue #5 的桌面查词功能。
+个人墨墨 API Token 只保存在这台 iPhone 的设备本地 Keychain，不会上传给开发者或任何项目服务器。详情见[隐私说明](PRIVACY.md)。
 
-## v0.1.0 支持什么
+> **分发状态：** 正在准备第一批小规模 TestFlight 外部测试，尚未在 App Store 提供。最终 AppIcon 仍待 Owner 的独立视觉方案确认。
 
-只有一件事，而且这件事是可用的：**把一批已经写好的自建释义安全地录入墨墨**。
+## 旧版 CLI（v0.1.0）
+
+仓库仍保留最初发布的命令行工具作为 legacy/reference。`v0.1.0` 的范围只有一件事：**把一批已经写好的自建释义安全地录入墨墨**。
 
 - 解析一种 Markdown 批次格式；
 - `dry-run` 预览每个词的判定结果，不发出任何写请求；
