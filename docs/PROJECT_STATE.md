@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-13
-sourceMainSha=30196c1653129902312ce74b53fb5ac3e139fef6
+sourceMainSha=1c9f27da658c15d5ac50eaf06522115e3b2374db
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#95
-CURRENT_UNIQUE_NEXT=IMPLEMENT_ACCEPTED_LIGHT_UI_POLISH_THEN_OWNER_SMOKE
+CURRENT_PRIMARY_ISSUE=#71
+CURRENT_UNIQUE_NEXT=UPLOAD_ONE_OWNER_TESTED_TESTFLIGHT_BUILD
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -23,32 +23,31 @@ ACTIVE_WIP=none
 - interpretation batch CREATE/UPDATE is production-validated;
 - phrase CREATE + final 3/4-line usability path are production/device validated;
 - iOS companion stores each user's personal API Token device-locally in `WhenUnlockedThisDeviceOnly` Keychain;
-- final physical-iPhone smoke passed: neutral account wording, persisted tag preference, mixed 3/4-line Preview, optional-source UI;
 - current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
 - Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server;
 - OIDC/PKCE is therefore not required for the first external cohort and remains a future convenience/enhancement route;
 - PR #94 merged: user-visible name `小黑鸟伴侣`, final approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md` are on `main`;
-- the one Fable 5 visual-polish pass is complete and Owner-accepted as the ~60/100 TestFlight baseline; implementation is frozen in #95.
+- the one Fable 5 visual-polish pass is implemented and closed in #95 / PR #96;
+- exact #96 candidate passed physical-iPhone smoke on iPhone 17 Pro Max, including AppIcon/display name/main editor/bottom action/Preferences/About/History/Token sheet; DEBUG rehearsal supplement confirmed interpretation and phrase Preview layouts with zero real Maimemo request/write;
+- PR #96 squash-merged to `main` at `1c9f27da658c15d5ac50eaf06522115e3b2374db`.
 
-## Current route — #95 final light UI polish
+## Current route — #71 first small TestFlight cohort
 
-Implement exactly one small native SwiftUI polish PR from the accepted Fable comparison boards / #95 scope.
+Upload exactly one Owner-tested build from current `main` to App Store Connect / TestFlight using the existing Apple Developer signing/account setup.
 
-Primary visible change: the paste/input editor becomes materially larger and reads as the main working surface.
+Keep this lightweight:
 
-Also apply the accepted lightweight hierarchy/readability cleanup for Preview, progress, Token sheet, preferences, About and History.
+- no release automation framework;
+- no Fastlane/Xcode Cloud/App Store Connect API integration solely for this cohort;
+- use the existing local Xcode account/signing path;
+- first attempt archive/validation/upload mechanically;
+- if App Store Connect lacks a matching app record, required agreement, role, export-compliance answer or other human-only metadata, stop and report the single concrete blocker instead of inventing values;
+- do not create or expose new Apple credentials in Git/docs/chat;
+- do not upload as `TestFlight Internal Only` because the route requires a later external cohort;
+- after Apple processes the build, provide the minimum TestFlight information and create the smallest required internal/external groups only when needed;
+- external testing remains deliberately small; broad/public-link launch is deferred.
 
-Constraints:
-
-- preserve information architecture, navigation and product behavior;
-- no API / Token / write-authority changes;
-- no phrase duplicate/conflict behavior changes in #95;
-- no design system, custom component library, onboarding framework, dashboard or animation system;
-- one PR only;
-- after Coordinator review, install the candidate on the physical iPhone for a visual smoke;
-- after smoke PASS, stop visual iteration and proceed directly to TestFlight upload under #71.
-
-For TestFlight App Review, do not build a demo subsystem merely for review. If Apple requires credentials to exercise the authenticated workflow, provide a dedicated test credential only through private App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
+For TestFlight App Review, do not build a demo subsystem merely for review. If Apple requires authenticated access, provide a dedicated test credential only through private App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
 
 ## Deferred routes
 
