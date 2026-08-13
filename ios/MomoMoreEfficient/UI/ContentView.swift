@@ -16,21 +16,19 @@ struct ContentView: View {
                 rehearsalBanner
                 accountRow
                 modePicker
-                Divider()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if viewModel.isShowingEditor {
-                            editorSurface
-                        } else if viewModel.contentMode == .phrase,
-                                  let preview = viewModel.phrasePreview {
-                            phrasePreviewSurface(preview)
-                        } else if let preview = viewModel.preview {
-                            previewSurface(preview)
-                        }
+                Group {
+                    if viewModel.isShowingEditor {
+                        editorSurface
+                    } else if viewModel.contentMode == .phrase,
+                              let preview = viewModel.phrasePreview {
+                        phrasePreviewSurface(preview)
+                    } else if let preview = viewModel.preview {
+                        previewSurface(preview)
                     }
-                    .padding()
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle(viewModel.contentMode.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -49,7 +47,9 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !viewModel.executionActions.isEmpty
+                if viewModel.isShowingEditor {
+                    previewActionBar
+                } else if !viewModel.executionActions.isEmpty
                     || viewModel.canExecutePhrase
                     || viewModel.isExecuting {
                     executionBar
@@ -140,9 +140,22 @@ struct ContentView: View {
         HStack(spacing: 10) {
             Text("墨墨账号")
                 .font(.subheadline.weight(.semibold))
-            Text(viewModel.isConnected ? "✓ 已连接" : "未连接")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            if viewModel.isConnected {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                    Text("已连接")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("已连接")
+            } else {
+                Text("未连接")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             NavigationLink("录入偏好") {
                 ImportPreferencesView(viewModel: viewModel)
@@ -154,9 +167,11 @@ struct ContentView: View {
                     Button("更换 Token") { showingTokenSheet = true }
                     Button("移除 Token", role: .destructive) { viewModel.removeToken() }
                 }
+                .font(.subheadline)
                 .disabled(viewModel.isBusy)
             } else {
                 Button("连接") { showingTokenSheet = true }
+                    .font(.subheadline)
                     .disabled(viewModel.isBusy)
             }
         }
@@ -180,6 +195,8 @@ struct ContentView: View {
         .accessibilityLabel("录入模式")
     }
 
+    /// The editor is the primary work surface: it fills all vertical space
+    /// between the mode picker and the pinned Preview action.
     private var editorSurface: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let acknowledgement = viewModel.completionAcknowledgement {
@@ -188,19 +205,34 @@ struct ContentView: View {
                     .foregroundStyle(.green)
             }
 
-            TextEditor(text: $viewModel.sourceText)
-                .frame(minHeight: 140, maxHeight: 190)
-                .padding(8)
-                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityLabel(viewModel.contentMode.editorAccessibilityLabel)
-
-            if viewModel.contentMode == .phrase {
-                Text("格式：单词 · 英文例句 · 中文翻译 · 来源（可选）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $viewModel.sourceText)
+                    .scrollContentBackground(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel(viewModel.contentMode.editorAccessibilityLabel)
+                if viewModel.sourceText.isEmpty, let hint = editorPlaceholder {
+                    Text(hint)
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 14)
+                        .padding(.leading, 14)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                Color(.secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color(.separator), lineWidth: 0.5)
+            )
 
             if let parseMessage = viewModel.localParseState.message {
                 Text(parseMessage)
@@ -209,132 +241,133 @@ struct ContentView: View {
             }
 
             feedbackView
-
-            Button {
-                Task { await viewModel.previewCurrentInput() }
-            } label: {
-                HStack {
-                    if viewModel.isPreviewing {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(previewLoadingTitle)
-                    } else {
-                        Text("预览")
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(
-                !viewModel.isConnected
-                    || !viewModel.localParseState.isValid
-                    || viewModel.isBusy
-            )
         }
+        .padding(.horizontal)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
+    }
+
+    /// The existing per-mode format hint, shown inside the empty editor.
+    /// Interpretation mode has no established hint copy, so it stays empty.
+    private var editorPlaceholder: String? {
+        viewModel.contentMode == .phrase
+            ? "格式：单词 · 英文例句 · 中文翻译 · 来源（可选）"
+            : nil
     }
 
     private func previewSurface(_ preview: PreviewPresentation) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(viewModel.previewHeader ?? "预览")
-                    .font(.headline)
-                Spacer()
-                Button("编辑") { viewModel.editInput() }
-                    .font(.subheadline)
-                    .disabled(viewModel.isBusy)
-            }
-
-            HStack(spacing: 14) {
-                summaryLabel("新建", preview.counts.create)
-                summaryLabel("更新", preview.counts.update)
-                summaryLabel("一致", preview.counts.alreadyMatching)
-                summaryLabel("阻断", preview.counts.blocked)
-            }
-            .font(.subheadline.monospacedDigit())
-
-            Text(viewModel.selectedTagsSummary)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            if viewModel.isPreviewStale {
-                HStack(spacing: 10) {
-                    Text("需重新预览后才能写入")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                    Spacer()
-                    Button("重新预览") {
-                        Task { await viewModel.previewCurrentInput() }
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .disabled(
-                        !viewModel.isConnected
-                            || !viewModel.localParseState.isValid
-                            || viewModel.isBusy
-                    )
+        List {
+            Section {
+                previewHeaderRow(
+                    count: preview.rows.count,
+                    unit: "条释义",
+                    first: preview.rows.first?.spelling,
+                    last: preview.rows.last?.spelling
+                )
+                HStack(spacing: 14) {
+                    summaryLabel("新建", preview.counts.create, color: .accentColor)
+                    summaryLabel("更新", preview.counts.update, color: .orange)
+                    summaryLabel("一致", preview.counts.alreadyMatching, color: .secondary, emphasized: false)
+                    summaryLabel("阻断", preview.counts.blocked, color: .red)
                 }
+                Text(viewModel.selectedTagsSummary)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                stalePreviewRow
+                feedbackView
             }
 
-            feedbackView
-
-            LazyVStack(spacing: 0) {
+            Section {
                 ForEach(preview.rows) { row in
                     previewRow(row)
-                    if row.id != preview.rows.last?.id { Divider() }
+                        .listRowBackground(
+                            row.classification == .blocked
+                                ? Color(.systemRed).opacity(0.07) : nil
+                        )
                 }
             }
-            .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 10))
         }
+        .listStyle(.insetGrouped)
     }
 
     private func phrasePreviewSurface(_ preview: PhrasePreviewPresentation) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(viewModel.previewHeader ?? "例句预览")
-                    .font(.headline)
-                Spacer()
-                Button("编辑") { viewModel.editInput() }
-                    .font(.subheadline)
-                    .disabled(viewModel.isBusy)
-            }
-
-            HStack(spacing: 14) {
-                summaryLabel("新建", preview.createCount)
-                summaryLabel("一致", preview.alreadyMatchingCount)
-                summaryLabel("阻断", preview.blockedCount)
-            }
-            .font(.subheadline.monospacedDigit())
-
-            Text(viewModel.selectedTagsSummary)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            if viewModel.isPreviewStale {
-                HStack(spacing: 10) {
-                    Text("需重新预览后才能写入")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                    Spacer()
-                    Button("重新预览") {
-                        Task { await viewModel.previewCurrentInput() }
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .disabled(
-                        !viewModel.isConnected
-                            || !viewModel.localParseState.isValid
-                            || viewModel.isBusy
-                    )
+        List {
+            Section {
+                previewHeaderRow(
+                    count: preview.rows.count,
+                    unit: "条例句",
+                    first: preview.rows.first?.spelling,
+                    last: preview.rows.last?.spelling
+                )
+                HStack(spacing: 14) {
+                    summaryLabel("新建", preview.createCount, color: .accentColor)
+                    summaryLabel("一致", preview.alreadyMatchingCount, color: .secondary, emphasized: false)
+                    summaryLabel("阻断", preview.blockedCount, color: .red)
                 }
+                Text(viewModel.selectedTagsSummary)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                stalePreviewRow
+                feedbackView
             }
 
-            feedbackView
-
-            LazyVStack(spacing: 0) {
+            Section {
                 ForEach(preview.rows) { row in
                     phrasePreviewRow(row)
-                    if row.id != preview.rows.last?.id { Divider() }
+                        .listRowBackground(
+                            row.classification == .blocked
+                                ? Color(.systemRed).opacity(0.07) : nil
+                        )
                 }
             }
-            .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func previewHeaderRow(
+        count: Int,
+        unit: String,
+        first: String?,
+        last: String?
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(count) \(unit)")
+                .font(.headline)
+            if let first, let last {
+                Text("\(first) → \(last)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button("编辑") { viewModel.editInput() }
+                .font(.subheadline)
+                .buttonStyle(.borderless)
+                .disabled(viewModel.isBusy)
+        }
+    }
+
+    @ViewBuilder
+    private var stalePreviewRow: some View {
+        if viewModel.isPreviewStale {
+            HStack(spacing: 10) {
+                Text("需重新预览后才能写入")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                Spacer()
+                Button("重新预览") {
+                    Task { await viewModel.previewCurrentInput() }
+                }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.borderless)
+                .disabled(
+                    !viewModel.isConnected
+                        || !viewModel.localParseState.isValid
+                        || viewModel.isBusy
+                )
+            }
+            .listRowBackground(Color(.systemOrange).opacity(0.12))
         }
     }
 
@@ -348,12 +381,13 @@ struct ContentView: View {
                         .foregroundStyle(.primary)
                     Spacer()
                     Text(row.classification.compactLabel)
-                        .font(.caption.weight(.semibold))
+                        .font(.subheadline)
+                        .fontWeight(row.classification == .blocked ? .semibold : .regular)
                         .foregroundStyle(phraseClassificationColor(row.classification))
                     Image(systemName: viewModel.expandedRowIDs.contains(row.id)
                         ? "chevron.down" : "chevron.right")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                 }
                 .contentShape(Rectangle())
             }
@@ -361,7 +395,7 @@ struct ContentView: View {
 
             if let reason = row.blockedReason {
                 Text(reason)
-                    .font(.caption)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.red)
             }
 
@@ -372,13 +406,16 @@ struct ContentView: View {
             }
 
             if viewModel.expandedRowIDs.contains(row.id) {
-                detailLabel("EN", row.english)
-                detailLabel("ZH", row.chinese)
-                detailLabel("SOURCE", row.source ?? "未填写")
+                VStack(alignment: .leading, spacing: 10) {
+                    detailLabel("EN", row.english)
+                    detailLabel("ZH", row.chinese)
+                    detailLabel("SOURCE", row.source ?? "未填写", secondaryValue: true)
+                }
+                .padding(.top, 2)
+                .padding(.bottom, 4)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 4)
     }
 
     private func previewRow(_ row: PreviewRow) -> some View {
@@ -391,13 +428,14 @@ struct ContentView: View {
                         .foregroundStyle(.primary)
                     Spacer()
                     Text(row.classification.compactLabel)
-                        .font(.caption.weight(.semibold))
+                        .font(.subheadline)
+                        .fontWeight(row.classification == .blocked ? .semibold : .regular)
                         .foregroundStyle(classificationColor(row.classification))
                     if row.canExpand {
                         Image(systemName: viewModel.expandedRowIDs.contains(row.id)
                             ? "chevron.down" : "chevron.right")
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
                     }
                 }
                 .contentShape(Rectangle())
@@ -407,27 +445,59 @@ struct ContentView: View {
 
             if let reason = row.compactBlockedReason {
                 Text(reason)
-                    .font(.caption)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.red)
             }
 
             if let details = viewModel.details(for: row) {
-                if let current = details.current {
-                    detailLabel("CURRENT", current)
+                VStack(alignment: .leading, spacing: 10) {
+                    if let current = details.current {
+                        detailLabel("CURRENT", current)
+                    }
+                    detailLabel("PROPOSED", details.proposed)
+                    if let currentTags = details.currentTags,
+                       let proposedTags = details.proposedTags {
+                        detailLabel(
+                            "TAGS",
+                            "\(WriteTagPreference.compactLabel(currentTags)) → "
+                                + WriteTagPreference.compactLabel(proposedTags)
+                        )
+                    }
                 }
-                detailLabel("PROPOSED", details.proposed)
-                if let currentTags = details.currentTags,
-                   let proposedTags = details.proposedTags {
-                    detailLabel(
-                        "TAGS",
-                        "\(WriteTagPreference.compactLabel(currentTags)) → "
-                            + WriteTagPreference.compactLabel(proposedTags)
-                    )
-                }
+                .padding(.top, 2)
+                .padding(.bottom, 4)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    /// The single bottom action while the editor is the working surface: the
+    /// Preview button, or its disabled in-progress form while a Preview reads.
+    private var previewActionBar: some View {
+        Button {
+            Task { await viewModel.previewCurrentInput() }
+        } label: {
+            HStack(spacing: 8) {
+                if viewModel.isPreviewing {
+                    ProgressView()
+                    Text(previewLoadingTitle)
+                } else {
+                    Text("预览")
+                }
+            }
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: 34)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(
+            !viewModel.isConnected
+                || !viewModel.localParseState.isValid
+                || viewModel.isBusy
+        )
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 
     @ViewBuilder
@@ -436,49 +506,59 @@ struct ContentView: View {
             if viewModel.isExecuting {
                 executionProgressRow
             } else if viewModel.contentMode == .phrase {
-                Button("新建 \(viewModel.phrasePreview?.createCount ?? 0) 条例句") {
+                Button {
                     viewModel.askToExecutePhrase()
+                } label: {
+                    Text("新建 \(viewModel.phrasePreview?.createCount ?? 0) 条例句")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 34)
                 }
                 .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
                 .disabled(!viewModel.canExecutePhrase)
             } else {
                 HStack(spacing: 12) {
                     ForEach(viewModel.executionActions) { action in
-                        Button(action.title) {
+                        Button {
                             if action.coversWholePlan {
                                 viewModel.askToExecuteWholePlan()
                             } else if let group = action.group {
                                 viewModel.askToExecute(group)
                             }
+                        } label: {
+                            Text(action.title)
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 34)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(action.group == .update ? .orange : .blue)
-                        .frame(maxWidth: .infinity)
                         .disabled(action.count == 0 || viewModel.isBusy)
                     }
                 }
             }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
 
     private var executionProgressRow: some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ProgressView()
                 Text(viewModel.executionProgressLabel ?? "正在执行…")
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                Text("短暂切换应用不会取消；若系统回收后台时间，将安全停止。")
-                    .font(.caption2)
+                    .font(.headline.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, minHeight: 46)
+            .background(
+                Color(.systemFill),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            Text("短暂切换应用不会取消；若系统回收后台时间，将安全停止。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(viewModel.executionProgressLabel ?? "正在执行")
     }
@@ -531,35 +611,42 @@ struct ContentView: View {
     private var tokenSheet: some View {
         NavigationStack {
             Form {
-                Section("个人 Token") {
+                Section {
                     SecureField("墨墨账号 Token", text: $tokenDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("个人 Token")
+                } footer: {
                     Text("这是你自己的墨墨 API Token。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("获取方式") {
-                    Text("墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API")
-                    Text("请先登录你准备操作的墨墨账号，再获取并手动粘贴 Token。小黑鸟伴侣无法独立证明一个手动提供的 Token 属于哪个账号。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("只保存在本机") {
-                    Text("Token 只保存在这台 iPhone 的设备本地 Keychain 中，不会上传给开发者或任何项目服务器。选择“移除 Token”（断开连接）会删除本机保存的 Token。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section {
-                    Text("小黑鸟伴侣是兼容墨墨的独立第三方工具，不是墨墨官方应用。")
+                    Text("墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API")
+                        .font(.subheadline.weight(.medium))
+                } header: {
+                    Text("获取方式")
+                } footer: {
+                    Text("请先登录你准备操作的墨墨账号，再获取并手动粘贴 Token。小黑鸟伴侣无法独立证明一个手动提供的 Token 属于哪个账号。")
+                }
+
+                Section {
+                    Text("Token 只保存在这台 iPhone 的设备本地 Keychain 中，不会上传给开发者或任何项目服务器。选择“移除 Token”（断开连接）会删除本机保存的 Token。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                } header: {
+                    Text("只保存在本机")
+                }
+
+                Section {
+                } footer: {
+                    Text("小黑鸟伴侣是兼容墨墨的独立第三方工具，不是墨墨官方应用。")
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
                 }
             }
             .navigationTitle(viewModel.isConnected ? "更换 Token" : "连接墨墨账号")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { showingTokenSheet = false }
@@ -569,6 +656,8 @@ struct ContentView: View {
                         viewModel.connect(token: &tokenDraft)
                         showingTokenSheet = false
                     }
+                    .fontWeight(.semibold)
+                    .disabled(tokenDraft.isEmpty)
                 }
             }
         }
@@ -588,36 +677,52 @@ struct ContentView: View {
         viewModel.pendingConfirmation == .update ? "确认更新现有自建释义？" : "确认新建自建释义？"
     }
 
-    private func summaryLabel(_ title: String, _ value: Int) -> some View {
+    private func summaryLabel(
+        _ title: String,
+        _ value: Int,
+        color: Color,
+        emphasized: Bool = true
+    ) -> some View {
         HStack(spacing: 3) {
             Text(title)
-            Text("\(value)").fontWeight(.semibold)
+            Text("\(value)")
         }
+        .font(.subheadline.monospacedDigit())
+        .fontWeight(emphasized && value > 0 ? .semibold : .regular)
+        .foregroundStyle(value > 0 ? color : .secondary)
     }
 
-    private func detailLabel(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func detailLabel(
+        _ title: String,
+        _ value: String,
+        secondaryValue: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.caption2)
+                .font(.caption2.weight(.semibold))
+                .tracking(0.6)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.footnote)
-                .foregroundStyle(.primary)
+                .font(.subheadline)
+                .lineSpacing(2)
+                .foregroundStyle(secondaryValue ? Color.secondary : Color.primary)
                 .textSelection(.enabled)
         }
     }
 
     private func classificationColor(_ classification: PreviewClassification) -> Color {
         switch classification {
-        case .create, .alreadyMatching: return .secondary
+        case .create: return .accentColor
         case .update: return .orange
+        case .alreadyMatching: return .secondary
         case .blocked: return .red
         }
     }
 
     private func phraseClassificationColor(_ classification: PhrasePreviewClassification) -> Color {
         switch classification {
-        case .create, .alreadyMatching: return .secondary
+        case .create: return .accentColor
+        case .alreadyMatching: return .secondary
         case .blocked: return .red
         }
     }
@@ -653,11 +758,14 @@ private struct AboutView: View {
     var body: some View {
         List {
             Section {
-                Text("小黑鸟伴侣")
-                    .font(.headline)
-                Text("把你准备好的释义和例句安全录入墨墨。")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("小黑鸟伴侣")
+                        .font(.headline)
+                    Text("把你准备好的释义和例句安全录入墨墨。")
+                }
+                .padding(.vertical, 2)
+            } footer: {
                 Text("小黑鸟伴侣是兼容墨墨的独立第三方工具，不是墨墨官方应用。")
-                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -677,27 +785,35 @@ private struct ImportPreferencesView: View {
         List {
             Section {
                 LabeledContent("发布", value: "公开")
-                Text("标签：可选，最多 3 个")
-                    .foregroundStyle(.secondary)
             }
 
-            Section("标签") {
+            Section {
                 ForEach(viewModel.availableWriteTags, id: \.self) { tag in
                     Button {
                         viewModel.toggleTag(tag)
                     } label: {
                         HStack {
+                            // Concrete Color.primary: the hierarchical .primary would
+                            // resolve against the row button's tint and render blue.
                             Text(tag)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.primary)
                             Spacer()
                             if viewModel.isTagSelected(tag) {
                                 Image(systemName: "checkmark")
+                                    .fontWeight(.semibold)
                                     .foregroundStyle(.tint)
                             }
                         }
                     }
-                    .disabled(!viewModel.canToggleTag(tag))
+                    .disabled(viewModel.isBusy)
                     .accessibilityValue(viewModel.isTagSelected(tag) ? "已选择" : "未选择")
+                }
+            } header: {
+                HStack {
+                    Text("标签 · 可选")
+                    Spacer()
+                    Text("已选 \(viewModel.selectedTags.count) / 最多 \(WriteTagPreference.maximumSelectionCount)")
+                        .monospacedDigit()
                 }
             }
         }
@@ -736,6 +852,7 @@ private struct HistoryListView: View {
                 Button("清空历史", role: .destructive) {
                     showingClearConfirmation = true
                 }
+                .tint(.red)
                 .disabled(viewModel.history.isEmpty || viewModel.isBusy)
             }
         }
@@ -757,13 +874,18 @@ private struct HistoryRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(receipt.timestamp.formatted(date: .omitted, time: .shortened)) · \(receipt.contentKind.displayLabel) · \(operation) \(receipt.items.count) · \(spellingSummary)")
-                .font(.subheadline)
+            Text("\(receipt.contentKind.displayLabel) · \(operation) \(receipt.items.count) · \(spellingSummary)")
+                .font(.body)
                 .lineLimit(1)
-            Text(outcomeSummary)
-                .font(.caption)
-                .foregroundStyle(receipt.isFullSuccess ? Color.secondary : Color.orange)
+            (
+                Text("\(receipt.timestamp.formatted(date: .omitted, time: .shortened)) · ")
+                    .foregroundStyle(.secondary)
+                    + Text(outcomeSummary)
+                    .foregroundStyle(outcomeColor)
+            )
+            .font(.footnote)
         }
+        .padding(.vertical, 2)
     }
 
     private var operation: String { receipt.operationGroup == .create ? "新建" : "更新" }
@@ -780,6 +902,11 @@ private struct HistoryRow: View {
         if receipt.failed > 0 { parts.append("\(receipt.failed) 失败") }
         if receipt.notAttempted > 0 { parts.append("\(receipt.notAttempted) 未执行") }
         return parts.joined(separator: " / ")
+    }
+
+    private var outcomeColor: Color {
+        if receipt.isFullSuccess { return .green }
+        return receipt.failed > 0 ? .red : .orange
     }
 }
 
