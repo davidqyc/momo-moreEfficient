@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-13
-sourceMainSha=1c9f27da658c15d5ac50eaf06522115e3b2374db
+sourceMainSha=5dd4c12d42e01bce4fb738b14f623e331554f0f2
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#71
-CURRENT_UNIQUE_NEXT=UPLOAD_ONE_OWNER_TESTED_TESTFLIGHT_BUILD
+CURRENT_PRIMARY_ISSUE=#97
+CURRENT_UNIQUE_NEXT=ALIGN_XCODE_RELEASE_IDENTITY_THEN_UPLOAD_TESTFLIGHT
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -22,32 +22,45 @@ ACTIVE_WIP=none
 
 - interpretation batch CREATE/UPDATE is production-validated;
 - phrase CREATE + final 3/4-line usability path are production/device validated;
-- iOS companion stores each user's personal API Token device-locally in `WhenUnlockedThisDeviceOnly` Keychain;
+- personal Maimemo API Token remains device-local in `WhenUnlockedThisDeviceOnly` Keychain;
 - current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
-- Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server;
-- OIDC/PKCE is therefore not required for the first external cohort and remains a future convenience/enhancement route;
-- PR #94 merged: user-visible name `小黑鸟伴侣`, final approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md` are on `main`;
-- the one Fable 5 visual-polish pass is implemented and closed in #95 / PR #96;
-- exact #96 candidate passed physical-iPhone smoke on iPhone 17 Pro Max, including AppIcon/display name/main editor/bottom action/Preferences/About/History/Token sheet; DEBUG rehearsal supplement confirmed interpretation and phrase Preview layouts with zero real Maimemo request/write;
-- PR #96 squash-merged to `main` at `1c9f27da658c15d5ac50eaf06522115e3b2374db`.
+- Open Platform support explicitly allowed the device-local personal-Token route for third-party native iOS distribution;
+- PR #94 delivered user-visible name `小黑鸟伴侣`, approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md`;
+- #95 / PR #96 completed the single ~60/100 UI polish and passed physical-iPhone smoke;
+- the first TestFlight archive attempt succeeded technically but upload failed because it used a non-App-Store Team identity;
+- App Store Connect access is confirmed under organization `Awaiting Aesthetic Living Arts (Shenyang) Co., Ltd.` with Team ID `W26LH686PD`;
+- historical Bundle ID `com.davidqyc.momoMoreEfficient` is already owned by an earlier non-release signing path and is not available to the organization Team;
+- organization App ID `XiaoHeiNiaoCompanion` with explicit Bundle ID `com.jiripple.xiaoheiniao` is now registered;
+- App Store Connect iOS app record `小黑鸟伴侣` exists for version 1.0 under the organization Team;
+- canonical public project home is GitHub (`davidqyc/momo-moreEfficient`); TestFlight/App Store are distribution channels, not project authority. Project-specific release identity is recorded in `docs/RELEASE_IDENTITY.md`.
 
-## Current route — #71 first small TestFlight cohort
+## Current route — #97 then #71
 
-Upload exactly one Owner-tested build from current `main` to App Store Connect / TestFlight using the existing Apple Developer signing/account setup.
+First complete one narrow configuration PR under #97:
 
-Keep this lightweight:
+- app target Bundle ID → `com.jiripple.xiaoheiniao`;
+- signed device/archive Team → organization `W26LH686PD`;
+- no target/module/repository rename;
+- no capability expansion;
+- no product/API/Token/write/UI changes;
+- verify Debug/Release effective build settings, tests, device signing and archive.
 
-- no release automation framework;
-- no Fastlane/Xcode Cloud/App Store Connect API integration solely for this cohort;
-- use the existing local Xcode account/signing path;
-- first attempt archive/validation/upload mechanically;
-- if App Store Connect lacks a matching app record, required agreement, role, export-compliance answer or other human-only metadata, stop and report the single concrete blocker instead of inventing values;
-- do not create or expose new Apple credentials in Git/docs/chat;
-- do not upload as `TestFlight Internal Only` because the route requires a later external cohort;
-- after Apple processes the build, provide the minimum TestFlight information and create the smallest required internal/external groups only when needed;
-- external testing remains deliberately small; broad/public-link launch is deferred.
+After #97 Coordinator review/merge, resume #71 and upload exactly one Owner-tested build through the normal App Store Connect/TestFlight path.
 
-For TestFlight App Review, do not build a demo subsystem merely for review. If Apple requires authenticated access, provide a dedicated test credential only through private App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
+Keep release work lightweight:
+
+- no Fastlane/Xcode Cloud/App Store Connect API framework solely for the first cohort;
+- do not create/expose new Apple credentials in Git/docs/chat;
+- do not use `TestFlight Internal Only` because the route requires later external testing;
+- if Apple requests human-only agreement/export-compliance/review metadata, stop at the single concrete blocker rather than inventing answers;
+- external testing remains deliberately small; public-link/broad launch is deferred.
+
+## OSS / distribution boundary
+
+- GitHub repo = canonical source/project/issues/releases home and primary OSS evidence;
+- TestFlight/App Store = install/distribution channel and supporting real-usage evidence;
+- organization ownership of the iOS binary does not replace the GitHub maintainer/project identity;
+- marketing URL may point to the GitHub repo; support/privacy may use zero-cost public GitHub pages/files when Apple requirements are satisfied.
 
 ## Deferred routes
 
