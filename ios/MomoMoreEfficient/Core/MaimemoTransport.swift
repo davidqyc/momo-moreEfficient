@@ -32,6 +32,25 @@ final class MaimemoTransport {
         self.sleeper = sleeper
     }
 
+    /// The official bundle exposes no dedicated credential-validation endpoint.
+    /// Use its narrowest authenticated GET and require the documented 200 schema.
+    func validateCredential() async throws {
+        let response = try await read(
+            route: .credentialValidation,
+            control: nil,
+            readback: false
+        )
+        let object = try jsonObject(response.body)
+        guard let voc = object["voc"] as? [String: Any],
+              let id = voc["id"] as? String,
+              let spelling = voc["spelling"] as? String,
+              isSafeIdentifier(id),
+              BatchParser.normalizeSpelling(spelling) == "apple"
+        else {
+            throw CompanionError.responseRejected
+        }
+    }
+
     func vocabulary(
         spelling: String,
         control: ExecutionControl? = nil
@@ -86,7 +105,7 @@ final class MaimemoTransport {
                   let status = value["status"] as? String,
                   documentedStatuses.contains(status)
             else {
-                throw CompanionError.responseRejected
+                throw CompanionError.itemResponseRejected
             }
             return InterpretationRecord(
                 id: id,
@@ -132,7 +151,7 @@ final class MaimemoTransport {
                   let status = value["status"] as? String,
                   reviewedPhraseStatuses.contains(status)
             else {
-                throw CompanionError.responseRejected
+                throw CompanionError.itemResponseRejected
             }
             return PhraseRecord(
                 id: id,
@@ -188,10 +207,23 @@ final class MaimemoTransport {
         }
         let request = try TransportRequest(route: route)
         let response = try await transport.send(request, credential: credential)
-        guard (200..<300).contains(response.status) else {
-            throw CompanionError.responseRejected
-        }
+        try Self.validateReadStatus(response.status)
         return response
+    }
+
+    private static func validateReadStatus(_ status: Int) throws {
+        if status == 200 { return }
+        if (200..<300).contains(status) { throw CompanionError.responseRejected }
+        switch status {
+        case 401:
+            throw CompanionError.authenticationRejected
+        case 429:
+            throw CompanionError.rateLimited
+        case 500...599:
+            throw CompanionError.serverFailure
+        default:
+            throw CompanionError.globalHTTPFailure
+        }
     }
 
     private func pace() async throws {
@@ -202,12 +234,20 @@ final class MaimemoTransport {
     }
 
     private func jsonObject(_ data: Data) throws -> [String: Any] {
-        guard data.count <= 1_048_576,
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        guard data.count <= 1_048_576 else {
             throw CompanionError.responseRejected
         }
-        return object
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                throw CompanionError.responseRejected
+            }
+            return object
+        } catch let error as CompanionError {
+            throw error
+        } catch {
+            throw CompanionError.responseRejected
+        }
     }
 
     private func safeSingleLine(_ value: Any?, maximumCharacters: Int) -> String? {
@@ -236,7 +276,7 @@ final class MaimemoTransport {
               tags.count <= documentedTags.count,
               tags.allSatisfy({ documentedTags.contains($0) })
         else {
-            throw CompanionError.responseRejected
+            throw CompanionError.itemResponseRejected
         }
         return tags
     }
@@ -246,7 +286,7 @@ final class MaimemoTransport {
         phraseLength: Int
     ) throws -> PhraseHighlight {
         guard let raw = record["highlight"] else { return .missing }
-        guard let values = raw as? [Any] else { throw CompanionError.responseRejected }
+        guard let values = raw as? [Any] else { throw CompanionError.itemResponseRejected }
         if values.isEmpty {
             return .ranges(shape: .emptyArray, values: [])
         }
@@ -254,7 +294,7 @@ final class MaimemoTransport {
         if values.allSatisfy({ $0 is [String: Any] }) {
             let ranges = try values.map { value -> PhraseRange in
                 guard let object = value as? [String: Any] else {
-                    throw CompanionError.responseRejected
+                    throw CompanionError.itemResponseRejected
                 }
                 return try checkedRange(
                     start: object["start"],
@@ -268,7 +308,7 @@ final class MaimemoTransport {
         if values.allSatisfy({ $0 is [Any] }) {
             let ranges = try values.map { value -> PhraseRange in
                 guard let pair = value as? [Any], pair.count == 2 else {
-                    throw CompanionError.responseRejected
+                    throw CompanionError.itemResponseRejected
                 }
                 return try checkedRange(
                     start: pair[0],
@@ -279,7 +319,7 @@ final class MaimemoTransport {
             return .ranges(shape: .integerPairArray, values: ranges)
         }
 
-        throw CompanionError.responseRejected
+        throw CompanionError.itemResponseRejected
     }
 
     private func checkedRange(
@@ -293,7 +333,7 @@ final class MaimemoTransport {
               start < end,
               end <= phraseLength
         else {
-            throw CompanionError.responseRejected
+            throw CompanionError.itemResponseRejected
         }
         return PhraseRange(start: start, end: end)
     }

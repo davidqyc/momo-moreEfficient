@@ -6,6 +6,7 @@ enum HTTPMethod: String, Equatable, Sendable {
 }
 
 enum InterpretationRoute: Equatable, Sendable {
+    case credentialValidation
     case vocabulary(spelling: String)
     case interpretations(vocabularyID: String)
     case createInterpretation
@@ -15,7 +16,7 @@ enum InterpretationRoute: Equatable, Sendable {
 
     var method: HTTPMethod {
         switch self {
-        case .vocabulary, .interpretations, .phrases:
+        case .credentialValidation, .vocabulary, .interpretations, .phrases:
             return .get
         case .createInterpretation, .updateInterpretation, .createPhrase:
             return .post
@@ -24,6 +25,10 @@ enum InterpretationRoute: Equatable, Sendable {
 
     var reviewedPath: String {
         switch self {
+        case .credentialValidation:
+            // Current official OpenAPI bundle (2026-08-14):
+            // GET /open/api/v1/memo/vocabulary?spelling=<word>.
+            return "/open/api/v1/memo/vocabulary"
         case .vocabulary:
             return "/open/api/v1/vocabulary"
         case .interpretations:
@@ -44,6 +49,10 @@ enum InterpretationRoute: Equatable, Sendable {
         )!
         components.path = reviewedPath
         switch self {
+        case .credentialValidation:
+            // "apple" is the vocabulary example in the official schema. A valid
+            // response is checked just as strictly as an ordinary vocabulary read.
+            components.queryItems = [URLQueryItem(name: "spelling", value: "apple")]
         case let .vocabulary(spelling):
             guard !spelling.isEmpty else { throw CompanionError.inputRejected }
             components.queryItems = [URLQueryItem(name: "spelling", value: spelling)]

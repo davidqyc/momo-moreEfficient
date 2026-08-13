@@ -68,6 +68,11 @@ enum ContentMode: String, CaseIterable, Equatable, Sendable {
     var editorAccessibilityLabel: String {
         self == .interpretation ? "批次释义输入" : "批次例句输入"
     }
+    var editorHint: String {
+        self == .interpretation
+            ? "单条格式：单词换行 n. 释义；支持 n. / v. / adj. / adv. / phr. 等词性"
+            : "格式：单词 · 英文例句 · 中文翻译 · 来源（可选）"
+    }
 }
 
 enum CompanionError: String, Error, Equatable, CustomStringConvertible {
@@ -80,7 +85,12 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
     case blocked
     case cancelled
     case transport
+    case authenticationRejected
+    case rateLimited
+    case serverFailure
+    case globalHTTPFailure
     case responseRejected
+    case itemResponseRejected
     case uncertainWriteOutcome
     case previewInterrupted
     case credentialStorageUnavailable
@@ -106,8 +116,18 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
             return "操作已取消；未发送新的写请求。"
         case .transport:
             return "网络请求失败；不会自动重试写入。"
+        case .authenticationRejected:
+            return "墨墨已拒绝当前 Token；请重新连接。"
+        case .rateLimited:
+            return "墨墨请求过于频繁；操作已停止，请稍后重试。"
+        case .serverFailure:
+            return "墨墨服务暂时不可用；操作已停止。"
+        case .globalHTTPFailure:
+            return "墨墨服务拒绝了本次读取；操作已停止。"
         case .responseRejected:
             return "服务返回无法安全确认；操作已停止。"
+        case .itemResponseRejected:
+            return "此条记录无法安全确认。"
         case .uncertainWriteOutcome:
             return "写入结果无法确认；不要重试，操作已停止。"
         case .previewInterrupted:
@@ -116,6 +136,16 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
             return "无法安全访问设备上的 Token；请解锁设备后重试。"
         case .remainingPhaseChanged:
             return "后续阶段的服务器状态已变化；该阶段未发送任何写请求，请重新预览。"
+        }
+    }
+
+    var abortsReadPlan: Bool {
+        switch self {
+        case .authenticationRejected, .transport, .rateLimited, .serverFailure,
+             .globalHTTPFailure, .responseRejected:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -270,6 +300,25 @@ struct ExecutionSummary: Equatable, Sendable {
     let cancelled: Bool
     let stalePreview: Bool
     let results: [ItemExecutionResult]
+    let terminalError: CompanionError?
+
+    init(
+        group: OperationGroup,
+        succeeded: Int,
+        failed: Int,
+        cancelled: Bool,
+        stalePreview: Bool,
+        results: [ItemExecutionResult],
+        terminalError: CompanionError? = nil
+    ) {
+        self.group = group
+        self.succeeded = succeeded
+        self.failed = failed
+        self.cancelled = cancelled
+        self.stalePreview = stalePreview
+        self.results = results
+        self.terminalError = terminalError
+    }
 
     static func stale(_ group: OperationGroup) -> ExecutionSummary {
         ExecutionSummary(
@@ -279,6 +328,18 @@ struct ExecutionSummary: Equatable, Sendable {
             cancelled: false,
             stalePreview: true,
             results: []
+        )
+    }
+
+    static func globalFailure(_ group: OperationGroup, _ error: CompanionError) -> ExecutionSummary {
+        ExecutionSummary(
+            group: group,
+            succeeded: 0,
+            failed: 0,
+            cancelled: false,
+            stalePreview: false,
+            results: [],
+            terminalError: error
         )
     }
 
@@ -316,6 +377,9 @@ enum BatchRunOutcome: Equatable, Sendable {
     case completed
     /// An earlier phase resolved, and the named phase was deliberately not started.
     case stoppedBeforeRemainingPhase(group: OperationGroup, reason: BatchRunStopReason)
+    /// A session/global read failed. Phase summaries preserve any already
+    /// dispatched write outcome; no later POST is started.
+    case globalFailure(CompanionError)
 }
 
 /// The result of one Owner-authorized whole-plan run.

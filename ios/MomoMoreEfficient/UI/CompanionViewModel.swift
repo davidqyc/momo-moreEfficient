@@ -35,11 +35,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var previewProgress: PreviewProgress?
     @Published private(set) var phraseObservationMessage: String?
     @Published private(set) var selectedTags: [String] = []
+    @Published private(set) var isValidatingCredential = false
+    @Published private(set) var tokenErrorMessage: String?
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
     private let historyStore: HistoryStore
     private let transportFactory: () -> HTTPTransport
+    private let credentialValidationTransportFactory: () -> HTTPTransport
     private let sleeperFactory: () -> RequestSleeper
     private let backgroundAssertionFactory: @MainActor () -> BackgroundExecutionAssertion
     private let dateProvider: () -> Date
@@ -111,6 +114,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         tokenStore: TokenStore = KeychainTokenStore(),
         historyStore: HistoryStore = FileHistoryStore(),
         transportFactory: @escaping () -> HTTPTransport = { URLSessionHTTPTransport() },
+        credentialValidationTransportFactory: (() -> HTTPTransport)? = nil,
         sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() },
         backgroundAssertionFactory: @escaping @MainActor () -> BackgroundExecutionAssertion
             = { makeDefaultBackgroundExecutionAssertion() },
@@ -120,38 +124,83 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         self.tokenStore = tokenStore
         self.historyStore = historyStore
         self.transportFactory = transportFactory
+        self.credentialValidationTransportFactory = credentialValidationTransportFactory
+            ?? transportFactory
         self.sleeperFactory = sleeperFactory
         self.backgroundAssertionFactory = backgroundAssertionFactory
         self.dateProvider = dateProvider
         self.preferenceDefaults = preferenceDefaults
         selectedTags = WriteTagPreference.load(from: preferenceDefaults)
         restoreHistory()
-        restoreCredentialIfAvailable()
     }
 
-    func connect(token: inout String) {
-        var candidate = token
+    /// Validates a candidate independently. The active session and Keychain value
+    /// are untouched until the documented authenticated GET succeeds.
+    func connect(token: String) async -> Bool {
+        guard !isBusy, !isValidatingCredential else { return false }
+        var normalized = InMemoryCredential.normalize(token)
+        defer { normalized.removeAll(keepingCapacity: false) }
+        isValidatingCredential = true
+        tokenErrorMessage = nil
+        defer {
+            isValidatingCredential = false
+            if owesBackgroundTeardown {
+                owesBackgroundTeardown = false
+                clearTransientCredential(preservingPreviewPresentation: true)
+            }
+        }
+
+        do {
+            let candidate = try InMemoryCredential(token: normalized)
+            do {
+                try await validateCredential(candidate)
+                try tokenStore.saveToken(normalized)
+            } catch {
+                candidate.clear()
+                throw error
+            }
+            credentialSession.replace(with: candidate)
+            sessionID = UUID()
+            isConnected = true
+            invalidatePreview()
+            errorMessage = nil
+            tokenErrorMessage = nil
+            return true
+        } catch let error as CompanionError {
+            tokenErrorMessage = credentialCandidateMessage(for: error)
+        } catch {
+            tokenErrorMessage = CompanionError.credentialStorageUnavailable.description
+        }
+        return false
+    }
+
+    func clearTokenError() {
+        guard !isValidatingCredential else { return }
+        tokenErrorMessage = nil
+    }
+
+    #if DEBUG
+    /// Existing XCTest setup for write/preview invariants that are unrelated to
+    /// onboarding. New credential tests must use `connect(token:)` and the fake
+    /// authenticated GET; this helper is not reachable from the product UI.
+    func installVerifiedCredentialForTesting(token: inout String) {
+        var candidate = InMemoryCredential.normalize(token)
         token.removeAll(keepingCapacity: false)
         defer { candidate.removeAll(keepingCapacity: false) }
-        clearTransientCredential(preservingPreviewPresentation: false)
         do {
             try credentialSession.connect(token: candidate)
             try tokenStore.saveToken(candidate)
             sessionID = UUID()
             isConnected = true
             errorMessage = nil
+            invalidatePreview()
         } catch let error as CompanionError {
-            credentialSession.disconnect()
-            sessionID = nil
-            isConnected = false
             errorMessage = error.description
         } catch {
-            credentialSession.disconnect()
-            sessionID = nil
-            isConnected = false
             errorMessage = CompanionError.credentialStorageUnavailable.description
         }
     }
+    #endif
 
     func removeToken() {
         guard !isBusy else { return }
@@ -179,16 +228,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// the system reclaiming our background assertion stops it, through the
     /// ordinary cancellation path.
     func enterBackground() {
-        guard !isExecuting, !isPreviewing else {
+        guard !isExecuting, !isPreviewing, !isValidatingCredential else {
             owesBackgroundTeardown = true
             return
         }
         clearTransientCredential(preservingPreviewPresentation: true)
     }
 
-    func enterForeground() {
+    func enterForeground() async {
         owesBackgroundTeardown = false
-        restoreCredentialIfAvailable()
+        await restoreCredentialIfAvailable()
         restoreSuspendedPreviewIfStillValid()
     }
 
@@ -324,6 +373,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             invalidatePreviewAfterRefreshFailure(
                 preservingStalePresentation: preserveStalePresentationOnFailure
             )
+            handleSessionFailure(error)
             errorMessage = control.isCancellationRequested
                 ? CompanionError.previewInterrupted.description
                 : error.description
@@ -517,7 +567,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 control: control,
                 progress: progress
             )
-            if result.stalePreview {
+            if let terminalError = result.terminalError {
+                if !result.results.isEmpty {
+                    receipt = appendPhraseReceipt(displayed: displayed, result: result)
+                }
+                handleSessionFailure(terminalError)
+                errorMessage = terminalError.description
+            } else if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
             } else {
                 receipt = appendPhraseReceipt(displayed: displayed, result: result)
@@ -651,7 +707,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 control: control,
                 progress: progress
             )
-            if result.outcome == .stale {
+            if case let .globalFailure(terminalError) = result.outcome {
+                if !result.phases.isEmpty {
+                    receipts = recordBatchExecution(
+                        displayed: displayed,
+                        plannedPhases: intent.approval.phases.map(\.group),
+                        result: result
+                    )
+                }
+                handleSessionFailure(terminalError)
+                errorMessage = terminalError.description
+            } else if result.outcome == .stale {
                 errorMessage = CompanionError.stalePreview.description
             } else {
                 receipts = recordBatchExecution(
@@ -769,6 +835,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func batchErrorMessage(for result: BatchRunResult) -> String? {
+        if case let .globalFailure(error) = result.outcome { return error.description }
         if case let .stoppedBeforeRemainingPhase(_, reason) = result.outcome {
             switch reason {
             case .remainingPhaseChanged:
@@ -796,13 +863,21 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         in displayed: PreviewSnapshot,
         fullySucceeded: Bool
     ) -> String? {
-        if fullySucceeded { return "" }
+        let blocked = displayed.items
+            .filter { $0.classification == .blocked }
+            .map(\.entry)
+        if fullySucceeded {
+            return BatchParser.canonicalDocument(for: blocked)
+        }
         let firstIncomplete = plannedPhases.firstIndex { group in
             receipts.first { $0.operationGroup == group }?.isFullSuccess != true
         }
         guard let firstIncomplete, firstIncomplete > 0 else { return nil }
-        let remaining = plannedPhases[firstIncomplete...]
-            .flatMap { displayed.items(for: $0).map(\.entry) }
+        let remaining = (
+            plannedPhases[firstIncomplete...]
+                .flatMap { displayed.items(for: $0).map(\.entry) }
+                + blocked
+        )
             .sorted { $0.ordinal < $1.ordinal }
         return BatchParser.canonicalDocument(for: remaining)
     }
@@ -905,7 +980,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 control: control,
                 progress: progress
             )
-            if result.stalePreview {
+            if let terminalError = result.terminalError {
+                if !result.results.isEmpty {
+                    completedReceipt = recordExecution(
+                        group: group,
+                        displayed: displayed,
+                        result: result
+                    )
+                }
+                handleSessionFailure(terminalError)
+                errorMessage = terminalError.description
+            } else if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
             } else {
                 completedReceipt = recordExecution(
@@ -1323,7 +1408,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         in displayed: PreviewSnapshot
     ) -> String {
         let remainingGroup: OperationGroup = completedGroup == .create ? .update : .create
-        let remainingEntries = displayed.items(for: remainingGroup).map(\.entry)
+        let remainingEntries = (
+            displayed.items(for: remainingGroup).map(\.entry)
+                + displayed.items.filter { $0.classification == .blocked }.map(\.entry)
+        ).sorted { $0.ordinal < $1.ordinal }
         return BatchParser.canonicalDocument(for: remainingEntries)
     }
 
@@ -1348,29 +1436,76 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
     }
 
-    private func restoreCredentialIfAvailable() {
-        guard !credentialSession.isConnected else { return }
+    private func restoreCredentialIfAvailable() async {
+        guard !credentialSession.isConnected, !isValidatingCredential else { return }
+        isValidatingCredential = true
+        defer { isValidatingCredential = false }
         do {
             guard var token = try tokenStore.loadToken() else {
                 isConnected = false
                 return
             }
             defer { token.removeAll(keepingCapacity: false) }
-            try credentialSession.connect(token: token)
+            let candidate = try InMemoryCredential(token: token)
+            do {
+                try await validateCredential(candidate)
+            } catch {
+                candidate.clear()
+                throw error
+            }
+            credentialSession.replace(with: candidate)
             sessionID = UUID()
             isConnected = true
-            errorMessage = nil
+            if tokenErrorMessage == nil { errorMessage = nil }
         } catch let error as CompanionError {
             credentialSession.disconnect()
             sessionID = nil
             isConnected = false
-            errorMessage = error.description
+            if tokenErrorMessage == nil { errorMessage = error.description }
         } catch {
             credentialSession.disconnect()
             sessionID = nil
             isConnected = false
-            errorMessage = CompanionError.credentialStorageUnavailable.description
+            if tokenErrorMessage == nil {
+                errorMessage = CompanionError.credentialStorageUnavailable.description
+            }
         }
+    }
+
+    private func validateCredential(_ candidate: InMemoryCredential) async throws {
+        let lease = try candidate.makeOperationLease()
+        defer { lease.clear() }
+        let api = MaimemoTransport(
+            transport: credentialValidationTransportFactory(),
+            credential: lease,
+            sleeper: sleeperFactory()
+        )
+        try await api.validateCredential()
+    }
+
+    private func credentialCandidateMessage(for error: CompanionError) -> String {
+        switch error {
+        case .credentialRejected:
+            return "Token 格式无效；请检查后重试。"
+        case .authenticationRejected:
+            return "这个 Token 未通过墨墨验证；未保存，请检查后重试。"
+        case .transport:
+            return "无法连接墨墨验证 Token；请检查网络后重试。"
+        case .rateLimited:
+            return "墨墨请求过于频繁，暂时无法验证 Token；请稍后重试。"
+        case .serverFailure, .globalHTTPFailure, .responseRejected:
+            return "墨墨暂时无法安全验证 Token；候选 Token 未保存。"
+        default:
+            return error.description
+        }
+    }
+
+    private func handleSessionFailure(_ error: CompanionError) {
+        guard error == .authenticationRejected else { return }
+        credentialSession.disconnect()
+        sessionID = nil
+        isConnected = false
+        invalidateExecutionAuthorization()
     }
 
     nonisolated var debugDescription: String { "CompanionViewModel(<redacted credential>)" }

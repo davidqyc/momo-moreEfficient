@@ -5,6 +5,10 @@ import XCTest
 let fakeToken = "FAKE_IOS_TEST_TOKEN_NOT_VALID"
 let legacyTestTags = ["MBA", "BEC", "GMAT"]
 
+func successfulCredentialValidationTransport() -> HTTPTransport {
+    FakeHTTPTransport([vocabularyResponse("INVALID_VALIDATION_VOC", "apple")])
+}
+
 final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String?
     private(set) var saveCount = 0
@@ -27,6 +31,7 @@ final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     }
 
     var hasStoredToken: Bool { token != nil }
+    var storedTokenForTesting: String? { token }
     var debugDescription: String { "FakeTokenStore(<redacted>)" }
 }
 

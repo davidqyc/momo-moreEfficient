@@ -4,12 +4,84 @@ import XCTest
 
 @MainActor
 final class PhraseUIIntegrationTests: XCTestCase {
+    func testPhraseGlobalFailuresAbortPreviewWithoutFabricatedRows() async {
+        let cases: [(StubbedResult, CompanionError, Bool)] = [
+            (jsonResponse(["error": "auth"], status: 401), .authenticationRejected, false),
+            (.failure(.transport), .transport, true),
+            (jsonResponse(["error": "rate"], status: 429), .rateLimited, true),
+            (jsonResponse(["error": "server"], status: 503), .serverFailure, true),
+            (jsonResponse(["unexpected": []]), .responseRejected, true),
+        ]
+        for (failure, expectedError, remainsConnected) in cases {
+            let transport = FakeHTTPTransport([failure])
+            let model = connectedModel(transports: [transport])
+            model.selectMode(.phrase)
+            model.sourceText = phraseDocument
+
+            await model.previewCurrentInput()
+
+            XCTAssertNil(model.phrasePreview)
+            XCTAssertFalse(model.hasExecutablePreview)
+            XCTAssertEqual(model.errorMessage, expectedError.description)
+            XCTAssertEqual(model.isConnected, remainsConnected)
+            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.postCount, 0)
+        }
+    }
+
+    func testPhraseAuthRejectionDuringFreshWritePreflightDisconnectsBeforePOST() async {
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([])],
+            [jsonResponse(["error": "auth"], status: 401)],
+        ])
+        let model = connectedModel(factory: factory)
+        model.selectMode(.phrase)
+        model.sourceText = phraseDocument
+        await model.previewCurrentInput()
+        model.askToExecutePhrase()
+
+        await model.executeConfirmedPhrase()?.value
+
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(model.errorMessage, CompanionError.authenticationRejected.description)
+        XCTAssertNil(model.phrasePreview)
+        XCTAssertTrue(model.history.isEmpty)
+        XCTAssertEqual(model.sourceText, phraseDocument)
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 0)
+    }
+
+    func testPhraseAuthRejectionDuringReadbackDisconnectsAndRecordsUnknownWrite() async {
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([])],
+            [
+                vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([]),
+                jsonResponse([:], status: 201),
+                jsonResponse(["error": "auth"], status: 401),
+            ],
+        ])
+        let model = connectedModel(factory: factory)
+        model.selectMode(.phrase)
+        model.sourceText = phraseDocument
+        await model.previewCurrentInput()
+        model.askToExecutePhrase()
+
+        await model.executeConfirmedPhrase()?.value
+
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(model.errorMessage, CompanionError.authenticationRejected.description)
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notVerified])
+        XCTAssertEqual(model.sourceText, phraseDocument)
+    }
+
     func testDefaultModeSeparateDraftsAndSwitchInvalidatesAuthority() async {
         let model = CompanionViewModel.makeRehearsal(
             perRequestDelaySeconds: 0,
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
+        await model.enterForeground()
         XCTAssertEqual(model.contentMode, .interpretation)
 
         model.sourceText = "word\nn. 释义草稿"
@@ -124,9 +196,13 @@ final class PhraseUIIntegrationTests: XCTestCase {
             tokenStore: RehearsalTokenStore(),
             historyStore: history,
             transportFactory: { RehearsalTransport(perRequestDelaySeconds: 0) },
+            credentialValidationTransportFactory: {
+                RehearsalTransport(perRequestDelaySeconds: 0)
+            },
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
+        await model.enterForeground()
         model.sourceText = "word\nn. 释义草稿"
         model.selectMode(.phrase)
         model.sourceText = phraseDocument
@@ -248,7 +324,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var token = fakeToken
-        model.connect(token: &token)
+        model.installVerifiedCredentialForTesting(token: &token)
         model.selectMode(.phrase)
         model.sourceText = phraseDocument
         await model.previewCurrentInput()
@@ -374,7 +450,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         XCTAssertTrue(model.isPreviewStale)
         XCTAssertFalse(model.hasExecutablePreview)
 
-        model.enterForeground()
+        await model.enterForeground()
         XCTAssertTrue(model.isConnected)
         XCTAssertFalse(model.isPreviewStale)
         XCTAssertTrue(model.hasExecutablePreview)
@@ -387,6 +463,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
+        await model.enterForeground()
         model.selectMode(.phrase)
         model.sourceText = phraseDocument
         await model.previewCurrentInput()
@@ -450,11 +527,12 @@ final class PhraseUIIntegrationTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: sleeperFactory,
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
         var token = fakeToken
-        model.connect(token: &token)
+        model.installVerifiedCredentialForTesting(token: &token)
         return model
     }
 
@@ -463,11 +541,12 @@ final class PhraseUIIntegrationTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: factory.make,
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
         var token = fakeToken
-        model.connect(token: &token)
+        model.installVerifiedCredentialForTesting(token: &token)
         return model
     }
 

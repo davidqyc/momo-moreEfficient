@@ -56,7 +56,10 @@ struct ContentView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingTokenSheet, onDismiss: clearTokenDraft) {
+        .sheet(isPresented: $showingTokenSheet, onDismiss: {
+            clearTokenDraft()
+            viewModel.clearTokenError()
+        }) {
             tokenSheet
         }
         .confirmationDialog(
@@ -115,13 +118,14 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                viewModel.enterForeground()
+                Task { await viewModel.enterForeground() }
             case .inactive, .background:
                 viewModel.enterBackground()
             @unknown default:
                 viewModel.enterBackground()
             }
         }
+        .task { await viewModel.enterForeground() }
     }
 
     @ViewBuilder
@@ -214,8 +218,8 @@ struct ContentView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityLabel(viewModel.contentMode.editorAccessibilityLabel)
-                if viewModel.sourceText.isEmpty, let hint = editorPlaceholder {
-                    Text(hint)
+                if viewModel.sourceText.isEmpty {
+                    Text(viewModel.contentMode.editorHint)
                         .font(.subheadline)
                         .foregroundStyle(.tertiary)
                         .padding(.top, 14)
@@ -245,14 +249,6 @@ struct ContentView: View {
         .padding(.horizontal)
         .padding(.top, 6)
         .padding(.bottom, 10)
-    }
-
-    /// The existing per-mode format hint, shown inside the empty editor.
-    /// Interpretation mode has no established hint copy, so it stays empty.
-    private var editorPlaceholder: String? {
-        viewModel.contentMode == .phrase
-            ? "格式：单词 · 英文例句 · 中文翻译 · 来源（可选）"
-            : nil
     }
 
     private func previewSurface(_ preview: PreviewPresentation) -> some View {
@@ -630,6 +626,11 @@ struct ContentView: View {
                                 .accessibilityHidden(true)
                         }
                     }
+                    if let message = viewModel.tokenErrorMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
                 } header: {
                     Text("个人 Token")
                 } footer: {
@@ -664,15 +665,22 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showingTokenSheet = false }
+                    Button("取消") {
+                        viewModel.clearTokenError()
+                        showingTokenSheet = false
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(viewModel.isConnected ? "更换" : "连接") {
-                        viewModel.connect(token: &tokenDraft)
-                        showingTokenSheet = false
+                        Task {
+                            if await viewModel.connect(token: tokenDraft) {
+                                clearTokenDraft()
+                                showingTokenSheet = false
+                            }
+                        }
                     }
                     .fontWeight(.semibold)
-                    .disabled(tokenDraft.isEmpty)
+                    .disabled(tokenDraft.isEmpty || viewModel.isValidatingCredential)
                 }
             }
         }

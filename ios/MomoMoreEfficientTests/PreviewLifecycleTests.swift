@@ -40,7 +40,7 @@ final class PreviewLifecycleTests: XCTestCase {
         let preview = Task { await model.previewCurrentInput() }
         await gate.waitUntilEntered()
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         await gate.resume()
         await preview.value
 
@@ -62,7 +62,7 @@ final class PreviewLifecycleTests: XCTestCase {
         let preview = Task { await model.previewCurrentInput() }
         await gate.waitUntilEntered()
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         // A second call while one is in flight must be refused outright.
         await model.previewCurrentInput()
         XCTAssertEqual(assertion.beginCount, 1)
@@ -84,9 +84,9 @@ final class PreviewLifecycleTests: XCTestCase {
         let preview = Task { await model.previewCurrentInput() }
         await gate.waitUntilEntered()
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         await gate.resume()
         await preview.value
 
@@ -117,7 +117,7 @@ final class PreviewLifecycleTests: XCTestCase {
         XCTAssertTrue(model.isPreviewStale)
         XCTAssertNil(model.executeConfirmed(.create))
 
-        model.enterForeground()
+        await model.enterForeground()
 
         // Same document, same stored token: usable without re-reading anything.
         XCTAssertTrue(model.isConnected)
@@ -142,7 +142,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await preview.value
 
         model.sourceText = "one\nn. 改过的释义"
-        model.enterForeground()
+        await model.enterForeground()
 
         XCTAssertFalse(model.hasExecutablePreview)
         XCTAssertNil(model.preview)
@@ -165,8 +165,8 @@ final class PreviewLifecycleTests: XCTestCase {
 
         // A different token is now the stored one, so the fingerprint cannot match.
         var replacement = "FAKE_REPLACEMENT_TOKEN_NOT_VALID"
-        model.connect(token: &replacement)
-        model.enterForeground()
+        model.installVerifiedCredentialForTesting(token: &replacement)
+        await model.enterForeground()
 
         XCTAssertFalse(model.hasExecutablePreview)
         XCTAssertFalse(model.isPreviewStale)
@@ -189,7 +189,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await preview.value
 
         model.removeToken()
-        model.enterForeground()
+        await model.enterForeground()
 
         XCTAssertFalse(model.isConnected)
         XCTAssertFalse(model.hasExecutablePreview)
@@ -235,11 +235,12 @@ final class PreviewLifecycleTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleepers.isEmpty ? RecordingSleeper() : sleepers.removeFirst() },
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         model.sourceText = "one\nn. 一"
 
         let preview = Task { await model.previewCurrentInput() }
@@ -249,7 +250,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await preview.value
 
         // Returning to the app must not silently re-run it.
-        model.enterForeground()
+        await model.enterForeground()
         XCTAssertNil(model.preview)
         XCTAssertEqual(secondTransport.getCount, 0)
 
@@ -320,11 +321,12 @@ final class PreviewLifecycleTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleepers.isEmpty ? RecordingSleeper() : sleepers.removeFirst() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         model.sourceText = "one\nn. 一"
 
         let preview = Task { await model.previewCurrentInput() }
@@ -332,7 +334,7 @@ final class PreviewLifecycleTests: XCTestCase {
         model.enterBackground()
         await gate.resume()
         await preview.value
-        model.enterForeground()
+        await model.enterForeground()
         XCTAssertTrue(model.hasExecutablePreview)
 
         model.askToExecute(.create)
@@ -357,7 +359,7 @@ final class PreviewLifecycleTests: XCTestCase {
         model.enterBackground()
         await gate.resume()
         await preview.value
-        model.enterForeground()
+        await model.enterForeground()
 
         // Restoring read state never revives an approval; one must be armed again.
         XCTAssertNil(model.pendingConfirmation)
@@ -374,6 +376,7 @@ final class PreviewLifecycleTests: XCTestCase {
             sleeperFactory: { gate },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
+        await model.enterForeground()
         model.sourceText = "collapse\nn. 崩塌\nledger\nn. 分类账\nmanning\nn. 人员配置"
 
         let preview = Task { await model.previewCurrentInput() }
@@ -382,7 +385,7 @@ final class PreviewLifecycleTests: XCTestCase {
         model.enterBackground()
         await gate.resume()
         await preview.value
-        model.enterForeground()
+        await model.enterForeground()
 
         // All three entries read once, classified, and usable on return.
         XCTAssertEqual(model.preview?.rows.count, 3)
@@ -426,11 +429,12 @@ final class PreviewLifecycleTests: XCTestCase {
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleeper },
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         XCTAssertTrue(draft.isEmpty)
         return model
     }

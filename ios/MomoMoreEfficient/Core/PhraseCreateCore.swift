@@ -247,6 +247,23 @@ struct PhraseExecutionSummary: Equatable, Sendable {
     let cancelled: Bool
     let stalePreview: Bool
     let results: [PhraseItemExecutionResult]
+    let terminalError: CompanionError?
+
+    init(
+        succeeded: Int,
+        failed: Int,
+        cancelled: Bool,
+        stalePreview: Bool,
+        results: [PhraseItemExecutionResult],
+        terminalError: CompanionError? = nil
+    ) {
+        self.succeeded = succeeded
+        self.failed = failed
+        self.cancelled = cancelled
+        self.stalePreview = stalePreview
+        self.results = results
+        self.terminalError = terminalError
+    }
 
     static let stale = PhraseExecutionSummary(
         succeeded: 0,
@@ -255,6 +272,17 @@ struct PhraseExecutionSummary: Equatable, Sendable {
         stalePreview: true,
         results: []
     )
+
+    static func globalFailure(_ error: CompanionError) -> PhraseExecutionSummary {
+        PhraseExecutionSummary(
+            succeeded: 0,
+            failed: 0,
+            cancelled: false,
+            stalePreview: false,
+            results: [],
+            terminalError: error
+        )
+    }
 
     var isFullSuccess: Bool {
         !stalePreview
@@ -352,6 +380,8 @@ struct PhrasePreflightPlanner {
                 }
             } catch CompanionError.cancelled {
                 throw CompanionError.cancelled
+            } catch let error as CompanionError where error.abortsReadPlan {
+                throw error
             } catch {
                 planned.append(
                     PhrasePreflightItem(
@@ -631,6 +661,8 @@ struct PhraseWriteExecutor {
                 stalePreview: false,
                 results: []
             )
+        } catch let error as CompanionError where error.abortsReadPlan {
+            return .globalFailure(error)
         } catch {
             return .stale
         }
@@ -644,6 +676,7 @@ struct PhraseWriteExecutor {
         var results: [PhraseItemExecutionResult] = []
         var succeeded = 0
         var failed = 0
+        var terminalError: CompanionError?
 
         defer { progress?.report(.finishing(group: .create)) }
 
@@ -689,6 +722,18 @@ struct PhraseWriteExecutor {
                         control: control,
                         readback: true
                     )
+                } catch let error as CompanionError where error == .authenticationRejected {
+                    control.finishPostResolution()
+                    failed += 1
+                    terminalError = error
+                    results.append(
+                        PhraseItemExecutionResult(
+                            spelling: item.entry.spelling,
+                            outcome: .notVerified,
+                            observations: []
+                        )
+                    )
+                    break
                 } catch {
                     control.finishPostResolution()
                     failed += 1
@@ -749,7 +794,8 @@ struct PhraseWriteExecutor {
             failed: failed,
             cancelled: control.isCancellationRequested,
             stalePreview: false,
-            results: results
+            results: results,
+            terminalError: terminalError
         )
     }
 }

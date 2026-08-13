@@ -103,8 +103,8 @@ final class RehearsalHistoryStore: HistoryStore {
     }
 }
 
-/// Hands out a placeholder token so the app is "connected" without ever reading
-/// the Keychain. Nothing is persisted anywhere.
+/// Hands out a placeholder token without ever reading the Keychain. The normal
+/// authenticated fake GET still has to succeed before the app becomes connected.
 final class RehearsalTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String? = RehearsalMode.placeholderToken
 
@@ -162,6 +162,10 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         }
 
         switch request.route {
+        case .credentialValidation:
+            return try json([
+                "voc": ["id": "REHEARSAL_VALIDATION_VOC", "spelling": "apple"],
+            ])
         case let .vocabulary(spelling):
             return try json(["voc": ["id": vocabularyID(for: spelling), "spelling": spelling]])
 

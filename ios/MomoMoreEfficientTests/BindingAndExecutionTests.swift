@@ -449,7 +449,7 @@ final class BindingAndExecutionTests: XCTestCase {
             2
         )
         XCTAssertEqual(
-            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 2;").count - 1,
+            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 3;").count - 1,
             2
         )
         XCTAssertEqual(
