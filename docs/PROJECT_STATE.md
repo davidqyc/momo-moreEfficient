@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-13
-sourceMainSha=5dd4c12d42e01bce4fb738b14f623e331554f0f2
+sourceMainSha=98b1338dc1b4654cbb248f569f9db86c84a19206
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#97
-CURRENT_UNIQUE_NEXT=ALIGN_XCODE_RELEASE_IDENTITY_THEN_UPLOAD_TESTFLIGHT
+CURRENT_PRIMARY_ISSUE=#71
+CURRENT_UNIQUE_NEXT=WAIT_FOR_APPLE_PROCESSING_THEN_CONFIGURE_SMALL_TESTFLIGHT_COHORT
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -27,33 +27,32 @@ ACTIVE_WIP=none
 - Open Platform support explicitly allowed the device-local personal-Token route for third-party native iOS distribution;
 - PR #94 delivered user-visible name `小黑鸟伴侣`, approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md`;
 - #95 / PR #96 completed the single ~60/100 UI polish and passed physical-iPhone smoke;
-- the first TestFlight archive attempt succeeded technically but upload failed because it used a non-App-Store Team identity;
-- App Store Connect access is confirmed under organization `Awaiting Aesthetic Living Arts (Shenyang) Co., Ltd.` with Team ID `W26LH686PD`;
-- historical Bundle ID `com.davidqyc.momoMoreEfficient` is already owned by an earlier non-release signing path and is not available to the organization Team;
-- organization App ID `XiaoHeiNiaoCompanion` with explicit Bundle ID `com.jiripple.xiaoheiniao` is now registered;
-- App Store Connect iOS app record `小黑鸟伴侣` exists for version 1.0 under the organization Team;
+- organization release identity is now frozen and merged through #97 / PR #98: Team `W26LH686PD`, Bundle ID `com.jiripple.xiaoheiniao`, version `1.0 (1)`;
+- organization App ID and App Store Connect iOS app record `小黑鸟伴侣` exist;
+- CLI upload attempts were blocked pre-dispatch by Xcode account-session handling, with zero binary dispatch and zero retries;
+- Xcode Organizer GUI upload then succeeded on 2026-08-13: `MomoMoreEfficient 1.0 (1) uploaded`; Organizer status shows `Uploaded to Apple`;
 - canonical public project home is GitHub (`davidqyc/momo-moreEfficient`); TestFlight/App Store are distribution channels, not project authority. Project-specific release identity is recorded in `docs/RELEASE_IDENTITY.md`.
 
-## Current route — #97 then #71
+## Current route — #71 first small TestFlight cohort
 
-First complete one narrow configuration PR under #97:
+Do not upload another build unless a new code/build-number change is intentionally authorized.
 
-- app target Bundle ID → `com.jiripple.xiaoheiniao`;
-- signed device/archive Team → organization `W26LH686PD`;
-- no target/module/repository rename;
-- no capability expansion;
-- no product/API/Token/write/UI changes;
-- verify Debug/Release effective build settings, tests, device signing and archive.
+Next:
 
-After #97 Coordinator review/merge, resume #71 and upload exactly one Owner-tested build through the normal App Store Connect/TestFlight path.
+1. Wait for Apple to finish processing build `1.0 (1)` and confirm it appears under the TestFlight tab.
+2. If Apple requests export-compliance or other human judgment, stop at that single field and answer deliberately; do not invent values.
+3. Configure only the minimum TestFlight information required for the first small cohort.
+4. Internal testing may be used for a quick Owner/account-holder sanity check, but the actual goal is a deliberately small external cohort.
+5. For external testing, create one small external group, add build `1.0 (1)`, complete required Test Information / TestFlight App Review information, and invite only a few known testers by email at first; no public link/broad launch yet.
+6. Record genuine installs/use/feedback in #7.
 
-Keep release work lightweight:
+Keep this lightweight:
 
 - no Fastlane/Xcode Cloud/App Store Connect API framework solely for the first cohort;
 - do not create/expose new Apple credentials in Git/docs/chat;
-- do not use `TestFlight Internal Only` because the route requires later external testing;
-- if Apple requests human-only agreement/export-compliance/review metadata, stop at the single concrete blocker rather than inventing answers;
-- external testing remains deliberately small; public-link/broad launch is deferred.
+- no additional product/visual work before the first cohort unless Apple processing reveals a concrete binary defect;
+- no public App Store submission in this phase;
+- #99 Phase-2 discovery remains parked until the uploaded build is processed and the release path is proven end-to-end enough to start testing.
 
 ## OSS / distribution boundary
 
@@ -65,13 +64,14 @@ Keep release work lightweight:
 ## Deferred routes
 
 ```text
+#99 Phase 2 capability/field/demand sweep = NEXT PRODUCT DISCOVERY AFTER TESTFLIGHT PROCESSING / RELEASE PATH PROOF
 phrase duplicate/conflict UX = FUTURE: align closer to interpretation UX; allow Preview-time removal of redundant incoming candidates from the pending batch; no automatic/server DELETE without separate design/authorization
 #72 OIDC/PKCE = OPTIONAL FUTURE ENHANCEMENT; reopen only for real auth friction or Open-Platform-only features
 phrase automatic replacement / phrase UPDATE = DEFER
 nickname/avatar account identity = DEFER with OIDC
 study/profile dashboard = DEFER
 broad public launch / demo / social campaign = DEFER until small-cohort evidence
-#5 desktop quick lookup = DEFER unless explicitly requested
+#5 word lookup = re-sequence only after #99 discovery synthesis
 #7 open-source evidence = passive ledger for real events only
 ```
 
