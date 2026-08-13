@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-08-12
-sourceMainSha=7ea6b0082babafae349437aa0b3d985b588eea85
+updatedAt=2026-08-13
+sourceMainSha=30196c1653129902312ce74b53fb5ac3e139fef6
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#71
-CURRENT_UNIQUE_NEXT=ONE_LIGHT_UI_POLISH_THEN_TESTFLIGHT_UPLOAD
+CURRENT_PRIMARY_ISSUE=#95
+CURRENT_UNIQUE_NEXT=IMPLEMENT_ACCEPTED_LIGHT_UI_POLISH_THEN_OWNER_SMOKE
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -27,28 +27,33 @@ ACTIVE_WIP=none
 - current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
 - Maimemo Open Platform support explicitly clarified that a third-party native iOS app may let each user provide their own personal API Token when it stays only in that user's iPhone Keychain and is never uploaded to the developer/server;
 - OIDC/PKCE is therefore not required for the first external cohort and remains a future convenience/enhancement route;
-- PR #94 merged at `7ea6b0082babafae349437aa0b3d985b588eea85`: user-visible name `小黑鸟伴侣`, final approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md` are now on `main`.
+- PR #94 merged: user-visible name `小黑鸟伴侣`, final approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md` are on `main`;
+- the one Fable 5 visual-polish pass is complete and Owner-accepted as the ~60/100 TestFlight baseline; implementation is frozen in #95.
 
-## Current route — #71 first small TestFlight cohort
+## Current route — #95 final light UI polish
 
-Before TestFlight upload, perform exactly one short visual-polish pass over the current iPhone interface using Fable 5 / Claude Design as a design reviewer.
+Implement exactly one small native SwiftUI polish PR from the accepted Fable comparison boards / #95 scope.
 
-Target quality is intentionally modest: bring the current functional UI to a clean, coherent ~60/100 visual baseline suitable for a first small external cohort.
+Primary visible change: the paste/input editor becomes materially larger and reads as the main working surface.
+
+Also apply the accepted lightweight hierarchy/readability cleanup for Preview, progress, Token sheet, preferences, About and History.
 
 Constraints:
 
-- preserve current information architecture and product behavior;
-- prefer spacing, hierarchy, grouping, typography, control emphasis and small native SwiftUI adjustments;
-- no redesign system, custom component library, animation system, illustration program, onboarding framework or navigation rewrite;
+- preserve information architecture, navigation and product behavior;
 - no API / Token / write-authority changes;
-- one small implementation PR only after the design recommendation is accepted;
-- after Owner smoke on-device, upload the resulting build to TestFlight and invite a deliberately small external cohort.
+- no phrase duplicate/conflict behavior changes in #95;
+- no design system, custom component library, onboarding framework, dashboard or animation system;
+- one PR only;
+- after Coordinator review, install the candidate on the physical iPhone for a visual smoke;
+- after smoke PASS, stop visual iteration and proceed directly to TestFlight upload under #71.
 
-For TestFlight App Review, do not build a new demo subsystem merely for review. If Apple requires credentials to exercise the authenticated workflow, provide a dedicated test credential only through private App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
+For TestFlight App Review, do not build a demo subsystem merely for review. If Apple requires credentials to exercise the authenticated workflow, provide a dedicated test credential only through private App Store Connect review information; never put it in Git, source, chat, public documentation, build logs or TestFlight user-facing text.
 
 ## Deferred routes
 
 ```text
+phrase duplicate/conflict UX = FUTURE: align closer to interpretation UX; allow Preview-time removal of redundant incoming candidates from the pending batch; no automatic/server DELETE without separate design/authorization
 #72 OIDC/PKCE = OPTIONAL FUTURE ENHANCEMENT; reopen only for real auth friction or Open-Platform-only features
 phrase automatic replacement / phrase UPDATE = DEFER
 nickname/avatar account identity = DEFER with OIDC
