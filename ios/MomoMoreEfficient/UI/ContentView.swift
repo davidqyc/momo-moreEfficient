@@ -612,9 +612,24 @@ struct ContentView: View {
         NavigationStack {
             Form {
                 Section {
-                    SecureField("墨墨账号 Token", text: $tokenDraft)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    HStack(alignment: .center, spacing: 12) {
+                        SecureField("墨墨账号 Token", text: $tokenDraft)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+
+                        VStack(spacing: 2) {
+                            PasteButton(payloadType: String.self) { pastedStrings in
+                                guard let pastedToken = pastedStrings.first else { return }
+                                tokenDraft = pastedToken
+                            }
+                            .accessibilityLabel("粘贴 Token")
+
+                            Text("粘贴 Token")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+                    }
                 } header: {
                     Text("个人 Token")
                 } footer: {
