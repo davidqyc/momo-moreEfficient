@@ -13,7 +13,7 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=v0.1.0
 CURRENT_PRIMARY_ISSUE=#71
-CURRENT_UNIQUE_NEXT=WAIT_FOR_APPLE_PROCESSING_THEN_CONFIGURE_SMALL_TESTFLIGHT_COHORT
+CURRENT_UNIQUE_NEXT=FIX_FIRST_RUN_PASTE_THEN_UPLOAD_BUILD_2_FOR_EXTERNAL_TESTFLIGHT
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -27,32 +27,35 @@ ACTIVE_WIP=none
 - Open Platform support explicitly allowed the device-local personal-Token route for third-party native iOS distribution;
 - PR #94 delivered user-visible name `小黑鸟伴侣`, approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md`;
 - #95 / PR #96 completed the single ~60/100 UI polish and passed physical-iPhone smoke;
-- organization release identity is now frozen and merged through #97 / PR #98: Team `W26LH686PD`, Bundle ID `com.jiripple.xiaoheiniao`, version `1.0 (1)`;
+- organization release identity is frozen and merged through #97 / PR #98: Team `W26LH686PD`, Bundle ID `com.jiripple.xiaoheiniao`, version `1.0 (1)`;
 - organization App ID and App Store Connect iOS app record `小黑鸟伴侣` exist;
-- CLI upload attempts were blocked pre-dispatch by Xcode account-session handling, with zero binary dispatch and zero retries;
-- Xcode Organizer GUI upload then succeeded on 2026-08-13: `MomoMoreEfficient 1.0 (1) uploaded`; Organizer status shows `Uploaded to Apple`;
+- CLI upload attempts were blocked pre-dispatch by Xcode account-session handling, with zero binary dispatch and zero retries; Xcode Organizer GUI upload then succeeded;
+- build `1.0 (1)` processed in TestFlight, export compliance was resolved as exempt/system-only encryption, an internal group was created, and the Owner installed the real TestFlight build on iPhone;
+- real TestFlight smoke proved the core workflow: the Owner successfully created 2 real interpretations;
+- one first-run usability defect was found only on the real TestFlight interaction path: credential entry currently relies on the bare SecureField/system paste UI and needs an explicit in-app Chinese paste affordance before external invites;
 - canonical public project home is GitHub (`davidqyc/momo-moreEfficient`); TestFlight/App Store are distribution channels, not project authority. Project-specific release identity is recorded in `docs/RELEASE_IDENTITY.md`.
 
 ## Current route — #71 first small TestFlight cohort
 
-Do not upload another build unless a new code/build-number change is intentionally authorized.
+Before external TestFlight review, make exactly one tiny onboarding/release-plumbing fix:
 
-Next:
+1. Add an explicit user-initiated in-app Chinese paste affordance next to the existing credential SecureField. Pasting fills the existing draft only; it must not auto-connect, auto-save, log, inspect in background, or change TokenStore/Keychain semantics.
+2. Set `ITSAppUsesNonExemptEncryption = NO` / generated Info.plist equivalent so the already-resolved system-only encryption exemption does not require the same questionnaire for each new build.
+3. Treat this as the only intended pre-external code change. No broad UI redesign or product-feature work.
+4. After review/merge, increment build number once and upload `1.0 (2)` through the proven Organizer/App Store Connect path.
+5. Install `1.0 (2)` through internal TestFlight and perform a short real-device smoke including copy-from-another-app → in-app paste → connect, plus one ordinary Preview. Do not require a real write solely for this smoke.
+6. Use `1.0 (2)` for the first external TestFlight group/review; invite only a few known testers by email, no public link.
+7. Record genuine external installs/use/feedback in #7.
 
-1. Wait for Apple to finish processing build `1.0 (1)` and confirm it appears under the TestFlight tab.
-2. If Apple requests export-compliance or other human judgment, stop at that single field and answer deliberately; do not invent values.
-3. Configure only the minimum TestFlight information required for the first small cohort.
-4. Internal testing may be used for a quick Owner/account-holder sanity check, but the actual goal is a deliberately small external cohort.
-5. For external testing, create one small external group, add build `1.0 (1)`, complete required Test Information / TestFlight App Review information, and invite only a few known testers by email at first; no public link/broad launch yet.
-6. Record genuine installs/use/feedback in #7.
+Interaction-validation rule learned from `1.0 (1)`: OS-owned interactions such as keyboard, clipboard/paste, share sheets and permission prompts require an actual device gesture-chain smoke when they are essential to onboarding; static Design boards/screenshots alone are not sufficient.
 
 Keep this lightweight:
 
 - no Fastlane/Xcode Cloud/App Store Connect API framework solely for the first cohort;
 - do not create/expose new Apple credentials in Git/docs/chat;
-- no additional product/visual work before the first cohort unless Apple processing reveals a concrete binary defect;
+- no additional product/visual work before the first external cohort unless a concrete binary/onboarding defect is found;
 - no public App Store submission in this phase;
-- #99 Phase-2 discovery remains parked until the uploaded build is processed and the release path is proven end-to-end enough to start testing.
+- #99 Phase-2 discovery remains parked until the first external-cohort route is proven.
 
 ## OSS / distribution boundary
 
@@ -64,7 +67,7 @@ Keep this lightweight:
 ## Deferred routes
 
 ```text
-#99 Phase 2 capability/field/demand sweep = NEXT PRODUCT DISCOVERY AFTER TESTFLIGHT PROCESSING / RELEASE PATH PROOF
+#99 Phase 2 capability/field/demand sweep = NEXT PRODUCT DISCOVERY AFTER FIRST EXTERNAL TESTFLIGHT ROUTE PROOF
 phrase duplicate/conflict UX = FUTURE: align closer to interpretation UX; allow Preview-time removal of redundant incoming candidates from the pending batch; no automatic/server DELETE without separate design/authorization
 #72 OIDC/PKCE = OPTIONAL FUTURE ENHANCEMENT; reopen only for real auth friction or Open-Platform-only features
 phrase automatic replacement / phrase UPDATE = DEFER
