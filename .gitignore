@@ -1,6 +1,7 @@
 # Secrets and local configuration.
-# There is deliberately no `.env.example`: the CLI never reads a token from a
-# dotfile, an environment variable or a config file. See SECURITY.md.
+# There is deliberately no `.env.example`: the legacy write-capable importer
+# never reads a token from a dotfile, environment variable or config file. The
+# isolated read-only recipe documents its session environment flow separately.
 .env
 .env.*
 *.local

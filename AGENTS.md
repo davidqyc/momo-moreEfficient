@@ -85,7 +85,8 @@
 凭证边界：
 
 - iOS：按 D-016，仅保存到本设备 Keychain，`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，non-sync；
-- CLI/macOS 本地工具：按 D-013，仅隐藏交互输入、进程内存，不使用 argv/env/.env/config/clipboard automation；
+- 具备写入能力的 CLI/macOS 本地工具：按 D-013，仅隐藏交互输入、进程内存，不使用 argv/env/.env/config/clipboard automation；
+- Issue #107 的单请求、语义只读 Recipe 是经 Issue 明确授权的窄例外：只读取会话级 `MAIMEMO_TOKEN`，不支持 argv、`.env`、配置文件或持久化；不得把该例外扩展到任何写入路径；
 - Token 不进入日志、History、UI 持久状态、review artifact 或 Git。
 
 发现疑似真实凭证进入 Git 历史时立即停止并报告；不要靠后续删除文件假装历史已安全。

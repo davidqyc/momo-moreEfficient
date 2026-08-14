@@ -32,13 +32,19 @@ jobs:
           python-version: '3.13'
 
       - name: Compile all sources
-        run: python -m compileall -q scripts tests
+        run: python -m compileall -q scripts tests recipes
 
       - name: Run offline test suite
         env:
           MOMO_TEST_NETWORK_DISABLED: '1'
           PYTHONPATH: tests/no_network_guard
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Run forgotten-words recipe tests
+        env:
+          MOMO_TEST_NETWORK_DISABLED: '1'
+          PYTHONPATH: tests/no_network_guard
+        run: python -m unittest discover -s recipes/forgotten-words-study-article/tests -p 'test_*.py' -v
 
       - name: Prove the no-network guard is active
         env:

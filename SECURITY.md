@@ -13,9 +13,9 @@ Use clearly invalid placeholders in examples.
 
 ## How this project accepts a credential
 
-The shipped CLI accepts a real Maimemo token through **one** channel only: a hidden interactive `getpass` prompt. The token is held in process memory for the duration of the run and is never persisted.
+The legacy write-capable CLI accepts a real Maimemo token through **one** channel only: a hidden interactive `getpass` prompt. The token is held in process memory for the duration of the run and is never persisted.
 
-The following are deliberately **not** supported, and must not be added without an Issue-level security decision:
+The following are deliberately **not** supported by any write-capable path, and must not be added without an Issue-level security decision:
 
 - command-line arguments / argv (`--token` is rejected, and argument values are never echoed);
 - environment variables;
@@ -25,6 +25,8 @@ The following are deliberately **not** supported, and must not be added without 
 - the operating-system keychain (out of scope for v0.1.0).
 
 This is stricter than a general "load secrets from the environment" rule, and it is intentional: an environment variable or `.env` file survives the process, leaks into shell history, subprocess environments, crash dumps and CI logs, whereas a `getpass` prompt does not. Do not relax this boundary to match a more conventional convention.
+
+Issue #107 authorizes one narrow exception: `recipes/forgotten-words-study-article/` makes one documented, semantically read-only Study request and reads `MAIMEMO_TOKEN` from the current session environment. Its documented hidden-input setup keeps the value out of shell history and unsets it after the command. The recipe never supports argv, `.env`, config files, persistence, redirects, or any mutation endpoint. This exception does not change the credential contract of the legacy importer, macOS UI, iOS app, or any present or future write path.
 
 A token, `Authorization` header, cookie, account label, raw `voc_id`, raw record id or raw server response must never reach Git, logs, previews, run reports, or review bundles. Only a non-sensitive 16-hex SHA-256 fingerprint of the token is ever displayed.
 

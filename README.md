@@ -13,6 +13,10 @@
 
 > **分发状态：** 正在准备第一批小规模 TestFlight 外部测试，尚未在 App Store 提供。
 
+## Codex Recipes
+
+仓库也提供小型、可复现的 Maimemo × Codex 工作流。第一份 Recipe 是[“今日忘记单词 → Codex 学习文章”](recipes/forgotten-words-study-article/README.md)：它通过官方 Study API 做一次语义只读导出，再让用户自己的 Codex/ChatGPT 生成英文文章、覆盖清单、语法笔记和中文翻译。无需 OpenAI API key，不依赖 iOS App，示例全部为合成数据。
+
 ## 旧版 CLI（v0.1.0）
 
 仓库仍保留最初发布的命令行工具作为 legacy/reference。`v0.1.0` 的范围只有一件事：**把一批已经写好的自建释义安全地录入墨墨**。
