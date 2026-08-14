@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-15
-sourceMainSha=eec177812c715e4b18b19af642cb0e7fefbcde53
+sourceMainSha=9bf164e445186d844c1b12dd73980f1e4146b8c4
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,7 +13,7 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) TestFlight candidate
 CURRENT_PRIMARY_ISSUE=#110
-CURRENT_UNIQUE_NEXT=EXECUTE_THE_SMALL_OSS_LANDING_SURFACE_SLICE_UNDER_ISSUE_110
+CURRENT_UNIQUE_NEXT=OWNER_SET_EXACT_REPOSITORY_DESCRIPTION_AND_TOPICS_THEN_COORDINATOR_READBACK_CLOSE_110
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -32,36 +32,45 @@ ACTIVE_WIP=none
 - #107 shipped the first public Codex-oriented growth asset through PR #108; squash merge `eec177812c715e4b18b19af642cb0e7fefbcde53` is on `main` and #107 is closed;
 - the Recipe uses the first-party-convergent `/open/api/v1/study/get_today_items` route, exact forgotten-words request `{"is_finished": true, "limit": 1000}`, fail-closed compatibility for the observed root/wrapped and spelling variants, and exports no `voc_id`;
 - Coordinator incremental review on exact head `ce8906b985276c7f94cd1975eeedf5c84f5bc17f` passed; a real-Token canary was judged unnecessary for merge because current first-party executable/reference evidence is sufficient and the public-beta source conflict is explicitly documented;
-- #110 is the next bounded OSS-growth execution slice: make the repository itself a credible landing surface before broader promotion or another Recipe.
+- #110 README landing slice passed Coordinator review and shipped through PR #112 as squash merge `9bf164e445186d844c1b12dd73980f1e4146b8c4`; the first screen now routes strangers to the iPhone companion, Recipe 1, GitHub Issues and contribution guidance before legacy CLI material;
+- #110 remains open only because repository About/description and Topics have not yet been set; the Builder's local `gh` authentication was invalid, so no metadata write was attempted or claimed.
 
-## Current route — #110 OSS landing surface
+## Current route — #110 repository metadata closeout
 
-Issue #110 is the current primary route.
+The README portion of Issue #110 is complete and merged. Do not repeat or redesign it.
 
-The accepted scope is small:
+The only remaining acceptance work is to set and then read back these exact repository metadata values:
 
-1. set an accurate concise repository About/description;
-2. add a restrained set of relevant GitHub Topics;
-3. tighten README first-screen routing to the iOS companion, public Codex Recipes, and Issue/contribution paths;
-4. keep GitHub as the canonical home;
-5. do not start Recipe 2/3 or product-feature work inside this Issue.
+Description:
+
+`Independent Maimemo companion for safe vocabulary imports + reproducible Maimemo × Codex learning recipes.`
+
+Topics, exactly these four:
+
+- `maimemo`
+- `openai-codex`
+- `vocabulary-learning`
+- `ios`
+
+After authenticated readback proves those values, close #110. Do not start Recipe 2/3 merely because #110 closes; first re-check #71 and observe genuine usage/feedback under #106.
 
 Execution boundary:
 
+- no README rework unless a concrete correctness defect is found;
 - no iOS product code;
 - no Maimemo live operation or real Token;
 - no TestFlight/App Store Connect action;
 - no badges/bots/dashboards merely to look active;
 - no manufactured engagement or Star gate;
 - no TestFlight Public Link until Apple approval under #71;
-- Discussions only if a coherent landing surface plus the first public Recipe creates a real return loop, not as empty decoration.
+- Discussions only if a real return loop justifies them, not as empty decoration.
 
 ## Parallel / parked pointers
 
 ```text
 #71 release lane = WAITING_FOR_APPLE_REVIEW on build 1.0 (3); 0 external testers; after approval create Public TestFlight Link -> README; Issue stays open until non-Owner real use + evidence in #7
-#106 OSS-growth umbrella = ACTIVE_STRATEGY; #107 is shipped; #110 is the current execution slice
-#105 reading capture -> safe Maimemo import = ACCEPTED_REAL_DEMAND_CANDIDATE, PARKED while release candidate is frozen and #110 is active
+#106 OSS-growth umbrella = ACTIVE_STRATEGY; #107 is shipped; #110 awaits metadata-only closeout
+#105 reading capture -> safe Maimemo import = ACCEPTED_REAL_DEMAND_CANDIDATE, PARKED while release candidate is frozen and #110 is open
 #99 capability/field/demand sweep = DISCOVERY_AUTHORITY; use its findings as evidence, not as an automatic feature backlog
 #7 open-source / external-use evidence = record genuine events only; never manufacture Stars, users, Issues or PRs
 ```
@@ -75,7 +84,7 @@ Execution boundary:
 - no automatic delete/rollback/replay;
 - personal API Tokens and private learning data must not enter Git, logs, review artifacts or public examples;
 - the shipped Recipe is semantically read-only; HTTP POST used for a documented Study read does not authorize mutation endpoints;
-- current #110 work is repository packaging/discovery only and must not touch iOS/TestFlight or live Maimemo;
+- current #110 remaining work is GitHub repository metadata only and must not touch iOS/TestFlight or live Maimemo;
 - live remote and current Issue/PR authority outrank this snapshot.
 
 ## Maintenance rule
