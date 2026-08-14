@@ -1,21 +1,26 @@
 # 小黑鸟伴侣
 
-小黑鸟伴侣是当前项目的 iPhone companion：一款**兼容墨墨的独立第三方工具**，不是墨墨官方应用。它帮助你把自己准备好的释义和例句安全录入墨墨；应用不会生成、改写、润色或翻译正文。
+这是一个**独立、非官方、兼容墨墨的开源项目**，提供 iPhone companion 和小型、可复现的 Maimemo × Codex 学习工作流；与墨墨及其运营方不存在隶属、赞助或背书关系。
 
-当前 iPhone 功能包括：
+## 两条使用路线
 
-- 自建释义 `CREATE` / `UPDATE`；
-- 例句/短语 `CREATE`；输入使用原生 3 行或 4 行格式（单词、英文例句、中文翻译，以及可选来源）；
-- 由用户选择并持久保存的 0–3 个标签，而不是通用硬编码的 `MBA` / `BEC` / `GMAT`；
-- 安全流程：粘贴 → Preview → 明确确认 → fresh preflight → 写入 → 鉴权回读。
+### iPhone companion
 
-个人墨墨 API Token 只保存在这台 iPhone 的设备本地 Keychain，不会上传给开发者或任何项目服务器。详情见[隐私说明](PRIVACY.md)。
+把你自己准备好的释义和例句安全录入墨墨。应用遵循 **Preview → 明确确认 → fresh preflight → 写入 → 鉴权回读** 的安全流程；个人墨墨 API Token 只保存在这台 iPhone 的设备本地 Keychain。详情见[隐私说明](PRIVACY.md)。
 
-> **分发状态：** 正在准备第一批小规模 TestFlight 外部测试，尚未在 App Store 提供。
+> **当前分发状态：** TestFlight build `1.0 (3)` 正在接受 Apple 外部审核；目前没有公开安装链接，也没有可承诺的时间表。
 
-## Codex Recipes
+### Codex Recipes
 
-仓库也提供小型、可复现的 Maimemo × Codex 工作流。第一份 Recipe 是[“今日忘记单词 → Codex 学习文章”](recipes/forgotten-words-study-article/README.md)：它通过官方 Study API 做一次语义只读导出，再让用户自己的 Codex/ChatGPT 生成英文文章、覆盖清单、语法笔记和中文翻译。无需 OpenAI API key，不依赖 iOS App，示例全部为合成数据。
+[Recipe 1：今日忘记单词 → Codex 学习文章](recipes/forgotten-words-study-article/README.md)是语义只读工作流，使用你自己的 Codex/ChatGPT 访问权限生成英文文章、覆盖清单、语法笔记和中文翻译；无需 OpenAI API key，也不依赖 iOS App。
+
+## 反馈与贡献
+
+- 遇到 bug 或安装/配置失败，请在 [GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues) 报告。
+- 想请求新工作流或改进，也请在 [GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues) 提出。
+- 想贡献代码或文档，请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)，再提交 Pull Request。
+
+GitHub 是本项目的 canonical home，也是发布源码、Recipe、问题反馈和贡献协作的权威入口。
 
 ## 旧版 CLI（v0.1.0）
 
