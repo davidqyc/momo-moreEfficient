@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "source": "maimemo",
+  "selection": "today-forgotten",
+  "generated_at": "2026-08-15T00:00:00Z",
+  "words": [
+    {
+      "spelling": "adapt",
+      "first_response": "FORGET"
+    },
+    {
+      "spelling": "brittle",
+      "first_response": "FORGET"
+    },
+    {
+      "spelling": "candid",
+      "first_response": "FORGET"
+    }
+  ]
+}

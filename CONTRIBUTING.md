@@ -15,13 +15,16 @@ No dependencies, no build step, standard-library `unittest` only. Always run und
 
 ```bash
 MOMO_TEST_NETWORK_DISABLED=1 PYTHONPATH=tests/no_network_guard python3 -m unittest discover -s tests -p 'test_*.py'
+MOMO_TEST_NETWORK_DISABLED=1 PYTHONPATH=tests/no_network_guard python3 -m unittest discover -s recipes/forgotten-words-study-article/tests -p 'test_*.py'
 ```
 
 The guard replaces `socket.socket`, `socket.create_connection` and `urllib.request.urlopen` with raising stubs, so the suite cannot reach the network. A change that needs a real request to pass is a change that needs an Issue first.
 
 ## Credential boundary
 
-The CLI accepts a real token only through a hidden interactive `getpass` prompt, held in process memory. Do **not** add loading from argv, environment variables, `.env`, config files, the clipboard, or the OS keychain — see `SECURITY.md` for why this is stricter than the usual convention. A PR that widens this boundary will be rejected without an Issue-level security decision.
+The legacy write-capable CLI accepts a real token only through a hidden interactive `getpass` prompt, held in process memory. Do **not** add loading from argv, environment variables, `.env`, config files, the clipboard, or the OS keychain to any write-capable path — see `SECURITY.md` for why this is stricter than the usual convention. A PR that widens this boundary will be rejected without an Issue-level security decision.
+
+Issue #107's forgotten-words Recipe is the sole current exception: it is semantically read-only and accepts only session-level `MAIMEMO_TOKEN`, with no argv, `.env`, config, persistence, redirect, or mutation support. Do not copy that exception into other tools without a separate accepted Issue.
 
 ## Pull requests
 
