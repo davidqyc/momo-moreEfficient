@@ -17,7 +17,7 @@ Change these values before generating:
    - `schema_version` is `1`;
    - `source` is `maimemo`;
    - `selection` is `today-forgotten`;
-   - `words` is an array and every entry has non-empty string fields `spelling`, `voc_id`, and `first_response`;
+   - `words` is an array and every entry has non-empty string fields `spelling` and `first_response`;
    - every `first_response` is exactly `FORGET`.
 2. If validation fails, stop and identify the bad field. Do not guess or repair learning data silently.
 3. If `words` is empty, say: “No forgotten words today; there is nothing to generate.” Then stop without inventing vocabulary or an article.

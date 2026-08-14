@@ -19,7 +19,7 @@ import urllib.request
 
 
 STUDY_TODAY_URL = (
-    "https://open.maimemo.com/open/api/v1/memo/study/get_today_items"
+    "https://open.maimemo.com/open/api/v1/study/get_today_items"
 )
 TOKEN_ENVIRONMENT_VARIABLE = "MAIMEMO_TOKEN"
 DEFAULT_OUTPUT = "forgotten-words.json"
@@ -75,7 +75,9 @@ def fetch_today_items(token: str, *, opener: Any | None = None) -> Any:
             f"{TOKEN_ENVIRONMENT_VARIABLE} is missing or contains invalid whitespace."
         )
 
-    body = json.dumps({"limit": REQUEST_LIMIT}, separators=(",", ":")).encode("utf-8")
+    body = json.dumps(
+        {"is_finished": True, "limit": REQUEST_LIMIT}, separators=(",", ":")
+    ).encode("utf-8")
     request = urllib.request.Request(
         STUDY_TODAY_URL,
         data=body,
@@ -111,19 +113,77 @@ def _plain_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _today_items_from_observed_envelope(payload: Any) -> Any:
+    """Unwrap only the root and official-CLI response shapes."""
+
+    if not isinstance(payload, dict):
+        raise RecipeError("Malformed response: expected a JSON object.")
+
+    if "errors" in payload:
+        errors = payload["errors"]
+        if not isinstance(errors, list):
+            raise RecipeError("Malformed response: errors must be an array.")
+        if errors:
+            raise RecipeError("Maimemo reported response errors; no artifact was written.")
+
+    if "success" in payload:
+        success = payload["success"]
+        if not isinstance(success, bool):
+            raise RecipeError("Malformed response: success must be a boolean.")
+        if not success:
+            raise RecipeError("Maimemo reported an unsuccessful response; no artifact was written.")
+
+    root_claims_items = "today_items" in payload
+    wrapped_claims_items = False
+    wrapped_items: Any = None
+    if "data" in payload:
+        data = payload["data"]
+        if not isinstance(data, dict):
+            raise RecipeError("Malformed response: data must be an object.")
+        wrapped_claims_items = "today_items" in data
+        if wrapped_claims_items:
+            wrapped_items = data["today_items"]
+
+    if root_claims_items and wrapped_claims_items:
+        root_items = payload["today_items"]
+        if root_items != wrapped_items:
+            raise RecipeError(
+                "Malformed response: root and wrapped today_items disagree; "
+                "no artifact was written."
+            )
+        return root_items
+    if root_claims_items:
+        return payload["today_items"]
+    if wrapped_claims_items:
+        return wrapped_items
+    raise RecipeError("Malformed response: expected a today_items array.")
+
+
 def select_forgotten_words(payload: Any) -> list[dict[str, str]]:
     """Validate the documented response and deterministically select FORGET items."""
 
-    if not isinstance(payload, dict) or not isinstance(payload.get("today_items"), list):
+    today_items = _today_items_from_observed_envelope(payload)
+    if not isinstance(today_items, list):
         raise RecipeError("Malformed response: expected a today_items array.")
 
     unique: dict[str, tuple[str, int, str | None, bool, bool]] = {}
-    for index, item in enumerate(payload["today_items"]):
+    for index, item in enumerate(today_items):
         if not isinstance(item, dict):
             raise RecipeError(f"Malformed response: today_items[{index}] is not an object.")
 
         voc_id = item.get("voc_id")
-        spelling = item.get("voc_spelling")
+        has_voc_spelling = "voc_spelling" in item
+        has_spelling = "spelling" in item
+        if has_voc_spelling and has_spelling and item["voc_spelling"] != item["spelling"]:
+            raise RecipeError(
+                f"Malformed response: today_items[{index}] spelling fields disagree."
+            )
+        if has_voc_spelling:
+            spelling = item["voc_spelling"]
+        elif has_spelling:
+            spelling = item["spelling"]
+        else:
+            spelling = None
         order = item.get("order")
         is_new = item.get("is_new")
         is_finished = item.get("is_finished")
@@ -164,13 +224,12 @@ def select_forgotten_words(payload: Any) -> list[dict[str, str]]:
     forgotten = [
         {
             "spelling": spelling,
-            "voc_id": voc_id,
             "first_response": "FORGET",
         }
         for voc_id, (spelling, order, response, _is_new, _is_finished) in sorted(
             unique.items(), key=lambda entry: (entry[1][1], entry[1][0].casefold(), entry[0])
         )
-        if response == "FORGET"
+        if response == "FORGET" and _is_finished
     ]
     return forgotten
 
@@ -191,7 +250,7 @@ def build_artifact(
 
 
 def write_artifact(path: Path, artifact: Mapping[str, Any]) -> None:
-    """Atomically write a private-by-default JSON artifact."""
+    """Atomically write JSON through a restricted temporary file."""
 
     path = path.expanduser()
     serialized = json.dumps(artifact, ensure_ascii=False, indent=2) + "\n"

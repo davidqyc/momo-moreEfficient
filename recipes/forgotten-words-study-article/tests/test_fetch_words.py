@@ -6,6 +6,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -84,7 +85,6 @@ class ForgottenWordsRecipeTests(unittest.TestCase):
             [
                 {
                     "spelling": "brittle",
-                    "voc_id": "voc-b",
                     "first_response": "FORGET",
                 }
             ],
@@ -99,15 +99,14 @@ class ForgottenWordsRecipeTests(unittest.TestCase):
             ]
         }
         self.assertEqual(
-            [word["voc_id"] for word in fetch_words.select_forgotten_words(payload)],
-            ["voc-a", "voc-b", "voc-z"],
+            [word["spelling"] for word in fetch_words.select_forgotten_words(payload)],
+            ["adapt", "balance", "zeal"],
         )
 
     def test_artifact_schema_is_stable_and_machine_readable(self) -> None:
         words = [
             {
                 "spelling": "adapt",
-                "voc_id": "voc-a",
                 "first_response": "FORGET",
             }
         ]
@@ -125,8 +124,10 @@ class ForgottenWordsRecipeTests(unittest.TestCase):
             },
         )
         self.assertEqual(json.loads(json.dumps(artifact)), artifact)
+        self.assertNotIn("voc_id", json.dumps(artifact))
 
-    def test_artifact_file_is_private_by_default(self) -> None:
+    @unittest.skipUnless(os.name == "posix", "POSIX mode assertion")
+    def test_artifact_file_uses_posix_owner_only_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "artifact.json"
             fetch_words.write_artifact(
@@ -158,6 +159,10 @@ class ForgottenWordsRecipeTests(unittest.TestCase):
         malformed = [
             None,
             {},
+            {"result": {"today_items": []}},
+            {"data": None},
+            {"data": {"today_items": []}, "errors": {}},
+            {"data": {"today_items": []}, "success": "true"},
             {"today_items": {}},
             {"today_items": ["not-an-object"]},
             {"today_items": [item("", "adapt", 1, "FORGET")]},
@@ -193,9 +198,15 @@ class ForgottenWordsRecipeTests(unittest.TestCase):
         self.assertEqual(payload, {"today_items": []})
         self.assertEqual(len(opener.requests), 1)
         request, timeout = opener.requests[0]
+        self.assertEqual(
+            request.full_url,
+            "https://open.maimemo.com/open/api/v1/study/get_today_items",
+        )
         self.assertEqual(request.full_url, fetch_words.STUDY_TODAY_URL)
         self.assertEqual(request.get_method(), "POST")
-        self.assertEqual(json.loads(request.data), {"limit": 1000})
+        self.assertEqual(
+            json.loads(request.data), {"is_finished": True, "limit": 1000}
+        )
         self.assertEqual(request.get_header("Authorization"), f"Bearer {FAKE_TOKEN}")
         self.assertEqual(timeout, 30)
 
@@ -231,6 +242,87 @@ class ForgottenWordsRecipeTests(unittest.TestCase):
         for fragment in forbidden:
             with self.subTest(fragment=fragment):
                 self.assertNotIn(fragment, source)
+
+    def test_accepts_exact_first_party_root_and_wrapped_variants(self) -> None:
+        # memo-skills uses a root collection and voc_spelling.
+        root = {
+            "today_items": [item("voc-a", "adapt", 1, "FORGET")],
+        }
+        # memo-api-cli unwraps data and its Study fixture uses spelling.
+        wrapped = {
+            "data": {
+                "today_items": [
+                    {
+                        "voc_id": "voc-a",
+                        "spelling": "adapt",
+                        "order": 1,
+                        "first_response": "FORGET",
+                        "is_new": False,
+                        "is_finished": True,
+                    }
+                ]
+            },
+            "errors": [],
+            "success": True,
+        }
+        expected = [{"spelling": "adapt", "first_response": "FORGET"}]
+        self.assertEqual(fetch_words.select_forgotten_words(root), expected)
+        self.assertEqual(fetch_words.select_forgotten_words(wrapped), expected)
+
+    def test_accepts_agreeing_root_wrapper_and_spelling_aliases(self) -> None:
+        observed_item = item("voc-a", "adapt", 1, "FORGET")
+        observed_item["spelling"] = "adapt"
+        payload = {
+            "today_items": [observed_item],
+            "data": {"today_items": [dict(observed_item)]},
+            "errors": [],
+            "success": True,
+        }
+        self.assertEqual(
+            fetch_words.select_forgotten_words(payload),
+            [{"spelling": "adapt", "first_response": "FORGET"}],
+        )
+
+    def test_first_party_error_and_conflict_variants_fail_closed(self) -> None:
+        valid_items = [item("voc-a", "adapt", 1, "FORGET")]
+        failures = [
+            {"data": {"today_items": valid_items}, "errors": [], "success": False},
+            {
+                "data": {"today_items": valid_items},
+                "errors": [{"code": "synthetic"}],
+                "success": True,
+            },
+            {
+                "today_items": valid_items,
+                "data": {"today_items": [item("voc-b", "brittle", 1, "FORGET")]},
+                "errors": [],
+                "success": True,
+            },
+            {
+                "today_items": [
+                    {
+                        **item("voc-a", "adapt", 1, "FORGET"),
+                        "spelling": "conflict",
+                    }
+                ]
+            },
+        ]
+        for payload in failures:
+            with self.subTest(payload=payload):
+                with self.assertRaises(fetch_words.RecipeError):
+                    fetch_words.select_forgotten_words(payload)
+
+    def test_unfinished_forget_row_is_never_exported(self) -> None:
+        payload = {
+            "today_items": [
+                item("voc-a", "adapt", 1, "FORGET", is_finished=False),
+                item("voc-b", "brittle", 2, "FORGET", is_finished=True),
+            ]
+        }
+        self.assertEqual(
+            fetch_words.select_forgotten_words(payload),
+            [{"spelling": "brittle", "first_response": "FORGET"}],
+        )
 
     def test_cli_error_is_safe_and_does_not_write_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

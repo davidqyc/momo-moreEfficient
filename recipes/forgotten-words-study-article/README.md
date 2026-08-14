@@ -6,7 +6,7 @@ It uses one documented Study API operation. That operation is HTTP `POST`, but i
 
 ## Prerequisites
 
-- Python 3.13 (the version tested by this repository's CI); no packages to install.
+- Python 3.13 is recommended and verified by this repository's CI; focused Recipe tests also pass on Python 3.9 and 3.12. No packages are required.
 - A personal Maimemo Open API Token.
 - Your own Codex or ChatGPT access for the article step.
 
@@ -60,14 +60,13 @@ Success creates `forgotten-words.json` in this directory. The file is ignored by
   "words": [
     {
       "spelling": "adapt",
-      "voc_id": "synthetic-voc-001",
       "first_response": "FORGET"
     }
   ]
 }
 ```
 
-`generated_at` is UTC. Words are ordered deterministically by Maimemo's study order; identical duplicate `voc_id` entries collapse, while conflicting duplicates stop safely. Use a different local destination with `python3 fetch_words.py --output /safe/local/path/words.json`.
+`generated_at` is UTC. Maimemo vocabulary IDs are used only inside the process for deterministic validation and duplicate handling; they are not exported because article generation does not need them. Words are ordered deterministically by Maimemo's study order; identical duplicate IDs collapse, while conflicting duplicates stop safely. Use a different local destination with `python3 fetch_words.py --output /safe/local/path/words.json`.
 
 ## Ask Codex to generate the article
 
@@ -93,20 +92,25 @@ Maimemo documents Study APIs as public beta. To obtain today's list:
 
 The recipe makes one request with the documented maximum `limit` of 1000, well within the published global limits (20 requests/10 seconds, 40/60 seconds, and 2000/5 hours). It refuses redirects, limits the response to 4 MiB, validates the documented structure, and writes nothing if the response is malformed.
 
-Current documented operation (verified against the [official OpenAPI bundle](https://open.maimemo.com/api_bundle.yaml)):
+Current first-party executable/reference operation:
 
 ```text
-POST https://open.maimemo.com/open/api/v1/memo/study/get_today_items
-body: {"limit": 1000}
+POST https://open.maimemo.com/open/api/v1/study/get_today_items
+body: {"is_finished": true, "limit": 1000}
 ```
 
-The official schema does not require `first_response` on every item. The recipe therefore accepts an absent field but does not select that entry. An unknown or wrongly typed response value fails closed.
+There is a current first-party source conflict: the generated [OpenAPI bundle](https://open.maimemo.com/api_bundle.yaml) includes an extra `/memo` path segment, while [`memo-skills@6ea37d4`](https://github.com/maimemo/memo-skills/blob/6ea37d43ffba2770e7d95d00a6cbc81d08da117e/memo-api/references/study-api.md) and [`memo-api-cli@e883862`](https://github.com/maimemo/memo-api-cli/blob/e883862e54d718ef4cebe6612be6f72b19c166f7/src/commands/study.ts) converge on the deployed route above. This Recipe follows those executable/reference sources and keeps the conflict visible because Study APIs are beta.
+
+The exact first-party response variants are also inconsistent. The Recipe accepts either root `today_items` or the official CLI's safe `data.today_items` envelope, after rejecting `success: false` and non-empty `errors`. It accepts `voc_spelling` or the CLI fixture's `spelling`; competing root/wrapped data or spelling fields must agree. No other wrapper or alias is accepted.
+
+The official schema does not require `first_response` on every item. The recipe therefore accepts an absent field but does not select that entry. An unknown or wrongly typed response value fails closed. A returned `is_finished: false` row is never exported even though the request already asks the server for finished rows only.
 
 ## Privacy and security model
 
 - `MAIMEMO_TOKEN` is read only from the current process environment, used only for the Authorization header, and never printed or written to disk by the script.
 - Redirects are rejected so Authorization stays on the reviewed host.
-- The generated JSON contains word spellings and Maimemo vocabulary IDs. Treat it as personal learning data: keep it local, review it before sharing, and delete it when no longer needed.
+- The generated JSON contains word spellings, which are personal learning data even without vocabulary IDs. Keep it local, review it before sharing, and delete it when no longer needed.
+- Output replacement is atomic. On POSIX systems the created file uses owner-only mode `0600`; that mode is not presented as a universal Windows ACL guarantee.
 - The example files are synthetic. Tests use an obviously invalid placeholder and run offline.
 - Codex consumes the generated JSON, not the Token. This project pays for or hosts no model and needs no OpenAI API key.
 - This is an independent third-party recipe, not an official Maimemo product.

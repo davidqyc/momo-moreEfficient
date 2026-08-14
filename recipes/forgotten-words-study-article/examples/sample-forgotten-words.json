@@ -6,17 +6,14 @@
   "words": [
     {
       "spelling": "adapt",
-      "voc_id": "synthetic-voc-001",
       "first_response": "FORGET"
     },
     {
       "spelling": "brittle",
-      "voc_id": "synthetic-voc-002",
       "first_response": "FORGET"
     },
     {
       "spelling": "candid",
-      "voc_id": "synthetic-voc-003",
       "first_response": "FORGET"
     }
   ]

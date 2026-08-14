@@ -1,5 +1,7 @@
 # The Bridge Inspection
 
+> Intentionally shortened demonstration; the default prompt requests 350–500 English words.
+
 ## English article
 
 Mira had to **adapt** her plan when a **brittle** support cracked during the bridge inspection. She gave her team a **candid** explanation, and they chose a safer repair instead of hiding the problem.
