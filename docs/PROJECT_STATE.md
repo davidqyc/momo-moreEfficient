@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-08-13
-sourceMainSha=98b1338dc1b4654cbb248f569f9db86c84a19206
+updatedAt=2026-08-15
+sourceMainSha=3fa9d2b855824980f7b385c24d20b3adc1247e85
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -11,84 +11,70 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_PRODUCT_VERSION=v0.1.0
-CURRENT_PRIMARY_ISSUE=#71
-CURRENT_UNIQUE_NEXT=FIX_FIRST_RUN_PASTE_THEN_UPLOAD_BUILD_2_FOR_EXTERNAL_TESTFLIGHT
+CURRENT_PRODUCT_VERSION=1.0 (3) TestFlight candidate
+CURRENT_PRIMARY_ISSUE=#107
+CURRENT_UNIQUE_NEXT=AFTER_NEW_CHAT_TAKEOVER_SEND_THE_UNSENT_PR108_B1_B4_CORRECTION_PROMPT_TO_THE_EXISTING_CODEX_SESSION
 OPEN_PRODUCT_PR=none
-ACTIVE_WIP=none
+ACTIVE_WIP=PR #108 / codex/issue-107-forgotten-words-recipe / BLOCKED
 ```
 
 ## What is already proven
 
-- interpretation batch CREATE/UPDATE is production-validated;
-- phrase CREATE + final 3/4-line usability path are production/device validated;
-- personal Maimemo API Token remains device-local in `WhenUnlockedThisDeviceOnly` Keychain;
-- current write safety floor remains Preview → explicit approval → fresh preflight → max-one-POST/no-retry → authenticated readback → GET-only uncertain recovery;
-- Open Platform support explicitly allowed the device-local personal-Token route for third-party native iOS distribution;
-- PR #94 delivered user-visible name `小黑鸟伴侣`, approved AppIcon, stranger-readable Token onboarding, About/Privacy/Support and public `PRIVACY.md`;
-- #95 / PR #96 completed the single ~60/100 UI polish and passed physical-iPhone smoke;
-- organization release identity is frozen and merged through #97 / PR #98: Team `W26LH686PD`, Bundle ID `com.jiripple.xiaoheiniao`, version `1.0 (1)`;
-- organization App ID and App Store Connect iOS app record `小黑鸟伴侣` exist;
-- CLI upload attempts were blocked pre-dispatch by Xcode account-session handling, with zero binary dispatch and zero retries; Xcode Organizer GUI upload then succeeded;
-- build `1.0 (1)` processed in TestFlight, export compliance was resolved as exempt/system-only encryption, an internal group was created, and the Owner installed the real TestFlight build on iPhone;
-- real TestFlight smoke proved the core workflow: the Owner successfully created 2 real interpretations;
-- one first-run usability defect was found only on the real TestFlight interaction path: credential entry currently relies on the bare SecureField/system paste UI and needs an explicit in-app Chinese paste affordance before external invites;
-- canonical public project home is GitHub (`davidqyc/momo-moreEfficient`); TestFlight/App Store are distribution channels, not project authority. Project-specific release identity is recorded in `docs/RELEASE_IDENTITY.md`.
+- interpretation batch CREATE/UPDATE and phrase CREATE are production/device validated under the existing Preview → approval → fresh preflight → max-one-POST/no-retry → authenticated readback safety floor;
+- personal Maimemo API Token remains device-local in `WhenUnlockedThisDeviceOnly` Keychain for the iOS app;
+- TestFlight build `1.0 (3)`, sourced from reviewed app merge `41e993ba002e5671ac7b12d49b07ac8eed49e8d4`, passed the complete internal physical-iPhone gate;
+- build `1.0 (3)` is submitted to external TestFlight App Review in group `首批外部测试`; latest recorded status is `正在等待审核`, with 0 external testers;
+- the release candidate is frozen while Apple reviews it; no new upload/product-code change is planned unless review feedback or a new P0/P1 correctness issue requires one;
+- after Apple approves `1.0 (3)`, the first release-line action is to create a TestFlight Public Link (initial cap 50–100, adjustable) and place the self-serve install path prominently in GitHub README; TestFlight access must not be gated on Stars;
+- #99 completed the first full API/capability fact sweep and unlocked evidence-driven Phase-2 work;
+- #105 records the real-demand reading-capture candidate, but it is not the current active implementation;
+- #106 is the OSS-growth umbrella: genuine GitHub adoption, external engagement/contribution and visible maintainer work are the strategic evidence target; the Owner delegates engineering/community mechanics to the Coordinator;
+- #107 is the first public Codex-oriented growth asset; Draft PR #108 exists but is not yet accepted;
+- PR #108 exact head `6e66b80d96cf41bbaefd511bd67b8ab087ac82ec` was fresh-context re-reviewed and remains BLOCKED on B1–B4. The latest authoritative Coordinator comment is `5297702970`;
+- the two commits after the reviewed app release source that advanced `main` to `3fa9d2b...` were an accidental placeholder add/remove with no net product-tree change; they are not a new app build.
 
-## Current route — #71 first small TestFlight cohort
+## Current route — #107 / PR #108
 
-Before external TestFlight review, make exactly one tiny onboarding/release-plumbing fix:
+PR #108 is the current active WIP and stays Draft/unmerged.
 
-1. Add an explicit user-initiated in-app Chinese paste affordance next to the existing credential SecureField. Pasting fills the existing draft only; it must not auto-connect, auto-save, log, inspect in background, or change TokenStore/Keychain semantics.
-2. Set `ITSAppUsesNonExemptEncryption = NO` / generated Info.plist equivalent so the already-resolved system-only encryption exemption does not require the same questionnaire for each new build.
-3. Treat this as the only intended pre-external code change. No broad UI redesign or product-feature work.
-4. After review/merge, increment build number once and upload `1.0 (2)` through the proven Organizer/App Store Connect path.
-5. Install `1.0 (2)` through internal TestFlight and perform a short real-device smoke including copy-from-another-app → in-app paste → connect, plus one ordinary Preview. Do not require a real write solely for this smoke.
-6. Use `1.0 (2)` for the first external TestFlight group/review; invite only a few known testers by email, no public link.
-7. Record genuine external installs/use/feedback in #7.
+The accepted correction scope is narrow:
 
-Interaction-validation rule learned from `1.0 (1)`: OS-owned interactions such as keyboard, clipboard/paste, share sheets and permission prompts require an actual device gesture-chain smoke when they are essential to onboarding; static Design boards/screenshots alone are not sufficient.
+1. use the first-party-convergent Study route `/open/api/v1/study/get_today_items` rather than the current `/memo/study/...` route, and document the first-party source conflict;
+2. normalize only first-party-observed response variants: root or safe `data.today_items`, and `voc_spelling` or `spelling`, while failing closed on contradictory/error envelopes;
+3. request the documented forgotten-words scene `{"is_finished": true, "limit": 1000}` and then filter exact `FORGET`;
+4. remove unused `voc_id` from the exported Recipe artifact and related public contract/examples;
+5. include only the cheap documentation cleanups named in the latest Coordinator review and focused regressions for those exact variants.
 
-Keep this lightweight:
+Builder boundary for the next correction round:
 
-- no Fastlane/Xcode Cloud/App Store Connect API framework solely for the first cohort;
-- do not create/expose new Apple credentials in Git/docs/chat;
-- no additional product/visual work before the first external cohort unless a concrete binary/onboarding defect is found;
-- no public App Store submission in this phase;
-- #99 Phase-2 discovery remains parked until the first external-cohort route is proven.
+- use the existing branch/PR #108;
+- no real Token and no live Maimemo canary in the Builder round;
+- no generic Study client/framework;
+- no iOS/TestFlight changes;
+- regenerate the requested review ZIP and stop for Coordinator review.
 
-## OSS / distribution boundary
-
-- GitHub repo = canonical source/project/issues/releases home and primary OSS evidence;
-- TestFlight/App Store = install/distribution channel and supporting real-usage evidence;
-- organization ownership of the iOS binary does not replace the GitHub maintainer/project identity;
-- marketing URL may point to the GitHub repo; support/privacy may use zero-cost public GitHub pages/files when Apple requirements are satisfied.
-
-## Deferred routes
+## Parallel / parked pointers
 
 ```text
-#99 Phase 2 capability/field/demand sweep = NEXT PRODUCT DISCOVERY AFTER FIRST EXTERNAL TESTFLIGHT ROUTE PROOF
-phrase duplicate/conflict UX = FUTURE: align closer to interpretation UX; allow Preview-time removal of redundant incoming candidates from the pending batch; no automatic/server DELETE without separate design/authorization
-#72 OIDC/PKCE = OPTIONAL FUTURE ENHANCEMENT; reopen only for real auth friction or Open-Platform-only features
-phrase automatic replacement / phrase UPDATE = DEFER
-nickname/avatar account identity = DEFER with OIDC
-study/profile dashboard = DEFER
-broad public launch / demo / social campaign = DEFER until small-cohort evidence
-#5 word lookup = re-sequence only after #99 discovery synthesis
-#7 open-source evidence = passive ledger for real events only
+#71 release lane = WAITING_FOR_APPLE_REVIEW on build 1.0 (3); 0 external testers; after approval create Public TestFlight Link -> README; Issue stays open until non-Owner real use + evidence in #7
+#106 OSS-growth umbrella = ACTIVE_STRATEGY; #107 is its first execution asset
+#105 reading capture -> safe Maimemo import = ACCEPTED_REAL_DEMAND_CANDIDATE, PARKED while #107/PR #108 is active and release candidate is frozen
+#99 capability/field/demand sweep = DISCOVERY_AUTHORITY; use its findings as evidence, not as an automatic feature backlog
+#7 open-source / external-use evidence = record genuine events only; never manufacture Stars, users, Issues or PRs
 ```
 
 ## Safety boundaries still current
 
 - Preview is not write authorization;
-- changed items max one POST; never auto-retry POST;
-- dispatched POST gets immediate authenticated readback; uncertain outcome gets GET-only recovery;
+- changed items max one POST and no automatic POST retry;
+- dispatched writes require authenticated readback; uncertain outcomes use GET-only recovery;
 - UPDATE targets only explicit authenticated-user records; ambiguity blocks;
 - no automatic delete/rollback/replay;
-- personal API Token remains device-local and inaccessible to the developer/server;
-- source/origin equality is hard when supplied; no-source semantics follow D-019 / #87;
-- unknown/malformed server schema fails closed;
-- no new feature is justified merely because an Issue already exists.
+- personal API Tokens and private learning data must not enter Git, logs, review artifacts or public examples;
+- the current Recipe lane is semantically read-only; HTTP POST used for a documented Study read does not authorize mutation endpoints;
+- PR #108 is blocked and must not be merged by chat handoff;
+- TestFlight/App Store actions remain frozen during this handoff;
+- live remote and current Issue/PR authority outrank this snapshot.
 
 ## Maintenance rule
 
