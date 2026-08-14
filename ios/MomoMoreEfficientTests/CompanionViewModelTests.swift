@@ -41,8 +41,40 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(valid.isConnected)
         XCTAssertEqual(validStore.saveCount, 1)
         XCTAssertEqual(validStore.storedTokenForTesting, fakeToken)
-        XCTAssertEqual(validTransport.requests.map(\.route), [.credentialValidation])
+        XCTAssertEqual(validTransport.requests.map(\.route), [.vocabulary(spelling: "apple")])
         XCTAssertEqual(validTransport.postCount, 0)
+    }
+
+    func testValidationInFlightExposesDismissLockAndCannotCommitBeforeResponse() async {
+        let store = FakeTokenStore()
+        let transport = GatedHTTPTransport(
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple")
+        )
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        let connection = Task { await model.connect(token: fakeToken) }
+        await transport.waitUntilRequested()
+
+        XCTAssertTrue(model.isValidatingCredential)
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(store.saveCount, 0)
+        XCTAssertFalse(store.hasStoredToken)
+
+        await transport.resume()
+        let connected = await connection.value
+        XCTAssertTrue(connected)
+        XCTAssertFalse(model.isValidatingCredential)
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(store.saveCount, 1)
+        let getCount = await transport.getCount
+        let postCount = await transport.postCount
+        XCTAssertEqual(getCount, 1)
+        XCTAssertEqual(postCount, 0)
     }
 
     func testRejectedReplacementPreservesOldSessionKeychainAndForegroundFailureState() async {
@@ -103,7 +135,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(model.isConnected)
         XCTAssertEqual(store.storedTokenForTesting, replacement)
         XCTAssertEqual(store.saveCount, 2)
-        XCTAssertEqual(validTransport.requests.map(\.route), [.credentialValidation])
+        XCTAssertEqual(validTransport.requests.map(\.route), [.vocabulary(spelling: "apple")])
         XCTAssertEqual(validTransport.postCount, 0)
     }
 

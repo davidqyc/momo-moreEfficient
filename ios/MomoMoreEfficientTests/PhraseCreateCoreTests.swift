@@ -341,6 +341,33 @@ final class PhraseCreateCoreTests: XCTestCase {
         }
     }
 
+    func testVocabularyNotFoundBlocksOnlyThatPhraseEntry() async throws {
+        let mixedDocument = """
+        ## missingword
+        EN: This entry should remain blocked.
+        ZH: 这一条应保持阻断。
+        SOURCE: 自编
+
+        ## acquisition
+        EN: The acquisition strengthened the company's position in the market.
+        ZH: 这次收购加强了公司在市场中的地位。
+        SOURCE: 自编
+        """
+        let (snapshot, transport, _) = try await makePhraseSnapshot(
+            document: mixedDocument,
+            results: [
+                jsonResponse([:]),
+                vocabularyResponse("INVALID_VOC_ACQUISITION", "acquisition"),
+                phrasesResponse([]),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.items.map(\.classification), [.blocked, .create])
+        XCTAssertEqual(snapshot.items[0].reason, "READ_FAILED")
+        XCTAssertEqual(transport.getCount, 3)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
     func testGlobalReadFailuresAbortPhrasePlanWithoutFabricatedRows() async throws {
         let entries = try PhraseBatchParser.parse(document)
         for failure in [

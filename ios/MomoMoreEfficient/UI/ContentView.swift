@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var viewModel: CompanionViewModel
     @State private var showingTokenSheet = false
     @State private var tokenDraft = ""
+    @State private var isSubmittingToken = false
 
     init(viewModel: @autoclosure @escaping () -> CompanionViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel())
@@ -626,6 +627,16 @@ struct ContentView: View {
                                 .accessibilityHidden(true)
                         }
                     }
+                    if tokenValidationIsInFlight {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("正在验证…")
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("正在验证 Token")
+                    }
                     if let message = viewModel.tokenErrorMessage {
                         Text(message)
                             .font(.footnote)
@@ -669,22 +680,33 @@ struct ContentView: View {
                         viewModel.clearTokenError()
                         showingTokenSheet = false
                     }
+                    .disabled(tokenValidationIsInFlight)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(viewModel.isConnected ? "更换" : "连接") {
+                        // Synchronous UI latch: Cancel/dismiss is closed before
+                        // the async Task gets its first MainActor turn.
+                        isSubmittingToken = true
                         Task {
-                            if await viewModel.connect(token: tokenDraft) {
+                            let connected = await viewModel.connect(token: tokenDraft)
+                            isSubmittingToken = false
+                            if connected {
                                 clearTokenDraft()
                                 showingTokenSheet = false
                             }
                         }
                     }
                     .fontWeight(.semibold)
-                    .disabled(tokenDraft.isEmpty || viewModel.isValidatingCredential)
+                    .disabled(tokenDraft.isEmpty || tokenValidationIsInFlight)
                 }
             }
         }
         .presentationDetents([.medium])
+        .interactiveDismissDisabled(tokenValidationIsInFlight)
+    }
+
+    private var tokenValidationIsInFlight: Bool {
+        isSubmittingToken || viewModel.isValidatingCredential
     }
 
     private var previewLoadingTitle: String {

@@ -32,21 +32,14 @@ final class MaimemoTransport {
         self.sleeper = sleeper
     }
 
-    /// The official bundle exposes no dedicated credential-validation endpoint.
-    /// Use its narrowest authenticated GET and require the documented 200 schema.
+    /// Reuse the production-proven vocabulary route and decoder. "apple" is a
+    /// stable probe only for credential validation; no second route/schema exists.
     func validateCredential() async throws {
-        let response = try await read(
-            route: .credentialValidation,
-            control: nil,
-            readback: false
-        )
-        let object = try jsonObject(response.body)
-        guard let voc = object["voc"] as? [String: Any],
-              let id = voc["id"] as? String,
-              let spelling = voc["spelling"] as? String,
-              isSafeIdentifier(id),
-              BatchParser.normalizeSpelling(spelling) == "apple"
-        else {
+        do {
+            _ = try await vocabulary(spelling: "apple")
+        } catch CompanionError.itemResponseRejected {
+            // A missing/malformed probe record does not prove a bad Token, but it
+            // also cannot establish authenticated connection truth.
             throw CompanionError.responseRejected
         }
     }
@@ -61,14 +54,23 @@ final class MaimemoTransport {
             readback: false
         )
         let object = try jsonObject(response.body)
-        let container = (object["voc"] != nil ? object : object["data"] as? [String: Any])
-        guard let voc = container?["voc"] as? [String: Any],
+        let container: [String: Any]
+        if object["voc"] != nil {
+            container = object
+        } else if let data = object["data"] as? [String: Any] {
+            container = data
+        } else if object.isEmpty {
+            throw CompanionError.itemResponseRejected
+        } else {
+            throw CompanionError.responseRejected
+        }
+        guard let voc = container["voc"] as? [String: Any],
               let id = voc["id"] as? String,
               let returned = voc["spelling"] as? String,
               isSafeIdentifier(id),
               BatchParser.normalizeSpelling(returned) == BatchParser.normalizeSpelling(spelling)
         else {
-            throw CompanionError.responseRejected
+            throw CompanionError.itemResponseRejected
         }
         return VocabularyRecord(id: id, spelling: returned)
     }

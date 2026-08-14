@@ -150,6 +150,28 @@ final class TransportAndPlanningTests: XCTestCase {
         XCTAssertEqual(snapshot.presentation.rows[0].reason, "READ_FAILED")
     }
 
+    func testVocabularyNotFoundBlocksOnlyThatInterpretationEntry() async throws {
+        let (snapshot, transport, _) = try await makeSnapshot(
+            document: "one\nn. 一\nmissingword\nn. 缺失\nthree\nn. 三",
+            results: [
+                vocabularyResponse("INVALID_VOC_ONE", "one"), interpretationsResponse([]),
+                jsonResponse([:]),
+                vocabularyResponse("INVALID_VOC_THREE", "three"),
+                interpretationsResponse([
+                    interpretation("INVALID_RECORD_THREE", "n. 三"),
+                ]),
+            ]
+        )
+
+        XCTAssertEqual(
+            snapshot.presentation.rows.map(\.classification),
+            [.create, .blocked, .alreadyMatching]
+        )
+        XCTAssertEqual(snapshot.presentation.rows[1].reason, "READ_FAILED")
+        XCTAssertEqual(transport.getCount, 5)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
     func testObservedDataWrappersAreAccepted() async throws {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
@@ -173,27 +195,31 @@ final class TransportAndPlanningTests: XCTestCase {
         XCTAssertEqual(sleeper.seconds, [1.6, 1.6, 1.6])
     }
 
-    func testCredentialValidationUsesOneDocumentedGETAndRequiresStrict200Schema() async throws {
-        let valid = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
-        ])
+    func testCredentialValidationReusesVocabularyRouteDecoderIncludingDataEnvelope() async throws {
         let lease = try credentialLease()
         defer { lease.clear() }
-        try await MaimemoTransport(
-            transport: valid,
-            credential: lease,
-            sleeper: RecordingSleeper()
-        ).validateCredential()
-        XCTAssertEqual(valid.requests.map(\.route), [.credentialValidation])
-        XCTAssertEqual(valid.getCount, 1)
-        XCTAssertEqual(valid.postCount, 0)
+
+        for success in [
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+            jsonResponse([
+                "data": ["voc": ["id": "INVALID_VALIDATION_VOC", "spelling": "apple"]],
+            ]),
+        ] {
+            let valid = FakeHTTPTransport([success])
+            try await MaimemoTransport(
+                transport: valid,
+                credential: lease,
+                sleeper: RecordingSleeper()
+            ).validateCredential()
+            XCTAssertEqual(valid.requests.map(\.route), [.vocabulary(spelling: "apple")])
+            XCTAssertEqual(valid.getCount, 1)
+            XCTAssertEqual(valid.postCount, 0)
+        }
 
         for failure in [
             jsonResponse(["unexpected": []]),
             jsonResponse(["voc": ["id": "INVALID_VALIDATION_VOC", "spelling": "pear"]]),
-            jsonResponse([
-                "data": ["voc": ["id": "INVALID_VALIDATION_VOC", "spelling": "apple"]],
-            ]),
+            jsonResponse([:]),
         ] {
             let transport = FakeHTTPTransport([failure])
             do {

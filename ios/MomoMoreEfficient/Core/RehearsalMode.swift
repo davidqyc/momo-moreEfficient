@@ -162,10 +162,6 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         }
 
         switch request.route {
-        case .credentialValidation:
-            return try json([
-                "voc": ["id": "REHEARSAL_VALIDATION_VOC", "spelling": "apple"],
-            ])
         case let .vocabulary(spelling):
             return try json(["voc": ["id": vocabularyID(for: spelling), "spelling": spelling]])
 
