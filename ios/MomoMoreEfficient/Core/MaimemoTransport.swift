@@ -32,6 +32,18 @@ final class MaimemoTransport {
         self.sleeper = sleeper
     }
 
+    /// Reuse the production-proven vocabulary route and decoder. "apple" is a
+    /// stable probe only for credential validation; no second route/schema exists.
+    func validateCredential() async throws {
+        do {
+            _ = try await vocabulary(spelling: "apple")
+        } catch CompanionError.itemResponseRejected {
+            // A missing/malformed probe record does not prove a bad Token, but it
+            // also cannot establish authenticated connection truth.
+            throw CompanionError.responseRejected
+        }
+    }
+
     func vocabulary(
         spelling: String,
         control: ExecutionControl? = nil
@@ -42,14 +54,23 @@ final class MaimemoTransport {
             readback: false
         )
         let object = try jsonObject(response.body)
-        let container = (object["voc"] != nil ? object : object["data"] as? [String: Any])
-        guard let voc = container?["voc"] as? [String: Any],
+        let container: [String: Any]
+        if object["voc"] != nil {
+            container = object
+        } else if let data = object["data"] as? [String: Any] {
+            container = data
+        } else if object.isEmpty {
+            throw CompanionError.itemResponseRejected
+        } else {
+            throw CompanionError.responseRejected
+        }
+        guard let voc = container["voc"] as? [String: Any],
               let id = voc["id"] as? String,
               let returned = voc["spelling"] as? String,
               isSafeIdentifier(id),
               BatchParser.normalizeSpelling(returned) == BatchParser.normalizeSpelling(spelling)
         else {
-            throw CompanionError.responseRejected
+            throw CompanionError.itemResponseRejected
         }
         return VocabularyRecord(id: id, spelling: returned)
     }
@@ -86,7 +107,7 @@ final class MaimemoTransport {
                   let status = value["status"] as? String,
                   documentedStatuses.contains(status)
             else {
-                throw CompanionError.responseRejected
+                throw CompanionError.itemResponseRejected
             }
             return InterpretationRecord(
                 id: id,
@@ -132,7 +153,7 @@ final class MaimemoTransport {
                   let status = value["status"] as? String,
                   reviewedPhraseStatuses.contains(status)
             else {
-                throw CompanionError.responseRejected
+                throw CompanionError.itemResponseRejected
             }
             return PhraseRecord(
                 id: id,
@@ -188,10 +209,23 @@ final class MaimemoTransport {
         }
         let request = try TransportRequest(route: route)
         let response = try await transport.send(request, credential: credential)
-        guard (200..<300).contains(response.status) else {
-            throw CompanionError.responseRejected
-        }
+        try Self.validateReadStatus(response.status)
         return response
+    }
+
+    private static func validateReadStatus(_ status: Int) throws {
+        if status == 200 { return }
+        if (200..<300).contains(status) { throw CompanionError.responseRejected }
+        switch status {
+        case 401:
+            throw CompanionError.authenticationRejected
+        case 429:
+            throw CompanionError.rateLimited
+        case 500...599:
+            throw CompanionError.serverFailure
+        default:
+            throw CompanionError.globalHTTPFailure
+        }
     }
 
     private func pace() async throws {
@@ -202,12 +236,20 @@ final class MaimemoTransport {
     }
 
     private func jsonObject(_ data: Data) throws -> [String: Any] {
-        guard data.count <= 1_048_576,
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        guard data.count <= 1_048_576 else {
             throw CompanionError.responseRejected
         }
-        return object
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                throw CompanionError.responseRejected
+            }
+            return object
+        } catch let error as CompanionError {
+            throw error
+        } catch {
+            throw CompanionError.responseRejected
+        }
     }
 
     private func safeSingleLine(_ value: Any?, maximumCharacters: Int) -> String? {
@@ -236,7 +278,7 @@ final class MaimemoTransport {
               tags.count <= documentedTags.count,
               tags.allSatisfy({ documentedTags.contains($0) })
         else {
-            throw CompanionError.responseRejected
+            throw CompanionError.itemResponseRejected
         }
         return tags
     }
@@ -246,7 +288,7 @@ final class MaimemoTransport {
         phraseLength: Int
     ) throws -> PhraseHighlight {
         guard let raw = record["highlight"] else { return .missing }
-        guard let values = raw as? [Any] else { throw CompanionError.responseRejected }
+        guard let values = raw as? [Any] else { throw CompanionError.itemResponseRejected }
         if values.isEmpty {
             return .ranges(shape: .emptyArray, values: [])
         }
@@ -254,7 +296,7 @@ final class MaimemoTransport {
         if values.allSatisfy({ $0 is [String: Any] }) {
             let ranges = try values.map { value -> PhraseRange in
                 guard let object = value as? [String: Any] else {
-                    throw CompanionError.responseRejected
+                    throw CompanionError.itemResponseRejected
                 }
                 return try checkedRange(
                     start: object["start"],
@@ -268,7 +310,7 @@ final class MaimemoTransport {
         if values.allSatisfy({ $0 is [Any] }) {
             let ranges = try values.map { value -> PhraseRange in
                 guard let pair = value as? [Any], pair.count == 2 else {
-                    throw CompanionError.responseRejected
+                    throw CompanionError.itemResponseRejected
                 }
                 return try checkedRange(
                     start: pair[0],
@@ -279,7 +321,7 @@ final class MaimemoTransport {
             return .ranges(shape: .integerPairArray, values: ranges)
         }
 
-        throw CompanionError.responseRejected
+        throw CompanionError.itemResponseRejected
     }
 
     private func checkedRange(
@@ -293,7 +335,7 @@ final class MaimemoTransport {
               start < end,
               end <= phraseLength
         else {
-            throw CompanionError.responseRejected
+            throw CompanionError.itemResponseRejected
         }
         return PhraseRange(start: start, end: end)
     }

@@ -125,7 +125,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             _ = try await api.phrases(vocabularyID: "INVALID_VOC")
             XCTFail("malformed tags should fail")
         } catch {
-            XCTAssertEqual(error as? CompanionError, .responseRejected)
+            XCTAssertEqual(error as? CompanionError, .itemResponseRejected)
             XCTAssertFalse(String(reflecting: error).contains(serverSentinel))
             XCTAssertFalse(String(reflecting: transport.requests).contains(serverSentinel))
             XCTAssertFalse(String(reflecting: transport.requests).contains("FAKE_PRIVATE"))
@@ -323,10 +323,8 @@ final class PhraseCreateCoreTests: XCTestCase {
         }
     }
 
-    func testReadAndSchemaFailuresBecomeBlocked() async throws {
+    func testItemSchemaFailuresBecomeBlocked() async throws {
         let failures: [StubbedResult] = [
-            .failure(.transport),
-            jsonResponse(["unexpected": []]),
             phrasesResponse([phraseRecord(id: "bad/id")]),
             phrasesResponse([phraseRecord(status: "UNPUBLISHED")]),
         ]
@@ -340,6 +338,65 @@ final class PhraseCreateCoreTests: XCTestCase {
             )
             XCTAssertEqual(snapshot.items[0].classification, .blocked)
             XCTAssertEqual(snapshot.items[0].reason, "READ_FAILED")
+        }
+    }
+
+    func testVocabularyNotFoundBlocksOnlyThatPhraseEntry() async throws {
+        let mixedDocument = """
+        ## missingword
+        EN: This entry should remain blocked.
+        ZH: 这一条应保持阻断。
+        SOURCE: 自编
+
+        ## acquisition
+        EN: The acquisition strengthened the company's position in the market.
+        ZH: 这次收购加强了公司在市场中的地位。
+        SOURCE: 自编
+        """
+        let (snapshot, transport, _) = try await makePhraseSnapshot(
+            document: mixedDocument,
+            results: [
+                jsonResponse([:]),
+                vocabularyResponse("INVALID_VOC_ACQUISITION", "acquisition"),
+                phrasesResponse([]),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.items.map(\.classification), [.blocked, .create])
+        XCTAssertEqual(snapshot.items[0].reason, "READ_FAILED")
+        XCTAssertEqual(transport.getCount, 3)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testGlobalReadFailuresAbortPhrasePlanWithoutFabricatedRows() async throws {
+        let entries = try PhraseBatchParser.parse(document)
+        for failure in [
+            jsonResponse(["error": "auth"], status: 401),
+            StubbedResult.failure(.transport),
+            jsonResponse(["error": "rate"], status: 429),
+            jsonResponse(["error": "server"], status: 503),
+        ] {
+            let transport = FakeHTTPTransport([failure])
+            let lease = try credentialLease()
+            defer { lease.clear() }
+            do {
+                _ = try await PhrasePreflightPlanner(
+                    api: MaimemoTransport(
+                        transport: transport,
+                        credential: lease,
+                        sleeper: RecordingSleeper()
+                    )
+                ).buildSnapshot(
+                    entries: entries,
+                    tags: [],
+                    credentialFingerprint: lease.fingerprint
+                )
+                XCTFail("global failure must abort Preview")
+            } catch let error as CompanionError {
+                XCTAssertTrue(error.abortsReadPlan)
+            }
+            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.postCount, 0)
         }
     }
 
@@ -803,7 +860,12 @@ final class PhraseCreateCoreTests: XCTestCase {
             _ = try await api.phrases(vocabularyID: "INVALID_VOC")
             XCTFail("expected phrase response rejection", file: file, line: line)
         } catch {
-            XCTAssertEqual(error as? CompanionError, .responseRejected, file: file, line: line)
+            XCTAssertEqual(
+                error as? CompanionError,
+                .itemResponseRejected,
+                file: file,
+                line: line
+            )
         }
     }
 

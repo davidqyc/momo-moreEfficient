@@ -69,6 +69,8 @@ struct PreflightPlanner {
                 }
             } catch CompanionError.cancelled {
                 throw CompanionError.cancelled
+            } catch let error as CompanionError where error.abortsReadPlan {
+                throw error
             } catch {
                 planned.append(
                     PrivatePreflightItem(

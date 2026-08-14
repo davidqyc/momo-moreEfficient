@@ -150,6 +150,28 @@ final class TransportAndPlanningTests: XCTestCase {
         XCTAssertEqual(snapshot.presentation.rows[0].reason, "READ_FAILED")
     }
 
+    func testVocabularyNotFoundBlocksOnlyThatInterpretationEntry() async throws {
+        let (snapshot, transport, _) = try await makeSnapshot(
+            document: "one\nn. 一\nmissingword\nn. 缺失\nthree\nn. 三",
+            results: [
+                vocabularyResponse("INVALID_VOC_ONE", "one"), interpretationsResponse([]),
+                jsonResponse([:]),
+                vocabularyResponse("INVALID_VOC_THREE", "three"),
+                interpretationsResponse([
+                    interpretation("INVALID_RECORD_THREE", "n. 三"),
+                ]),
+            ]
+        )
+
+        XCTAssertEqual(
+            snapshot.presentation.rows.map(\.classification),
+            [.create, .blocked, .alreadyMatching]
+        )
+        XCTAssertEqual(snapshot.presentation.rows[1].reason, "READ_FAILED")
+        XCTAssertEqual(transport.getCount, 5)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
     func testObservedDataWrappersAreAccepted() async throws {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
@@ -171,5 +193,79 @@ final class TransportAndPlanningTests: XCTestCase {
         )
         XCTAssertEqual(transport.requests.count, 4)
         XCTAssertEqual(sleeper.seconds, [1.6, 1.6, 1.6])
+    }
+
+    func testCredentialValidationReusesVocabularyRouteDecoderIncludingDataEnvelope() async throws {
+        let lease = try credentialLease()
+        defer { lease.clear() }
+
+        for success in [
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+            jsonResponse([
+                "data": ["voc": ["id": "INVALID_VALIDATION_VOC", "spelling": "apple"]],
+            ]),
+        ] {
+            let valid = FakeHTTPTransport([success])
+            try await MaimemoTransport(
+                transport: valid,
+                credential: lease,
+                sleeper: RecordingSleeper()
+            ).validateCredential()
+            XCTAssertEqual(valid.requests.map(\.route), [.vocabulary(spelling: "apple")])
+            XCTAssertEqual(valid.getCount, 1)
+            XCTAssertEqual(valid.postCount, 0)
+        }
+
+        for failure in [
+            jsonResponse(["unexpected": []]),
+            jsonResponse(["voc": ["id": "INVALID_VALIDATION_VOC", "spelling": "pear"]]),
+            jsonResponse([:]),
+        ] {
+            let transport = FakeHTTPTransport([failure])
+            do {
+                try await MaimemoTransport(
+                    transport: transport,
+                    credential: lease,
+                    sleeper: RecordingSleeper()
+                ).validateCredential()
+                XCTFail("malformed authenticated 2xx must fail closed")
+            } catch {
+                XCTAssertEqual(error as? CompanionError, .responseRejected)
+            }
+        }
+    }
+
+    func testGlobalReadFailuresAbortInterpretationPlanWithoutFabricatedRows() async throws {
+        let entries = try BatchParser.parseDailyInput(
+            "one\nn. 一\ntwo\nn. 二\nthree\nn. 三"
+        ).entries
+        for failure in [
+            jsonResponse(["error": "auth"], status: 401),
+            StubbedResult.failure(.transport),
+            jsonResponse(["error": "rate"], status: 429),
+            jsonResponse(["error": "server"], status: 503),
+        ] {
+            let transport = FakeHTTPTransport([failure])
+            let lease = try credentialLease()
+            defer { lease.clear() }
+            do {
+                _ = try await PreflightPlanner(
+                    api: MaimemoTransport(
+                        transport: transport,
+                        credential: lease,
+                        sleeper: RecordingSleeper()
+                    )
+                ).buildSnapshot(
+                    entries: entries,
+                    tags: [],
+                    credentialFingerprint: lease.fingerprint
+                )
+                XCTFail("global failure must abort Preview")
+            } catch let error as CompanionError {
+                XCTAssertTrue(error.abortsReadPlan)
+            }
+            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.postCount, 0)
+        }
     }
 }

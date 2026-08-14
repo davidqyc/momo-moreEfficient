@@ -103,8 +103,8 @@ final class RehearsalHistoryStore: HistoryStore {
     }
 }
 
-/// Hands out a placeholder token so the app is "connected" without ever reading
-/// the Keychain. Nothing is persisted anywhere.
+/// Hands out a placeholder token without ever reading the Keychain. The normal
+/// authenticated fake GET still has to succeed before the app becomes connected.
 final class RehearsalTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String? = RehearsalMode.placeholderToken
 

@@ -412,7 +412,7 @@ final class MixedBatchRunTests: XCTestCase {
 
         // Nothing re-runs on its own.
         let postsAfterStop = factory.transports.reduce(0) { $0 + $1.postCount }
-        model.enterForeground()
+        await model.enterForeground()
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, postsAfterStop)
         XCTAssertNil(model.executeConfirmedWholePlan())
     }
@@ -435,7 +435,7 @@ final class MixedBatchRunTests: XCTestCase {
         // A call arrives and the Owner switches away and back, spanning the
         // CREATE → UPDATE handover.
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         model.enterBackground()
         await execution?.value
 
@@ -555,7 +555,7 @@ final class MixedBatchRunTests: XCTestCase {
         await execution?.value
         let postsAfterStop = factory.transports.reduce(0) { $0 + $1.postCount }
 
-        model.enterForeground()
+        await model.enterForeground()
 
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, postsAfterStop)
         XCTAssertFalse(model.isExecuting)
@@ -633,6 +633,131 @@ final class MixedBatchRunTests: XCTestCase {
 
     // MARK: - Single-group batches are untouched
 
+    func testSingleGroupSuccessPreservesBlockedSourceInOriginalOrder() async throws {
+        let source = "create\nn. 新建\nblocked-one\nn. 待处理一\nblocked-two\nn. 待处理二"
+        let ambiguous = [
+            interpretation("INVALID_RECORD_A", "n. 旧一"),
+            interpretation("INVALID_RECORD_B", "n. 旧二"),
+        ]
+        let preflight: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_CREATE", "create"), interpretationsResponse([]),
+            vocabularyResponse("INVALID_VOC_BLOCKED_1", "blocked-one"),
+            interpretationsResponse(ambiguous),
+            vocabularyResponse("INVALID_VOC_BLOCKED_2", "blocked-two"),
+            interpretationsResponse(ambiguous),
+        ]
+        let factory = SequencedTransportFactory([
+            preflight,
+            preflight + [
+                jsonResponse([:], status: 201),
+                interpretationsResponse([
+                    interpretation("INVALID_CREATED", "n. 新建"),
+                ]),
+            ],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = source
+        await model.previewCurrentInput()
+        XCTAssertEqual(model.preview?.counts.blocked, 2)
+        model.askToExecute(.create)
+
+        await model.executeConfirmed(.create)?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.items.map(\.spelling), ["create"])
+        XCTAssertEqual(
+            model.sourceText,
+            "## blocked-one\nn. 待处理一\n\n## blocked-two\nn. 待处理二"
+        )
+        let remainder = try BatchParser.parseDailyInput(model.sourceText).entries
+        XCTAssertEqual(remainder.map(\.spelling), ["blocked-one", "blocked-two"])
+    }
+
+    func testMixedPlanSuccessPreservesBlockedSourceAfterBothReceipts() async throws {
+        let source = "create\nn. 新建\nblocked\nn. 待处理\nupdate\nn. 新版"
+        let oldUpdate = interpretation("INVALID_UPDATE", "n. 旧版")
+        let ambiguous = [
+            interpretation("INVALID_BLOCKED_A", "n. 旧一"),
+            interpretation("INVALID_BLOCKED_B", "n. 旧二"),
+        ]
+        let fullPreflight: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_CREATE", "create"), interpretationsResponse([]),
+            vocabularyResponse("INVALID_VOC_BLOCKED", "blocked"),
+            interpretationsResponse(ambiguous),
+            vocabularyResponse("INVALID_VOC_UPDATE", "update"),
+            interpretationsResponse([oldUpdate]),
+        ]
+        let factory = SequencedTransportFactory([
+            fullPreflight,
+            fullPreflight + [
+                jsonResponse([:], status: 201),
+                interpretationsResponse([
+                    interpretation("INVALID_CREATED", "n. 新建"),
+                ]),
+                vocabularyResponse("INVALID_VOC_UPDATE", "update"),
+                interpretationsResponse([oldUpdate]),
+                jsonResponse([:]),
+                interpretationsResponse([
+                    interpretation("INVALID_UPDATE", "n. 新版"),
+                ]),
+            ],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = source
+        await model.previewCurrentInput()
+        XCTAssertEqual(model.preview?.counts, PreviewCounts(
+            create: 1,
+            update: 1,
+            alreadyMatching: 0,
+            blocked: 1
+        ))
+        model.askToExecuteWholePlan()
+
+        await model.executeConfirmedWholePlan()?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 2)
+        XCTAssertEqual(model.history.count, 2)
+        XCTAssertTrue(model.history.allSatisfy(\.isFullSuccess))
+        XCTAssertEqual(model.sourceText, "## blocked\nn. 待处理")
+        let remainder = try BatchParser.parseDailyInput(model.sourceText).entries
+        XCTAssertEqual(remainder.map(\.spelling), ["blocked"])
+    }
+
+    func testLaterPhaseGlobalFailureKeepsCompletedReceiptAndPendingSource() async {
+        let source = "create\nn. 新建\nupdate\nn. 新版"
+        let oldUpdate = interpretation("INVALID_UPDATE", "n. 旧版")
+        let preflight: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_CREATE", "create"), interpretationsResponse([]),
+            vocabularyResponse("INVALID_VOC_UPDATE", "update"),
+            interpretationsResponse([oldUpdate]),
+        ]
+        let factory = SequencedTransportFactory([
+            preflight,
+            preflight + [
+                jsonResponse([:], status: 201),
+                interpretationsResponse([
+                    interpretation("INVALID_CREATED", "n. 新建"),
+                ]),
+                jsonResponse(["error": "server"], status: 503),
+            ],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = source
+        await model.previewCurrentInput()
+        model.askToExecuteWholePlan()
+
+        await model.executeConfirmedWholePlan()?.value
+
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.operationGroup, .create)
+        XCTAssertTrue(model.history.first?.isFullSuccess == true)
+        XCTAssertEqual(model.sourceText, "## update\nn. 新版")
+        XCTAssertEqual(model.errorMessage, CompanionError.serverFailure.description)
+        XCTAssertTrue(model.isConnected)
+    }
+
     func testSingleGroupBatchStillRunsThroughItsOwnSimpleFlow() async {
         let factory = SequencedTransportFactory([
             [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
@@ -687,6 +812,7 @@ final class MixedBatchRunTests: XCTestCase {
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
+        await model.enterForeground()
         model.sourceText = [
             "collapse\nn. 崩塌",
             "ledger\nn. 分类账",
@@ -730,7 +856,7 @@ final class MixedBatchRunTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         return model
     }
 
@@ -749,7 +875,7 @@ final class MixedBatchRunTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         return model
     }
 }

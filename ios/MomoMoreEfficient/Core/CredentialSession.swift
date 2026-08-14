@@ -7,15 +7,19 @@ final class InMemoryCredential: CustomDebugStringConvertible, @unchecked Sendabl
     let fingerprint: String
 
     init(token: String) throws {
-        guard !token.isEmpty,
-              token == token.trimmingCharacters(in: .whitespacesAndNewlines),
-              token.unicodeScalars.count <= CompanionConstants.maxTokenCharacters,
-              !containsDisallowedControlCharacter(token, allowingNewline: false)
+        let normalized = Self.normalize(token)
+        guard !normalized.isEmpty,
+              normalized.unicodeScalars.count <= CompanionConstants.maxTokenCharacters,
+              !containsDisallowedControlCharacter(normalized, allowingNewline: false)
         else {
             throw CompanionError.credentialRejected
         }
-        self.token = token
-        self.fingerprint = SHA256.hash(data: Data(token.utf8)).hexPrefix(16)
+        self.token = normalized
+        self.fingerprint = SHA256.hash(data: Data(normalized.utf8)).hexPrefix(16)
+    }
+
+    static func normalize(_ token: String) -> String {
+        token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func makeOperationLease() throws -> OperationCredentialLease {
@@ -69,8 +73,13 @@ final class CredentialSession: CustomDebugStringConvertible {
     private var credential: InMemoryCredential?
 
     func connect(token: String) throws {
-        disconnect()
-        credential = try InMemoryCredential(token: token)
+        replace(with: try InMemoryCredential(token: token))
+    }
+
+    func replace(with replacement: InMemoryCredential) {
+        let previous = credential
+        credential = replacement
+        previous?.clear()
     }
 
     func disconnect() {

@@ -91,7 +91,7 @@ final class BatchParserTests: XCTestCase {
             transportFactory: { FakeHTTPTransport([]) },
             sleeperFactory: { RecordingSleeper() }
         )
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         XCTAssertTrue(model.isConnected)
         XCTAssertTrue(draft.isEmpty)
     }

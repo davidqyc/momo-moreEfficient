@@ -58,9 +58,9 @@ final class ExecutionLifecycleTests: XCTestCase {
         let execution = model.executeConfirmed(.create)
         // A call arrives, is dismissed, the user switches apps, then returns.
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         await execution?.value
 
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
@@ -173,7 +173,7 @@ final class ExecutionLifecycleTests: XCTestCase {
         await execution?.value
         let postsAfterStop = await executionTransport.postCount
 
-        model.enterForeground()
+        await model.enterForeground()
 
         let postsAfterForeground = await executionTransport.postCount
         XCTAssertEqual(postsAfterForeground, postsAfterStop)
@@ -445,6 +445,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
         )
+        await model.enterForeground()
         model.sourceText = "collapse\nn. 崩塌"
         await model.previewCurrentInput()
         model.askToExecute(.create)
@@ -472,6 +473,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { assertion }
         )
+        await model.enterForeground()
         XCTAssertTrue(model.isConnected)
         // `manning` is seeded as already having one interpretation, so a rehearsal
         // batch exercises both classifications the Owner will see.
@@ -504,6 +506,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { assertion }
         )
+        await model.enterForeground()
         model.sourceText = "collapse\nn. 崩塌\nledger\nn. 分类账"
         await model.previewCurrentInput()
         XCTAssertEqual(model.preview?.counts.create, 2)
@@ -597,7 +600,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         return model
     }
 
@@ -616,7 +619,7 @@ final class ExecutionLifecycleTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         return model
     }
 }

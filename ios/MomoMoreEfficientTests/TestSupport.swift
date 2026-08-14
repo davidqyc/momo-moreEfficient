@@ -5,6 +5,10 @@ import XCTest
 let fakeToken = "FAKE_IOS_TEST_TOKEN_NOT_VALID"
 let legacyTestTags = ["MBA", "BEC", "GMAT"]
 
+func successfulCredentialValidationTransport() -> HTTPTransport {
+    FakeHTTPTransport([vocabularyResponse("INVALID_VALIDATION_VOC", "apple")])
+}
+
 final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String?
     private(set) var saveCount = 0
@@ -27,6 +31,7 @@ final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     }
 
     var hasStoredToken: Bool { token != nil }
+    var storedTokenForTesting: String? { token }
     var debugDescription: String { "FakeTokenStore(<redacted>)" }
 }
 
@@ -151,6 +156,48 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
 
     var postCount: Int { requests.filter { $0.route.method == .post }.count }
     var getCount: Int { requests.filter { $0.route.method == .get }.count }
+}
+
+/// Holds one HTTP response until a test explicitly releases it. This makes the
+/// credential-validation UI state observable without timers or real networking.
+actor GatedHTTPTransport: HTTPTransport {
+    private let result: StubbedResult
+    private var responseContinuation: CheckedContinuation<TransportResponse, Error>?
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var requests: [TransportRequest] = []
+
+    init(_ result: StubbedResult) {
+        self.result = result
+    }
+
+    func send(
+        _ request: TransportRequest,
+        credential: OperationCredentialLease
+    ) async throws -> TransportResponse {
+        requests.append(request)
+        return try await withCheckedThrowingContinuation { continuation in
+            responseContinuation = continuation
+            requestWaiters.forEach { $0.resume() }
+            requestWaiters.removeAll()
+        }
+    }
+
+    func waitUntilRequested() async {
+        if !requests.isEmpty { return }
+        await withCheckedContinuation { requestWaiters.append($0) }
+    }
+
+    func resume() {
+        guard let continuation = responseContinuation else { return }
+        responseContinuation = nil
+        switch result {
+        case let .response(response): continuation.resume(returning: response)
+        case let .failure(error): continuation.resume(throwing: error)
+        }
+    }
+
+    var getCount: Int { requests.filter { $0.route.method == .get }.count }
+    var postCount: Int { requests.filter { $0.route.method == .post }.count }
 }
 
 final class RecordingSleeper: RequestSleeper, @unchecked Sendable {

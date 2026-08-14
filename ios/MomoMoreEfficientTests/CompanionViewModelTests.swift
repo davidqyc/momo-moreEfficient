@@ -4,6 +4,281 @@ import XCTest
 
 @MainActor
 final class CompanionViewModelTests: XCTestCase {
+    func testCandidateMustPassAuthenticatedReadBeforeSaveOrConnected() async {
+        let rejectedStore = FakeTokenStore()
+        let rejectedTransport = FakeHTTPTransport([
+            jsonResponse(["error": "unauthorized"], status: 401),
+        ])
+        let rejected = CompanionViewModel(
+            tokenStore: rejectedStore,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { rejectedTransport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        let rejectedResult = await rejected.connect(token: fakeToken)
+        XCTAssertFalse(rejectedResult)
+        XCTAssertFalse(rejected.isConnected)
+        XCTAssertFalse(rejectedStore.hasStoredToken)
+        XCTAssertEqual(rejectedStore.saveCount, 0)
+        XCTAssertEqual(rejectedTransport.getCount, 1)
+        XCTAssertEqual(rejectedTransport.postCount, 0)
+        XCTAssertNotNil(rejected.tokenErrorMessage)
+
+        let validStore = FakeTokenStore()
+        let validTransport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
+        let valid = CompanionViewModel(
+            tokenStore: validStore,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { validTransport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        let validResult = await valid.connect(token: "  \(fakeToken)\n")
+        XCTAssertTrue(validResult)
+        XCTAssertTrue(valid.isConnected)
+        XCTAssertEqual(validStore.saveCount, 1)
+        XCTAssertEqual(validStore.storedTokenForTesting, fakeToken)
+        XCTAssertEqual(validTransport.requests.map(\.route), [.vocabulary(spelling: "apple")])
+        XCTAssertEqual(validTransport.postCount, 0)
+    }
+
+    func testValidationInFlightExposesDismissLockAndCannotCommitBeforeResponse() async {
+        let store = FakeTokenStore()
+        let transport = GatedHTTPTransport(
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple")
+        )
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        let connection = Task { await model.connect(token: fakeToken) }
+        await transport.waitUntilRequested()
+
+        XCTAssertTrue(model.isValidatingCredential)
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(store.saveCount, 0)
+        XCTAssertFalse(store.hasStoredToken)
+
+        await transport.resume()
+        let connected = await connection.value
+        XCTAssertTrue(connected)
+        XCTAssertFalse(model.isValidatingCredential)
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(store.saveCount, 1)
+        let getCount = await transport.getCount
+        let postCount = await transport.postCount
+        XCTAssertEqual(getCount, 1)
+        XCTAssertEqual(postCount, 0)
+    }
+
+    func testRejectedReplacementPreservesOldSessionKeychainAndForegroundFailureState() async {
+        let store = FakeTokenStore()
+        let rejectedTransport = FakeHTTPTransport([
+            jsonResponse(["error": "unauthorized"], status: 401),
+        ])
+        let restoreTransport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
+        var validationTransports: [HTTPTransport] = [rejectedTransport, restoreTransport]
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { validationTransports.removeFirst() },
+            sleeperFactory: { RecordingSleeper() }
+        )
+        var old = fakeToken
+        model.installVerifiedCredentialForTesting(token: &old)
+        let savedBefore = store.storedTokenForTesting
+
+        let replacementResult = await model.connect(token: "FAKE_REJECTED_REPLACEMENT")
+        XCTAssertFalse(replacementResult)
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(store.storedTokenForTesting, savedBefore)
+        XCTAssertEqual(store.saveCount, 1)
+        let failureBefore = model.tokenErrorMessage
+
+        model.enterBackground()
+        XCTAssertFalse(model.isConnected)
+        await model.enterForeground()
+
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(model.tokenErrorMessage, failureBefore)
+        XCTAssertEqual(store.storedTokenForTesting, savedBefore)
+        XCTAssertEqual(rejectedTransport.postCount, 0)
+        XCTAssertEqual(restoreTransport.getCount, 1)
+        XCTAssertEqual(restoreTransport.postCount, 0)
+    }
+
+    func testValidReplacementIsValidatedBeforeAtomicSaveAndActivation() async {
+        let store = FakeTokenStore()
+        let validTransport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { validTransport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+        var old = fakeToken
+        model.installVerifiedCredentialForTesting(token: &old)
+        let replacement = "FAKE_VALID_REPLACEMENT_TOKEN"
+
+        let replacementResult = await model.connect(token: replacement)
+        XCTAssertTrue(replacementResult)
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(store.storedTokenForTesting, replacement)
+        XCTAssertEqual(store.saveCount, 2)
+        XCTAssertEqual(validTransport.requests.map(\.route), [.vocabulary(spelling: "apple")])
+        XCTAssertEqual(validTransport.postCount, 0)
+    }
+
+    func testStoredTokenDoesNotAssertConnectedUntilForegroundValidationSucceeds() async {
+        let store = FakeTokenStore(token: fakeToken)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        XCTAssertFalse(model.isConnected)
+        await model.enterForeground()
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(store.saveCount, 0)
+        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testTokenNormalizationTrimsOnlySurroundingWhitespace() async throws {
+        let canonical = try InMemoryCredential(token: fakeToken)
+        for value in ["  \(fakeToken)", "\(fakeToken)  ", "\(fakeToken)\n"] {
+            let credential = try InMemoryCredential(token: value)
+            XCTAssertEqual(credential.fingerprint, canonical.fingerprint)
+        }
+        let internallyChanged = try InMemoryCredential(token: "FAKE_IOS_TEST_TOKEN_ NOT_VALID")
+        XCTAssertNotEqual(internallyChanged.fingerprint, canonical.fingerprint)
+    }
+
+    func testInterpretationEditorHintDocumentsCurrentSingleItemShape() {
+        XCTAssertEqual(
+            ContentMode.interpretation.editorHint,
+            "单条格式：单词换行 n. 释义；支持 n. / v. / adj. / adv. / phr. 等词性"
+        )
+        XCTAssertEqual(ContentMode.phrase.editorHint, "格式：单词 · 英文例句 · 中文翻译 · 来源（可选）")
+    }
+
+    func testInterpretationGlobalFailuresAbortPreviewWithoutFabricatedRows() async {
+        let cases: [(StubbedResult, CompanionError, Bool)] = [
+            (jsonResponse(["error": "auth"], status: 401), .authenticationRejected, false),
+            (.failure(.transport), .transport, true),
+            (jsonResponse(["error": "rate"], status: 429), .rateLimited, true),
+            (jsonResponse(["error": "server"], status: 503), .serverFailure, true),
+            (jsonResponse(["unexpected": []]), .responseRejected, true),
+        ]
+        for (failure, expectedError, remainsConnected) in cases {
+            let transport = FakeHTTPTransport([failure])
+            let model = connectedModel(transports: [transport])
+            model.sourceText = "one\nn. 一\ntwo\nn. 二\nthree\nn. 三"
+
+            await model.previewCurrentInput()
+
+            XCTAssertNil(model.preview)
+            XCTAssertFalse(model.hasExecutablePreview)
+            XCTAssertEqual(model.errorMessage, expectedError.description)
+            XCTAssertEqual(model.isConnected, remainsConnected)
+            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.postCount, 0)
+        }
+    }
+
+    func testGlobalFailureDuringFreshWritePreflightAbortsBeforePOST() async {
+        let cases: [(StubbedResult, CompanionError, Bool)] = [
+            (jsonResponse(["error": "auth"], status: 401), .authenticationRejected, false),
+            (.failure(.transport), .transport, true),
+            (jsonResponse(["unexpected": []]), .responseRejected, true),
+        ]
+        for (failure, expectedError, remainsConnected) in cases {
+            let factory = SequencedTransportFactory([
+                [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+                [failure],
+            ])
+            let model = connectedModel(factory)
+            model.sourceText = "word\nn. 新建"
+            await model.previewCurrentInput()
+            model.askToExecute(.create)
+
+            await model.executeConfirmed(.create)?.value
+
+            XCTAssertEqual(model.errorMessage, expectedError.description)
+            XCTAssertEqual(model.isConnected, remainsConnected)
+            XCTAssertNil(model.preview)
+            XCTAssertTrue(model.history.isEmpty)
+            XCTAssertEqual(model.sourceText, "word\nn. 新建")
+            XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 0)
+        }
+    }
+
+    func testAuthenticationRejectionDuringReadbackDisconnectsAndRecordsUnknownWrite() async {
+        let factory = SequencedTransportFactory([
+            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [
+                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                jsonResponse([:], status: 201),
+                jsonResponse(["error": "auth"], status: 401),
+            ],
+        ])
+        let model = connectedModel(factory)
+        model.sourceText = "word\nn. 新建"
+        await model.previewCurrentInput()
+        model.askToExecute(.create)
+
+        await model.executeConfirmed(.create)?.value
+
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(model.errorMessage, CompanionError.authenticationRejected.description)
+        XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
+        XCTAssertEqual(model.history.count, 1)
+        XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notVerified])
+        XCTAssertEqual(model.sourceText, "word\nn. 新建")
+    }
+
+    func testMalformedAuthenticatedValidationIsNotRelabeledInvalidToken() async {
+        let store = FakeTokenStore()
+        let transport = FakeHTTPTransport([jsonResponse(["unexpected": []])])
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        let connected = await model.connect(token: "  \(fakeToken)\n")
+
+        XCTAssertFalse(connected)
+        XCTAssertFalse(model.isConnected)
+        XCTAssertFalse(store.hasStoredToken)
+        XCTAssertEqual(
+            model.tokenErrorMessage,
+            "墨墨暂时无法安全验证 Token；候选 Token 未保存。"
+        )
+        XCTAssertNotEqual(
+            model.tokenErrorMessage,
+            "这个 Token 未通过墨墨验证；未保存，请检查后重试。"
+        )
+        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
     func testWriteTagPreferenceDefaultsToEmptyPersistsCanonicalZeroToThreeTags() throws {
         let (defaults, suite) = isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -73,7 +348,7 @@ final class CompanionViewModelTests: XCTestCase {
             preferenceDefaults: defaults
         )
         var token = fakeToken
-        model.connect(token: &token)
+        model.installVerifiedCredentialForTesting(token: &token)
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.askToExecute(.create)
@@ -91,14 +366,21 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(historyStore.saveCount, 0)
     }
 
-    func testTokenStorePersistsAcrossViewModelReconstruction() {
+    func testTokenStorePersistsAcrossViewModelReconstruction() async {
         let store = FakeTokenStore()
         var draft = fakeToken
         let historyStore = InMemoryHistoryStore()
         let first = CompanionViewModel(tokenStore: store, historyStore: historyStore)
-        first.connect(token: &draft)
+        first.installVerifiedCredentialForTesting(token: &draft)
 
-        let reconstructed = CompanionViewModel(tokenStore: store, historyStore: historyStore)
+        let reconstructed = CompanionViewModel(
+            tokenStore: store,
+            historyStore: historyStore,
+            credentialValidationTransportFactory: successfulCredentialValidationTransport
+        )
+
+        XCTAssertFalse(reconstructed.isConnected)
+        await reconstructed.enterForeground()
 
         XCTAssertTrue(first.isConnected)
         XCTAssertTrue(reconstructed.isConnected)
@@ -106,11 +388,15 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(store.saveCount, 1)
     }
 
-    func testBackgroundKeepsPersistedTokenAndForegroundRestoresConnection() {
+    func testBackgroundKeepsPersistedTokenAndForegroundRestoresConnection() async {
         let store = FakeTokenStore()
-        let model = CompanionViewModel(tokenStore: store, historyStore: InMemoryHistoryStore())
+        let model = CompanionViewModel(
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: successfulCredentialValidationTransport
+        )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
 
         model.enterBackground()
 
@@ -118,7 +404,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(store.hasStoredToken)
         XCTAssertEqual(store.deleteCount, 0)
 
-        model.enterForeground()
+        await model.enterForeground()
 
         XCTAssertTrue(model.isConnected)
         XCTAssertTrue(store.hasStoredToken)
@@ -156,7 +442,7 @@ final class CompanionViewModelTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         model.sourceText = "word\nn. 新建"
 
         let task = Task { await model.previewCurrentInput() }
@@ -286,7 +572,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(model.isPreviewStale)
 
         var replacement = "FAKE_REPLACEMENT_TOKEN_NOT_VALID"
-        model.connect(token: &replacement)
+        model.installVerifiedCredentialForTesting(token: &replacement)
 
         XCTAssertNil(model.preview)
         XCTAssertFalse(model.isPreviewStale)
@@ -330,7 +616,7 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
         model.enterBackground()
 
-        model.enterForeground()
+        await model.enterForeground()
 
         XCTAssertTrue(model.isConnected)
         XCTAssertNotNil(model.preview)
@@ -348,7 +634,7 @@ final class CompanionViewModelTests: XCTestCase {
         model.sourceText = "word\nn. 新建"
         await model.previewCurrentInput()
         model.enterBackground()
-        model.enterForeground()
+        await model.enterForeground()
         XCTAssertTrue(model.executionActions.isEmpty)
 
         await model.previewCurrentInput()
@@ -376,7 +662,7 @@ final class CompanionViewModelTests: XCTestCase {
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         model.sourceText = "word\nn. 新建"
 
         let previewTask = Task { await model.previewCurrentInput() }
@@ -403,7 +689,7 @@ final class CompanionViewModelTests: XCTestCase {
         model.askToExecute(.create)
         model.enterBackground()
         XCTAssertTrue(model.isPreviewStale)
-        model.enterForeground()
+        await model.enterForeground()
         model.removeToken()
         XCTAssertFalse(model.isConnected)
         XCTAssertNil(model.preview)
@@ -781,7 +1067,7 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
         model.askToExecute(.create)
         var sameToken = fakeToken
-        model.connect(token: &sameToken)
+        model.installVerifiedCredentialForTesting(token: &sameToken)
 
         let execution = model.executeConfirmed(.create)
 
@@ -990,7 +1276,7 @@ final class CompanionViewModelTests: XCTestCase {
 
         XCTAssertTrue(model.history.isEmpty)
         XCTAssertEqual(historyStore.clearCount, 1)
-        XCTAssertTrue(model.isConnected)
+        XCTAssertFalse(model.isConnected)
         XCTAssertTrue(tokenStore.hasStoredToken)
         XCTAssertEqual(tokenStore.deleteCount, 0)
         XCTAssertEqual(model.sourceText, "draft\nn. 草稿")
@@ -1050,11 +1336,12 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: tokenStore,
             historyStore: historyStore,
             transportFactory: factory.make,
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         XCTAssertTrue(draft.isEmpty)
         return model
     }
@@ -1070,11 +1357,12 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: historyStore,
             transportFactory: { remaining.removeFirst() },
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
             backgroundAssertionFactory: { assertion }
         )
         var draft = fakeToken
-        model.connect(token: &draft)
+        model.installVerifiedCredentialForTesting(token: &draft)
         XCTAssertTrue(draft.isEmpty)
         return model
     }

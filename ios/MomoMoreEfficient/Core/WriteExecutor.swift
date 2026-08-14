@@ -89,6 +89,8 @@ struct WriteExecutor {
                 stalePreview: false,
                 results: []
             )
+        } catch let error as CompanionError where error.abortsReadPlan {
+            return .globalFailure(group, error)
         } catch {
             return ExecutionSummary(
                 group: group,
@@ -148,6 +150,8 @@ struct WriteExecutor {
                 outcome: .stoppedBeforeRemainingPhase(group: firstGroup, reason: .interrupted),
                 phases: []
             )
+        } catch let error as CompanionError where error.abortsReadPlan {
+            return BatchRunResult(outcome: .globalFailure(error), phases: [])
         } catch {
             return .stale
         }
@@ -163,11 +167,26 @@ struct WriteExecutor {
                 // own fresh authenticated preflight, validated against its own
                 // portion of the original whole-plan authorization.
                 progress?.report(.securing)
-                guard let revalidated = await revalidatedPlan(
-                    phase,
-                    displayedSnapshot: displayedSnapshot,
-                    control: control
-                ) else {
+                do {
+                    guard let revalidated = try await revalidatedPlan(
+                        phase,
+                        displayedSnapshot: displayedSnapshot,
+                        control: control
+                    ) else {
+                        return BatchRunResult(
+                            outcome: .stoppedBeforeRemainingPhase(
+                                group: phase.group,
+                                reason: control.isCancellationRequested
+                                    ? .interrupted
+                                    : .remainingPhaseChanged
+                            ),
+                            phases: summaries
+                        )
+                    }
+                    plan = revalidated
+                } catch let error as CompanionError where error.abortsReadPlan {
+                    return BatchRunResult(outcome: .globalFailure(error), phases: summaries)
+                } catch {
                     return BatchRunResult(
                         outcome: .stoppedBeforeRemainingPhase(
                             group: phase.group,
@@ -178,11 +197,17 @@ struct WriteExecutor {
                         phases: summaries
                     )
                 }
-                plan = revalidated
             }
 
             let summary = await perform(plan: plan, control: control, progress: progress)
             summaries.append(summary)
+
+            if let terminalError = summary.terminalError {
+                return BatchRunResult(
+                    outcome: .globalFailure(terminalError),
+                    phases: summaries
+                )
+            }
 
             guard summary.isFullSuccess else {
                 let remaining = approval.phases.dropFirst(index + 1).first
@@ -221,26 +246,22 @@ struct WriteExecutor {
         _ phase: BatchPlanApproval.Phase,
         displayedSnapshot: PreviewSnapshot,
         control: ExecutionControl
-    ) async -> ConfirmationPlan? {
+    ) async throws -> ConfirmationPlan? {
         let entries = displayedSnapshot.items(for: phase.group).map(\.entry)
         guard !entries.isEmpty else { return nil }
-        do {
-            let fresh = try await PreflightPlanner(api: api).buildSnapshot(
-                entries: entries,
-                tags: displayedSnapshot.bindingContext.tags,
-                credentialFingerprint: displayedSnapshot.credentialFingerprint,
-                control: control
-            )
-            guard let plan = try? ConfirmationBinding.makePlan(
-                snapshot: fresh,
-                group: phase.group
-            ), matches(plan, phase, credentialFingerprint: fresh.credentialFingerprint) else {
-                return nil
-            }
-            return plan
-        } catch {
+        let fresh = try await PreflightPlanner(api: api).buildSnapshot(
+            entries: entries,
+            tags: displayedSnapshot.bindingContext.tags,
+            credentialFingerprint: displayedSnapshot.credentialFingerprint,
+            control: control
+        )
+        guard let plan = try? ConfirmationBinding.makePlan(
+            snapshot: fresh,
+            group: phase.group
+        ), matches(plan, phase, credentialFingerprint: fresh.credentialFingerprint) else {
             return nil
         }
+        return plan
     }
 
     private func matches(
@@ -263,6 +284,7 @@ struct WriteExecutor {
         var results: [ItemExecutionResult] = []
         var succeeded = 0
         var failed = 0
+        var terminalError: CompanionError?
 
         defer { progress?.report(.finishing(group: plan.group)) }
 
@@ -310,6 +332,14 @@ struct WriteExecutor {
                         control: control,
                         readback: true
                     )
+                } catch let error as CompanionError where error == .authenticationRejected {
+                    control.finishPostResolution()
+                    failed += 1
+                    terminalError = error
+                    results.append(
+                        ItemExecutionResult(spelling: item.spelling, outcome: .notVerified)
+                    )
+                    break
                 } catch {
                     control.finishPostResolution()
                     failed += 1
@@ -351,7 +381,8 @@ struct WriteExecutor {
             failed: failed,
             cancelled: control.isCancellationRequested,
             stalePreview: false,
-            results: results
+            results: results,
+            terminalError: terminalError
         )
     }
 }

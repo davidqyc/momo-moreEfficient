@@ -439,6 +439,12 @@ final class BindingAndExecutionTests: XCTestCase {
         }
         XCTAssertTrue(contentView.contains("PasteButton(payloadType: String.self)"))
         XCTAssertTrue(contentView.contains("tokenDraft = pastedToken"))
+        XCTAssertTrue(contentView.contains("Text(\"正在验证…\")"))
+        XCTAssertTrue(contentView.contains("@State private var isSubmittingToken = false"))
+        XCTAssertTrue(contentView.contains("isSubmittingToken = true\n                        Task {"))
+        XCTAssertTrue(contentView.contains("isSubmittingToken || viewModel.isValidatingCredential"))
+        XCTAssertTrue(contentView.contains(".interactiveDismissDisabled(tokenValidationIsInFlight)"))
+        XCTAssertTrue(contentView.contains(".disabled(tokenValidationIsInFlight)"))
 
         let projectFile = testsDirectory
             .deletingLastPathComponent()
@@ -449,7 +455,7 @@ final class BindingAndExecutionTests: XCTestCase {
             2
         )
         XCTAssertEqual(
-            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 2;").count - 1,
+            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 3;").count - 1,
             2
         )
         XCTAssertEqual(
