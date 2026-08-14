@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-15
-sourceMainSha=3fa9d2b855824980f7b385c24d20b3adc1247e85
+sourceMainSha=eec177812c715e4b18b19af642cb0e7fefbcde53
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,10 +12,10 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) TestFlight candidate
-CURRENT_PRIMARY_ISSUE=#107
-CURRENT_UNIQUE_NEXT=AFTER_NEW_CHAT_TAKEOVER_SEND_THE_UNSENT_PR108_B1_B4_CORRECTION_PROMPT_TO_THE_EXISTING_CODEX_SESSION
+CURRENT_PRIMARY_ISSUE=#110
+CURRENT_UNIQUE_NEXT=EXECUTE_THE_SMALL_OSS_LANDING_SURFACE_SLICE_UNDER_ISSUE_110
 OPEN_PRODUCT_PR=none
-ACTIVE_WIP=PR #108 / codex/issue-107-forgotten-words-recipe / BLOCKED
+ACTIVE_WIP=none
 ```
 
 ## What is already proven
@@ -26,39 +26,42 @@ ACTIVE_WIP=PR #108 / codex/issue-107-forgotten-words-recipe / BLOCKED
 - build `1.0 (3)` is submitted to external TestFlight App Review in group `首批外部测试`; latest recorded status is `正在等待审核`, with 0 external testers;
 - the release candidate is frozen while Apple reviews it; no new upload/product-code change is planned unless review feedback or a new P0/P1 correctness issue requires one;
 - after Apple approves `1.0 (3)`, the first release-line action is to create a TestFlight Public Link (initial cap 50–100, adjustable) and place the self-serve install path prominently in GitHub README; TestFlight access must not be gated on Stars;
-- #99 completed the first full API/capability fact sweep and unlocked evidence-driven Phase-2 work;
-- #105 records the real-demand reading-capture candidate, but it is not the current active implementation;
+- #99 completed the first full API/capability fact sweep and remains discovery authority rather than an automatic feature backlog;
+- #105 records the real-demand reading-capture candidate, but it remains parked while the current release candidate is frozen and OSS landing work is active;
 - #106 is the OSS-growth umbrella: genuine GitHub adoption, external engagement/contribution and visible maintainer work are the strategic evidence target; the Owner delegates engineering/community mechanics to the Coordinator;
-- #107 is the first public Codex-oriented growth asset; Draft PR #108 exists but is not yet accepted;
-- PR #108 exact head `6e66b80d96cf41bbaefd511bd67b8ab087ac82ec` was fresh-context re-reviewed and remains BLOCKED on B1–B4. The latest authoritative Coordinator comment is `5297702970`;
-- the two commits after the reviewed app release source that advanced `main` to `3fa9d2b...` were an accidental placeholder add/remove with no net product-tree change; they are not a new app build.
+- #107 shipped the first public Codex-oriented growth asset through PR #108; squash merge `eec177812c715e4b18b19af642cb0e7fefbcde53` is on `main` and #107 is closed;
+- the Recipe uses the first-party-convergent `/open/api/v1/study/get_today_items` route, exact forgotten-words request `{"is_finished": true, "limit": 1000}`, fail-closed compatibility for the observed root/wrapped and spelling variants, and exports no `voc_id`;
+- Coordinator incremental review on exact head `ce8906b985276c7f94cd1975eeedf5c84f5bc17f` passed; a real-Token canary was judged unnecessary for merge because current first-party executable/reference evidence is sufficient and the public-beta source conflict is explicitly documented;
+- #110 is the next bounded OSS-growth execution slice: make the repository itself a credible landing surface before broader promotion or another Recipe.
 
-## Current route — #107 / PR #108
+## Current route — #110 OSS landing surface
 
-PR #108 is the current active WIP and stays Draft/unmerged.
+Issue #110 is the current primary route.
 
-The accepted correction scope is narrow:
+The accepted scope is small:
 
-1. use the first-party-convergent Study route `/open/api/v1/study/get_today_items` rather than the current `/memo/study/...` route, and document the first-party source conflict;
-2. normalize only first-party-observed response variants: root or safe `data.today_items`, and `voc_spelling` or `spelling`, while failing closed on contradictory/error envelopes;
-3. request the documented forgotten-words scene `{"is_finished": true, "limit": 1000}` and then filter exact `FORGET`;
-4. remove unused `voc_id` from the exported Recipe artifact and related public contract/examples;
-5. include only the cheap documentation cleanups named in the latest Coordinator review and focused regressions for those exact variants.
+1. set an accurate concise repository About/description;
+2. add a restrained set of relevant GitHub Topics;
+3. tighten README first-screen routing to the iOS companion, public Codex Recipes, and Issue/contribution paths;
+4. keep GitHub as the canonical home;
+5. do not start Recipe 2/3 or product-feature work inside this Issue.
 
-Builder boundary for the next correction round:
+Execution boundary:
 
-- use the existing branch/PR #108;
-- no real Token and no live Maimemo canary in the Builder round;
-- no generic Study client/framework;
-- no iOS/TestFlight changes;
-- regenerate the requested review ZIP and stop for Coordinator review.
+- no iOS product code;
+- no Maimemo live operation or real Token;
+- no TestFlight/App Store Connect action;
+- no badges/bots/dashboards merely to look active;
+- no manufactured engagement or Star gate;
+- no TestFlight Public Link until Apple approval under #71;
+- Discussions only if a coherent landing surface plus the first public Recipe creates a real return loop, not as empty decoration.
 
 ## Parallel / parked pointers
 
 ```text
 #71 release lane = WAITING_FOR_APPLE_REVIEW on build 1.0 (3); 0 external testers; after approval create Public TestFlight Link -> README; Issue stays open until non-Owner real use + evidence in #7
-#106 OSS-growth umbrella = ACTIVE_STRATEGY; #107 is its first execution asset
-#105 reading capture -> safe Maimemo import = ACCEPTED_REAL_DEMAND_CANDIDATE, PARKED while #107/PR #108 is active and release candidate is frozen
+#106 OSS-growth umbrella = ACTIVE_STRATEGY; #107 is shipped; #110 is the current execution slice
+#105 reading capture -> safe Maimemo import = ACCEPTED_REAL_DEMAND_CANDIDATE, PARKED while release candidate is frozen and #110 is active
 #99 capability/field/demand sweep = DISCOVERY_AUTHORITY; use its findings as evidence, not as an automatic feature backlog
 #7 open-source / external-use evidence = record genuine events only; never manufacture Stars, users, Issues or PRs
 ```
@@ -71,9 +74,8 @@ Builder boundary for the next correction round:
 - UPDATE targets only explicit authenticated-user records; ambiguity blocks;
 - no automatic delete/rollback/replay;
 - personal API Tokens and private learning data must not enter Git, logs, review artifacts or public examples;
-- the current Recipe lane is semantically read-only; HTTP POST used for a documented Study read does not authorize mutation endpoints;
-- PR #108 is blocked and must not be merged by chat handoff;
-- TestFlight/App Store actions remain frozen during this handoff;
+- the shipped Recipe is semantically read-only; HTTP POST used for a documented Study read does not authorize mutation endpoints;
+- current #110 work is repository packaging/discovery only and must not touch iOS/TestFlight or live Maimemo;
 - live remote and current Issue/PR authority outrank this snapshot.
 
 ## Maintenance rule
