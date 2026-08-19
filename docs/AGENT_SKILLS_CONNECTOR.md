@@ -32,6 +32,7 @@ Owner 当前明确指令
 - `skills/claude-code-english-output-boundary/SKILL.md`
 - `skills/multi-file-agent-dispatch/SKILL.md`
 - `skills/cloud-canonical-agent-handoff/SKILL.md`
+- `skills/owner-terminal-pre-send-enforcement/SKILL.md`
 
 再读取：
 
@@ -141,3 +142,15 @@ Output language: English
 - 优先停止增加产品范围，而不是把现有复杂度抽象成框架；
 - 不自动补完整 phrase CRUD；
 - real use 的信息增益高于下一项假设性功能时，停止工程。
+
+## 8. Owner-facing terminal pre-send gate
+
+如果 momo-moreEfficient Coordinator / Agent 准备把 terminal / shell / sudo / bootstrap / recovery / local-repair 命令直接发给 Owner，必须在**发送前这一刻**重新读取：
+
+```text
+davidqyc/agent-skills@main:skills/owner-terminal-pre-send-enforcement/SKILL.md
+```
+
+并按其路由读取 `workstation-ops` 当前中央规则。不能用“本轮开始时已经读过 AGENTS/Skill”替代这个 just-in-time gate。
+
+任何未通过 executable-path、privilege-boundary、failure-evidence、evidence-monotonicity、known-prohibited-pattern 五项审查的命令，都先在 Agent 内部修正，不得交给 Owner 试错。项目只保留本段薄 adapter，不复制中央正文。
