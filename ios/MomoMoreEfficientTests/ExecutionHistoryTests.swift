@@ -190,7 +190,7 @@ final class ExecutionHistoryTests: XCTestCase {
     func testPhraseAndInterpretationReceiptsPreserveSharedDiagnosticData() throws {
         let interpretationDiagnostic = WriteAttemptDiagnostic(
             ordinal: 2,
-            postDispatch: .clean2xx,
+            postDispatch: .clean2xx(status: 201),
             readbackAttempts: [ReadbackAttemptDiagnostic(category: .success)],
             terminalErrorCategory: nil
         )
@@ -213,7 +213,7 @@ final class ExecutionHistoryTests: XCTestCase {
 
         let phraseDiagnostic = WriteAttemptDiagnostic(
             ordinal: 4,
-            postDispatch: .uncertain,
+            postDispatch: .transportFailure(errorCategory: .transport),
             readbackAttempts: [ReadbackAttemptDiagnostic(
                 category: .targetNotVisible,
                 phraseFacts: PhraseReadbackFacts(
@@ -257,7 +257,7 @@ final class ExecutionHistoryTests: XCTestCase {
         )
         let diagnostic = WriteAttemptDiagnostic(
             ordinal: 4,
-            postDispatch: .clean2xx,
+            postDispatch: .clean2xx(status: 201),
             readbackAttempts: [
                 ReadbackAttemptDiagnostic(
                     category: .targetNotVisible,
@@ -300,7 +300,7 @@ final class ExecutionHistoryTests: XCTestCase {
 
         for expected in [
             "版本：1.2 (42)", "iOS：iOS 26.5", "第 4 条：board directors",
-            "结果：未确认 [notVerified]", "POST：已发出，收到 2xx [clean2xx]",
+            "结果：未确认 [notVerified]", "POST：HTTP 201 [clean2xx]",
             "回读次数：2", "targetNotVisible", "intendedStateMismatch",
             "有效记录 4", "相同英文 1", "chinese,source", "responseRejected",
         ] {

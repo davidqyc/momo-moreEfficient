@@ -182,7 +182,7 @@ final class BindingAndExecutionTests: XCTestCase {
         )
         XCTAssertEqual(summary.succeeded, 1)
         XCTAssertEqual(summary.results.map(\.outcome), [.confirmed])
-        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .clean2xx)
+        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .clean2xx(status: 201))
         XCTAssertEqual(
             summary.results[0].diagnostic?.readbackAttempts.map(\.category),
             [.success]
@@ -434,6 +434,28 @@ final class BindingAndExecutionTests: XCTestCase {
 
         let contentView = try XCTUnwrap(sources["UI/ContentView.swift"])
         XCTAssertFalse(contentView.contains("主账号"))
+        let staleStart = try XCTUnwrap(contentView.range(of: "private var stalePreviewRow"))
+        let staleEnd = try XCTUnwrap(
+            contentView.range(
+                of: "private func phrasePreviewRow",
+                range: staleStart.upperBound..<contentView.endIndex
+            )
+        )
+        let stalePreviewSource = String(
+            contentView[staleStart.lowerBound..<staleEnd.lowerBound]
+        )
+        for required in [
+            "if viewModel.isPreviewing", "ProgressView()",
+            "Text(previewLoadingTitle(repreview: true))",
+        ] {
+            XCTAssertTrue(stalePreviewSource.contains(required), required)
+        }
+        XCTAssertTrue(
+            contentView.contains(
+                "正在重新预览 \\(progress.entry)/\\(progress.total)…"
+            )
+        )
+        XCTAssertTrue(contentView.contains("return \"正在重新预览…\""))
         for requiredCopy in [
             "墨墨账号", "粘贴 Token", "录入偏好", "发布", "公开", "未填写",
             "复制或分享诊断信息",

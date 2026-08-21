@@ -616,7 +616,7 @@ final class PhraseCreateCoreTests: XCTestCase {
 
         XCTAssertEqual(summary.results.map(\.outcome), [.confirmed])
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .clean2xx)
+        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .clean2xx(status: 201))
         XCTAssertEqual(
             summary.results[0].diagnostic?.readbackAttempts.map(\.category),
             [.targetNotVisible, .success]
@@ -638,11 +638,76 @@ final class PhraseCreateCoreTests: XCTestCase {
 
         XCTAssertEqual(summary.results.map(\.outcome), [.recovered])
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .uncertain)
+        XCTAssertEqual(
+            summary.results[0].diagnostic?.postDispatch,
+            .transportFailure(errorCategory: .transport)
+        )
         XCTAssertEqual(
             summary.results[0].diagnostic?.readbackAttempts.map(\.category),
             [.targetNotVisible, .success]
         )
+    }
+
+    func testPostDiagnosticsDistinguishCleanHTTPRejectionAndTransportWithoutPrivateData()
+        async throws
+    {
+        let privateDocument = """
+        ## acquisition
+        EN: The acquisition strengthened the company's position in the market.
+        ZH: PRIVATE_CHINESE_SENTINEL
+        SOURCE: PRIVATE_SOURCE_SENTINEL
+        """
+        let cases: [(StubbedResult, PostDispatchCategory, String)] = [
+            (
+                jsonResponse(["raw": "PRIVATE_RAW_RESPONSE_SENTINEL"], status: 201),
+                .clean2xx(status: 201),
+                "POST：HTTP 201 [clean2xx]"
+            ),
+            (
+                jsonResponse(["raw": "PRIVATE_RAW_RESPONSE_SENTINEL"], status: 400),
+                .httpRejected(status: 400),
+                "POST：HTTP 400 [httpRejected]"
+            ),
+            (
+                .failure(.transport),
+                .transportFailure(errorCategory: .transport),
+                "POST：发送失败（transport） [transportFailure/transport]"
+            ),
+        ]
+
+        for (postResult, expectedDispatch, expectedExport) in cases {
+            let shown = try await createSnapshot(document: privateDocument)
+            let transport = FakeHTTPTransport([
+                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                postResult,
+                phrasesResponse([]), phrasesResponse([]), phrasesResponse([]),
+            ])
+
+            let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+            XCTAssertEqual(summary.results.map(\.outcome), [.notVerified])
+            XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, expectedDispatch)
+            XCTAssertEqual(transport.postCount, 1)
+            XCTAssertEqual(transport.requests.suffix(3).map(\.route.method), [.get, .get, .get])
+
+            let receipt = ExecutionReceipt(
+                selectedSpellings: ["acquisition"],
+                result: summary
+            )
+            XCTAssertEqual(receipt.unconfirmed, 1)
+            XCTAssertEqual(receipt.failed, 0)
+            let archive = String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self)
+            let exported = receipt.sanitizedDiagnosticText
+            XCTAssertTrue(exported.contains(expectedExport), expectedExport)
+            for forbidden in [
+                fakeToken, "Bearer ", "Authorization", "Cookie",
+                "INVALID_VOC", english, "PRIVATE_CHINESE_SENTINEL",
+                "PRIVATE_SOURCE_SENTINEL", "PRIVATE_RAW_RESPONSE_SENTINEL",
+            ] {
+                XCTAssertFalse(archive.contains(forbidden), forbidden)
+                XCTAssertFalse(exported.contains(forbidden), forbidden)
+            }
+        }
     }
 
     func testBoundedReadbacksNeverConfirmAndStopLaterBatchItem() async throws {

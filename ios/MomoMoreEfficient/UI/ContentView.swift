@@ -564,20 +564,28 @@ struct ContentView: View {
     private var stalePreviewRow: some View {
         if viewModel.isPreviewStale {
             HStack(spacing: 10) {
-                Text("需重新预览后才能写入")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                Spacer()
-                Button("重新预览") {
-                    Task { await viewModel.previewCurrentInput() }
+                if viewModel.isPreviewing {
+                    ProgressView()
+                    Text(previewLoadingTitle(repreview: true))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                } else {
+                    Text("需重新预览后才能写入")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("重新预览") {
+                        Task { await viewModel.previewCurrentInput() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .disabled(
+                        !viewModel.isConnected
+                            || !viewModel.localParseState.isValid
+                            || viewModel.isBusy
+                    )
                 }
-                .font(.subheadline.weight(.semibold))
-                .buttonStyle(.borderless)
-                .disabled(
-                    !viewModel.isConnected
-                        || !viewModel.localParseState.isValid
-                        || viewModel.isBusy
-                )
             }
             .listRowBackground(Color(.systemOrange).opacity(0.12))
         }
@@ -692,7 +700,7 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 if viewModel.isPreviewing {
                     ProgressView()
-                    Text(previewLoadingTitle)
+                    Text(previewLoadingTitle())
                 } else {
                     Text("预览")
                 }
@@ -931,7 +939,13 @@ struct ContentView: View {
         isSubmittingToken || viewModel.isValidatingCredential
     }
 
-    private var previewLoadingTitle: String {
+    private func previewLoadingTitle(repreview: Bool = false) -> String {
+        if repreview {
+            if let progress = viewModel.previewProgress {
+                return "正在重新预览 \(progress.entry)/\(progress.total)…"
+            }
+            return "正在重新预览…"
+        }
         // Real per-entry read progress once the first entry has been reached.
         if let progress = viewModel.previewProgressLabel { return progress }
         if case let .valid(count, _, _) = viewModel.localParseState {

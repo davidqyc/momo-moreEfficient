@@ -189,7 +189,7 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
                 continue
             }
             lines.append(
-                "POST：\(diagnostic.postDispatch.displayLabel) [\(diagnostic.postDispatch.rawValue)]"
+                "POST：\(diagnostic.postDispatch.displayLabel) [\(diagnostic.postDispatch.diagnosticCode)]"
             )
             lines.append("回读次数：\(diagnostic.readbackAttempts.count)")
             for (attemptIndex, attempt) in diagnostic.readbackAttempts.enumerated() {

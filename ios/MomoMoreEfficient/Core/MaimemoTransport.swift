@@ -12,14 +12,22 @@ struct ProductionRequestSleeper: RequestSleeper {
 
 enum PostDispatchResult: Equatable {
     case notDispatched
-    case clean
-    case uncertain
+    case clean2xx(status: Int)
+    case httpRejected(status: Int)
+    case transportFailure(errorCategory: PostSendFailureCategory)
+
+    var isClean2xx: Bool {
+        if case .clean2xx = self { return true }
+        return false
+    }
 
     var diagnosticCategory: PostDispatchCategory {
         switch self {
         case .notDispatched: return .notDispatched
-        case .clean: return .clean2xx
-        case .uncertain: return .uncertain
+        case let .clean2xx(status): return .clean2xx(status: status)
+        case let .httpRejected(status): return .httpRejected(status: status)
+        case let .transportFailure(category):
+            return .transportFailure(errorCategory: category)
         }
     }
 }
@@ -187,9 +195,13 @@ final class MaimemoTransport {
             let request = try TransportRequest(route: route, body: body)
             do {
                 let response = try await transport.send(request, credential: credential)
-                return (200..<300).contains(response.status) ? .clean : .uncertain
+                return (200..<300).contains(response.status)
+                    ? .clean2xx(status: response.status)
+                    : .httpRejected(status: response.status)
             } catch {
-                return .uncertain
+                return .transportFailure(
+                    errorCategory: PostSendFailureCategory(error: error)
+                )
             }
         } catch {
             return .notDispatched

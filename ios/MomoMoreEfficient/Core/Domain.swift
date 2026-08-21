@@ -288,18 +288,54 @@ enum WriteOutcome: String, Codable, Equatable, Sendable {
     case notAttempted
 }
 
+/// A closed classification for failures thrown by `HTTPTransport.send`. It never
+/// preserves an arbitrary error description or associated value.
+enum PostSendFailureCategory: String, Codable, Equatable, Sendable {
+    case transport
+    case credential
+    case responseRejected
+    case cancelled
+    case other
+
+    init(error: Error) {
+        switch error as? CompanionError {
+        case .transport:
+            self = .transport
+        case .credentialRejected, .credentialStorageUnavailable, .notConnected:
+            self = .credential
+        case .responseRejected, .itemResponseRejected:
+            self = .responseRejected
+        case .cancelled:
+            self = .cancelled
+        default:
+            self = .other
+        }
+    }
+}
+
 /// Privacy-safe evidence about whether an item's one permitted POST crossed the
 /// dispatch boundary. This deliberately has no request, route, ID or body field.
-enum PostDispatchCategory: String, Codable, Equatable, Sendable {
+enum PostDispatchCategory: Codable, Equatable, Sendable {
     case notDispatched
-    case clean2xx
-    case uncertain
+    case clean2xx(status: Int)
+    case httpRejected(status: Int)
+    case transportFailure(errorCategory: PostSendFailureCategory)
 
     var displayLabel: String {
         switch self {
         case .notDispatched: return "未发出"
-        case .clean2xx: return "已发出，收到 2xx"
-        case .uncertain: return "已发出，响应不确定"
+        case let .clean2xx(status), let .httpRejected(status): return "HTTP \(status)"
+        case let .transportFailure(category): return "发送失败（\(category.rawValue)）"
+        }
+    }
+
+    var diagnosticCode: String {
+        switch self {
+        case .notDispatched: return "notDispatched"
+        case .clean2xx: return "clean2xx"
+        case .httpRejected: return "httpRejected"
+        case let .transportFailure(category):
+            return "transportFailure/\(category.rawValue)"
         }
     }
 

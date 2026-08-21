@@ -434,7 +434,7 @@ struct WriteExecutor {
                 results.append(
                     ItemExecutionResult(
                         spelling: item.spelling,
-                        outcome: dispatch == .clean ? .confirmed : .recovered,
+                        outcome: dispatch.isClean2xx ? .confirmed : .recovered,
                         diagnostic: diagnostic
                     )
                 )

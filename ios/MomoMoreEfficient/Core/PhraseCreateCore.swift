@@ -791,7 +791,7 @@ struct PhraseWriteExecutor {
                 results.append(
                     PhraseItemExecutionResult(
                         spelling: item.entry.spelling,
-                        outcome: dispatch == .clean ? .confirmed : .recovered,
+                        outcome: dispatch.isClean2xx ? .confirmed : .recovered,
                         observations: matched.observations(
                             for: item.entry,
                             tags: plan.tags
