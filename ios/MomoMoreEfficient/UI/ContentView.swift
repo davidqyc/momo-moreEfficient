@@ -1,36 +1,72 @@
 import SwiftUI
 
+/// The deterministic boundary between app lifecycle and credential restoration.
+///
+/// An iOS 26 deferred App Intent starts in the background. View construction may
+/// happen there, so it must never restore credentials. The intent installs its
+/// review synchronously before the system's guaranteed foreground transition;
+/// only an actually active scene is therefore allowed to restore a normal launch.
+@MainActor
+enum CaptureReviewForegroundGate {
+    static func activate(
+        sceneIsActive: Bool,
+        captureReviewStore: CaptureReviewStore,
+        viewModel: CompanionViewModel
+    ) async {
+        guard sceneIsActive else { return }
+        if captureReviewStore.review != nil {
+            viewModel.prepareForCaptureReview()
+        } else {
+            await viewModel.enterForeground()
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel: CompanionViewModel
+    @ObservedObject private var captureReviewStore: CaptureReviewStore
     @State private var showingTokenSheet = false
     @State private var tokenDraft = ""
     @State private var isSubmittingToken = false
 
-    init(viewModel: @autoclosure @escaping () -> CompanionViewModel) {
+    init(
+        viewModel: @autoclosure @escaping () -> CompanionViewModel,
+        captureReviewStore: CaptureReviewStore
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.captureReviewStore = captureReviewStore
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                rehearsalBanner
-                accountRow
-                modePicker
-                Group {
-                    if viewModel.isShowingEditor {
-                        editorSurface
-                    } else if viewModel.contentMode == .phrase,
-                              let preview = viewModel.phrasePreview {
-                        phrasePreviewSurface(preview)
-                    } else if let preview = viewModel.preview {
-                        previewSurface(preview)
+            Group {
+                if let review = captureReviewStore.review, !viewModel.isBusy {
+                    captureReviewSurface(review)
+                } else {
+                    VStack(spacing: 0) {
+                        rehearsalBanner
+                        accountRow
+                        modePicker
+                        Group {
+                            if viewModel.isShowingEditor {
+                                editorSurface
+                            } else if viewModel.contentMode == .phrase,
+                                      let preview = viewModel.phrasePreview {
+                                phrasePreviewSurface(preview)
+                            } else if let preview = viewModel.preview {
+                                previewSurface(preview)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .background(Color(.systemGroupedBackground))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle(viewModel.contentMode.navigationTitle)
+            .navigationTitle(
+                isShowingCaptureReview
+                    ? "检查捕获文本" : viewModel.contentMode.navigationTitle
+            )
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -48,7 +84,9 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if viewModel.isShowingEditor {
+                if isShowingCaptureReview {
+                    captureReviewActionBar
+                } else if viewModel.isShowingEditor {
                     previewActionBar
                 } else if !viewModel.executionActions.isEmpty
                     || viewModel.canExecutePhrase
@@ -119,14 +157,110 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                Task { await viewModel.enterForeground() }
+                Task { await activateCurrentSurface(sceneIsActive: true) }
             case .inactive, .background:
                 viewModel.enterBackground()
             @unknown default:
                 viewModel.enterBackground()
             }
         }
-        .task { await viewModel.enterForeground() }
+        .onReceive(captureReviewStore.$review) { review in
+            if review != nil, !viewModel.isBusy {
+                viewModel.prepareForCaptureReview()
+            }
+        }
+        .onChange(of: viewModel.isBusy) { _, isBusy in
+            if !isBusy, captureReviewStore.review != nil {
+                viewModel.prepareForCaptureReview()
+            }
+        }
+        .task {
+            await activateCurrentSurface(sceneIsActive: scenePhase == .active)
+        }
+    }
+
+    private var isShowingCaptureReview: Bool {
+        captureReviewStore.review != nil && !viewModel.isBusy
+    }
+
+    private func captureReviewSurface(_ review: CaptureReviewStore.Review) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Label("捕获检查 · 尚未预览", systemImage: "text.viewfinder")
+                    .font(.headline)
+                    .foregroundStyle(.blue)
+                Text("这一步不会读取 Token、访问墨墨、生成预览或授权写入。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if review.replacedExistingReview {
+                    Text("新的捕获文本已替换上一次待检查内容。")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            TextEditor(text: Binding(
+                get: { captureReviewStore.review?.text ?? "" },
+                set: { captureReviewStore.edit($0) }
+            ))
+            .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .autocorrectionDisabled()
+            .accessibilityLabel("待检查的捕获文本")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                Color(.secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.blue.opacity(0.45), lineWidth: 1)
+            )
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private var captureReviewActionBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Button("转到释义编辑") { finishCaptureReview(in: .interpretation) }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+                Button("转到例句编辑") { finishCaptureReview(in: .phrase) }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+            }
+            Button("取消捕获", role: .cancel) { cancelCaptureReview() }
+                .frame(maxWidth: .infinity)
+        }
+        .font(.subheadline.weight(.semibold))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func finishCaptureReview(in mode: ContentMode) {
+        guard let text = captureReviewStore.takeReviewedText() else { return }
+        viewModel.acceptCapturedText(text, in: mode)
+        Task { await viewModel.enterForeground() }
+    }
+
+    private func cancelCaptureReview() {
+        captureReviewStore.cancel()
+        Task { await viewModel.enterForeground() }
+    }
+
+    private func activateCurrentSurface(sceneIsActive: Bool) async {
+        await CaptureReviewForegroundGate.activate(
+            sceneIsActive: sceneIsActive,
+            captureReviewStore: captureReviewStore,
+            viewModel: viewModel
+        )
     }
 
     @ViewBuilder
