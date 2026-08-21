@@ -1,34 +1,34 @@
 # 小黑鸟伴侣
 
-**小黑鸟伴侣（momo-moreEfficient）**是一个独立、非官方、开源的 **墨墨背单词 / Maimemo companion**。目标很简单：把墨墨里几件高频但麻烦的事做得更顺手——先是安全录入释义和例句，接着是阅读时抓词，以及可复现的 **Maimemo × Codex** 学习工作流。
+**小黑鸟伴侣momo-moreEfficient**是一个独立、非官方、开源的 **墨墨背单词实用助手 / Maimemo companion**。目的很简单：把墨墨里几件高频但麻烦的事做得更顺手——先是安全录入释义和例句，接着是阅读时抓词，以及可复现的 **Maimemo × Codex** 学习工作流。
 
-> **当前公开版本：** iPhone TestFlight build `1.0 (3)`，尚未正式上架 App Store。
+> **当前公开版本：** [iPhone TestFlight build `1.0 (3)`](https://testflight.apple.com/join/DtVKeTSE)，尚未正式上架 App Store。
 >
-> **不是墨墨官方项目。** 本项目与墨墨及其运营方不存在隶属、赞助或背书关系。
+> **不是墨墨官方项目。** 为爱发电，与墨墨及其运营方不存在隶属、赞助或背书关系。
 
-## 直接开始
+## 快捷入口
 
-| 你现在想做什么 | 入口 |
+| 我现在要 | 入口 |
 | --- | --- |
 | 在 iPhone 上试用小黑鸟伴侣 | **[加入 TestFlight](https://testflight.apple.com/join/DtVKeTSE)** |
 | 把今天忘记的词交给 Codex 写成学习文章 | **[Recipe 1：今日忘记单词 → Codex 学习文章](recipes/forgotten-words-study-article/README.md)** |
-| 看一页稳定、面向用户的产品说明 | **[www.jiripple.com/xiaoheiniao/](https://www.jiripple.com/xiaoheiniao/)** |
-| 报 bug、安装失败或提功能 | **[GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues)** |
+| 产品说明 | **[www.jiripple.com/xiaoheiniao/](https://www.jiripple.com/xiaoheiniao/)** |
+| 报bug、寻求帮助或提建议 | **[GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues)** |
 
 [English summary](README.en.md) · [项目 FAQ](docs/FAQ.md) · [隐私说明](PRIVACY.md) · [安全说明](SECURITY.md)
 
-## 功能 1｜把已经写好的释义和例句录入墨墨
+## 功能 1｜释义和例句按格式批量录入墨墨
 
-这是当前公开 TestFlight 最直接的用途。
+这是当前公开 TestFlight 版本的第一批功能。
 
-如果你已经在 ChatGPT、Codex、自己的笔记或别的地方把内容整理好了，不必再一条一条去墨墨里重复点选。小黑鸟伴侣负责把**你已经准备好的内容**带进一个可检查、可确认的录入流程。
+如果你已经在 ChatGPT、Codex、自己的笔记或别的地方把内容整理好了，不必再一条一条去墨墨里重复添加。小黑鸟伴侣负责把**这些内容**带进一个可检查、可确认的录入流程。
 
 当前公开 build `1.0 (3)` 支持：
 
-- **自建释义：**批量新建 / 更新；
-- **例句 / 短语：**新建；
-- 写入前先看 Preview；
-- 只有你明确确认后才会写；
+- **自建释义**：批量新建 / 更新；
+- **例句 / 短语**：新建；
+- 写入前先预览Preview；
+- 只有你明确确认后才会写入；
 - POST 前重新做 fresh authenticated preflight；
 - 每个变化条目最多一次 POST，**不自动重试**；
 - 写后立即做鉴权回读，确认实际结果。
@@ -36,18 +36,18 @@
 日常逻辑可以理解成：
 
 ```text
-准备好内容 → 粘贴到小黑鸟伴侣 → Preview
-→ 检查要新建 / 更新的内容 → 明确确认
-→ fresh preflight → 写入 → 回读核对
+准备好内容 → 一键粘贴到小黑鸟伴侣 → 预览Preview → 
+检查要新建 / 更新的内容 → 明确确认后开始 → 
+fresh preflight → 写入 → 回读核对
 ```
 
-### Token 不会被项目方收走
+### Token 不会被项目方收集
 
-你的个人墨墨 API Token 只保存在这台 iPhone 的设备本地 Keychain。项目没有远程后端接收或保存这个 Token。
+你的个人墨墨 API Token 只保存在你的 iPhone 设备本地Keychain里。项目没有远程后端接收或保存这个 Token。
 
-公开 Issue、PR、日志、示例和审阅材料里都不应该出现真实 Token、Authorization/Cookie、账号标识或私人学习数据。
+公开 Issue、PR、日志、示例和审阅材料里都不会出现真实 Token、Authorization/Cookie、账号标识或私人学习数据。
 
-## 功能 2｜阅读时抓词：下一版最值得验证的高频入口
+## 功能 2｜阅读时抓词（即将上线）
 
 这部分**源码主线已经完成，但还没有进入当前公开 TestFlight build `1.0 (3)`**。
 
@@ -60,10 +60,10 @@
 
 目前做了两种候选入口：
 
-- **App Intent / Shortcut / Action Button（iOS 26+）**：把选中的文本交给小黑鸟伴侣，App 打开到独立的“捕获检查”状态；
-- **Share Extension（iOS 18+）**：在系统分享面板里把文本保存给小黑鸟伴侣，下次正常打开 App 时进入同一个“捕获检查”状态。
+- **快捷指令（iOS 26+）**：把选中的文本交给小黑鸟伴侣，App 打开到独立的“捕获检查”状态；
+- **共享（iOS 18+）**：在系统分享面板里把文本保存给小黑鸟伴侣，下次正常打开 App 时进入同一个“捕获检查”状态。
 
-两条入口都停在 **Preview 之前**：仅仅抓词不会读取墨墨 Token、不会访问墨墨、不会自动 Preview，更不会自动写入。
+两条入口都停在 **预览Preview 之前**：仅仅抓词，不会读取墨墨 Token、不会访问墨墨、不会自动进行预览Preview，更不会自动写入。
 
 接下来会做一次真机体验比较。项目的目标是选出**实际更省事的那条日常路径**，而不是为了技术对称强行让用户长期同时维护两套入口。
 
