@@ -572,7 +572,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                     receipt = appendPhraseReceipt(displayed: displayed, result: result)
                 }
                 handleSessionFailure(terminalError)
-                errorMessage = terminalError.description
+                errorMessage = terminalWriteMessage(
+                    terminalError,
+                    containsUnconfirmedWrite: result.results.contains {
+                        $0.outcome == .notVerified
+                            && $0.diagnostic?.postDispatch.wasDispatched == true
+                    }
+                )
             } else if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
             } else {
@@ -611,6 +617,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 updated: 0,
                 alreadyMatching: 0,
                 failed: receipt.failed,
+                unconfirmed: receipt.unconfirmed,
                 notAttempted: receipt.notAttempted,
                 stopped: true
             )
@@ -716,7 +723,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                     )
                 }
                 handleSessionFailure(terminalError)
-                errorMessage = terminalError.description
+                errorMessage = terminalWriteMessage(
+                    terminalError,
+                    containsUnconfirmedWrite: result.phases.flatMap(\.results).contains {
+                        $0.outcome == .notVerified
+                            && $0.diagnostic?.postDispatch.wasDispatched == true
+                    }
+                )
             } else if result.outcome == .stale {
                 errorMessage = CompanionError.stalePreview.description
             } else {
@@ -827,6 +840,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 updated: updated,
                 alreadyMatching: 0,
                 failed: receipts.reduce(0) { $0 + $1.failed },
+                unconfirmed: receipts.reduce(0) { $0 + $1.unconfirmed },
                 notAttempted: receipts.reduce(0) { $0 + $1.notAttempted } + neverStarted,
                 stopped: true
             )
@@ -989,7 +1003,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                     )
                 }
                 handleSessionFailure(terminalError)
-                errorMessage = terminalError.description
+                errorMessage = terminalWriteMessage(
+                    terminalError,
+                    containsUnconfirmedWrite: result.results.contains {
+                        $0.outcome == .notVerified
+                            && $0.diagnostic?.postDispatch.wasDispatched == true
+                    }
+                )
             } else if result.stalePreview {
                 errorMessage = CompanionError.stalePreview.description
             } else {
@@ -1106,6 +1126,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 updated: group == .update ? receipt.succeeded : 0,
                 alreadyMatching: 0,
                 failed: receipt.failed,
+                unconfirmed: receipt.unconfirmed,
                 notAttempted: receipt.notAttempted,
                 stopped: receipt.stopped
             )
@@ -1527,6 +1548,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         sessionID = nil
         isConnected = false
         invalidateExecutionAuthorization()
+    }
+
+    private func terminalWriteMessage(
+        _ error: CompanionError,
+        containsUnconfirmedWrite: Bool
+    ) -> String {
+        guard containsUnconfirmedWrite else { return error.description }
+        return error.description + "\n" + CompanionError.uncertainWriteOutcome.description
     }
 
     nonisolated var debugDescription: String { "CompanionViewModel(<redacted credential>)" }

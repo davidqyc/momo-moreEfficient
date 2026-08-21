@@ -14,6 +14,14 @@ enum PostDispatchResult: Equatable {
     case notDispatched
     case clean
     case uncertain
+
+    var diagnosticCategory: PostDispatchCategory {
+        switch self {
+        case .notDispatched: return .notDispatched
+        case .clean: return .clean2xx
+        case .uncertain: return .uncertain
+        }
+    }
 }
 
 final class MaimemoTransport {

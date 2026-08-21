@@ -75,7 +75,7 @@ enum ContentMode: String, CaseIterable, Equatable, Sendable {
     }
 }
 
-enum CompanionError: String, Error, Equatable, CustomStringConvertible {
+enum CompanionError: String, Error, Codable, Equatable, Sendable, CustomStringConvertible {
     case inputRejected
     case credentialRejected
     case notConnected
@@ -129,7 +129,7 @@ enum CompanionError: String, Error, Equatable, CustomStringConvertible {
         case .itemResponseRejected:
             return "此条记录无法安全确认。"
         case .uncertainWriteOutcome:
-            return "写入结果无法确认；不要重试，操作已停止。"
+            return "写入已发出，但暂时无法确认结果。不要重复执行；稍后重新预览，已经写入的内容会显示为一致。"
         case .previewInterrupted:
             return "预览被系统中断；未写入任何数据，可重新预览。"
         case .credentialStorageUnavailable:
@@ -288,9 +288,134 @@ enum WriteOutcome: String, Codable, Equatable, Sendable {
     case notAttempted
 }
 
+/// Privacy-safe evidence about whether an item's one permitted POST crossed the
+/// dispatch boundary. This deliberately has no request, route, ID or body field.
+enum PostDispatchCategory: String, Codable, Equatable, Sendable {
+    case notDispatched
+    case clean2xx
+    case uncertain
+
+    var displayLabel: String {
+        switch self {
+        case .notDispatched: return "未发出"
+        case .clean2xx: return "已发出，收到 2xx"
+        case .uncertain: return "已发出，响应不确定"
+        }
+    }
+
+    var wasDispatched: Bool { self != .notDispatched }
+}
+
+/// One closed, developer-useful layer for an authenticated readback attempt.
+/// Raw responses and arbitrary server values can never enter this enum.
+enum ReadbackCategory: String, Codable, Equatable, Sendable {
+    case success
+    case transportFailure
+    case authenticationRejected
+    case rateLimited
+    case serverFailure
+    case otherHTTPRejection
+    case responseSchemaRejected
+    case targetNotVisible
+    case targetAmbiguous
+    case intendedStateMismatch
+
+    var displayLabel: String {
+        switch self {
+        case .success: return "确认成功"
+        case .transportFailure: return "网络读取失败"
+        case .authenticationRejected: return "Token 被拒绝"
+        case .rateLimited: return "请求过于频繁"
+        case .serverFailure: return "服务端失败"
+        case .otherHTTPRejection: return "其他 HTTP 拒绝"
+        case .responseSchemaRejected: return "返回结构无法安全读取"
+        case .targetNotVisible: return "目标暂未出现"
+        case .targetAmbiguous: return "目标存在歧义"
+        case .intendedStateMismatch: return "目标内容不一致"
+        }
+    }
+
+    /// Only failures that can plausibly be transient are allowed another paced
+    /// GET inside phrase CREATE's fixed confirmation window. A 429 stops rather
+    /// than adding pressure, while auth/schema/conflict failures are deterministic.
+    var isRetryablePhraseConfirmationFailure: Bool {
+        switch self {
+        case .transportFailure, .serverFailure, .targetNotVisible:
+            return true
+        default:
+            return false
+        }
+    }
+
+    init(error: CompanionError) {
+        switch error {
+        case .transport, .cancelled:
+            self = .transportFailure
+        case .authenticationRejected:
+            self = .authenticationRejected
+        case .rateLimited:
+            self = .rateLimited
+        case .serverFailure:
+            self = .serverFailure
+        case .globalHTTPFailure:
+            self = .otherHTTPRejection
+        case .responseRejected, .itemResponseRejected:
+            self = .responseSchemaRejected
+        default:
+            self = .responseSchemaRejected
+        }
+    }
+}
+
+enum PhraseMismatchKey: String, Codable, CaseIterable, Equatable, Sendable {
+    case english
+    case chinese
+    case source
+    case status
+}
+
+/// Counts and closed mismatch keys from a decoded phrase collection. IDs and
+/// record bodies are intentionally absent.
+struct PhraseReadbackFacts: Codable, Equatable, Sendable {
+    let activeRecordCount: Int
+    let sameEnglishCount: Int
+    let mismatchKeys: [PhraseMismatchKey]
+}
+
+struct ReadbackAttemptDiagnostic: Codable, Equatable, Sendable {
+    let category: ReadbackCategory
+    let phraseFacts: PhraseReadbackFacts?
+
+    init(category: ReadbackCategory, phraseFacts: PhraseReadbackFacts? = nil) {
+        self.category = category
+        self.phraseFacts = phraseFacts
+    }
+}
+
+/// The one shared, intentionally small write diagnostic used by phrase and
+/// interpretation executors. Receipt-level data supplies content kind,
+/// operation, timestamp and build metadata.
+struct WriteAttemptDiagnostic: Codable, Equatable, Sendable {
+    let ordinal: Int
+    let postDispatch: PostDispatchCategory
+    let readbackAttempts: [ReadbackAttemptDiagnostic]
+    let terminalErrorCategory: CompanionError?
+}
+
 struct ItemExecutionResult: Equatable, Sendable {
     let spelling: String
     let outcome: WriteOutcome
+    let diagnostic: WriteAttemptDiagnostic?
+
+    init(
+        spelling: String,
+        outcome: WriteOutcome,
+        diagnostic: WriteAttemptDiagnostic? = nil
+    ) {
+        self.spelling = spelling
+        self.outcome = outcome
+        self.diagnostic = diagnostic
+    }
 }
 
 struct ExecutionSummary: Equatable, Sendable {
@@ -514,6 +639,7 @@ struct FinalSummary: Equatable, Sendable {
     var updated = 0
     var alreadyMatching = 0
     var failed = 0
+    var unconfirmed = 0
     var notAttempted = 0
     var stopped = false
 

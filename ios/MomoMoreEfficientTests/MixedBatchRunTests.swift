@@ -375,7 +375,8 @@ final class MixedBatchRunTests: XCTestCase {
         // The earlier phase did not commit cleanly: nothing is trimmed away.
         XCTAssertEqual(model.sourceText, plan.document)
         XCTAssertNil(model.completionAcknowledgement)
-        XCTAssertEqual(model.finalSummary.failed, 1)
+        XCTAssertEqual(model.finalSummary.failed, 0)
+        XCTAssertEqual(model.finalSummary.unconfirmed, 1)
         XCTAssertEqual(model.finalSummary.notAttempted, 2)
     }
 
@@ -402,7 +403,8 @@ final class MixedBatchRunTests: XCTestCase {
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 3)
         XCTAssertEqual(model.history.count, 2)
         XCTAssertEqual(model.history.first?.operationGroup, .update)
-        XCTAssertEqual(model.history.first?.failed, 1)
+        XCTAssertEqual(model.history.first?.failed, 0)
+        XCTAssertEqual(model.history.first?.unconfirmed, 1)
         XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notVerified])
         XCTAssertEqual(model.errorMessage, CompanionError.uncertainWriteOutcome.description)
         // CREATE committed, so the recoverable remainder is the UPDATE source.

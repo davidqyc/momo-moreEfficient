@@ -182,6 +182,11 @@ final class BindingAndExecutionTests: XCTestCase {
         )
         XCTAssertEqual(summary.succeeded, 1)
         XCTAssertEqual(summary.results.map(\.outcome), [.confirmed])
+        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .clean2xx)
+        XCTAssertEqual(
+            summary.results[0].diagnostic?.readbackAttempts.map(\.category),
+            [.success]
+        )
         XCTAssertEqual(requests.map(\.route.method), [.get, .get, .post, .get])
         XCTAssertEqual(transport.postCount, 1)
     }
@@ -431,6 +436,7 @@ final class BindingAndExecutionTests: XCTestCase {
         XCTAssertFalse(contentView.contains("主账号"))
         for requiredCopy in [
             "墨墨账号", "粘贴 Token", "录入偏好", "发布", "公开", "未填写",
+            "复制或分享诊断信息",
             "墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API",
             "设备本地 Keychain", "不会上传给开发者或任何项目服务器",
             "独立第三方工具", "不是墨墨官方应用", "隐私说明", "项目与反馈",

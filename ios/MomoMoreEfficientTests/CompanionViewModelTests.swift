@@ -245,7 +245,11 @@ final class CompanionViewModelTests: XCTestCase {
         await model.executeConfirmed(.create)?.value
 
         XCTAssertFalse(model.isConnected)
-        XCTAssertEqual(model.errorMessage, CompanionError.authenticationRejected.description)
+        XCTAssertEqual(
+            model.errorMessage,
+            CompanionError.authenticationRejected.description + "\n"
+                + CompanionError.uncertainWriteOutcome.description
+        )
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
         XCTAssertEqual(model.history.count, 1)
         XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notVerified])
@@ -931,7 +935,8 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
         XCTAssertEqual(model.sourceText, source)
         XCTAssertTrue(model.hasExecutionFeedback)
-        XCTAssertEqual(model.finalSummary.failed, 1)
+        XCTAssertEqual(model.finalSummary.failed, 0)
+        XCTAssertEqual(model.finalSummary.unconfirmed, 1)
         XCTAssertEqual(model.errorMessage, CompanionError.uncertainWriteOutcome.description)
         XCTAssertNil(model.completionAcknowledgement)
         XCTAssertEqual(model.history.count, 1)

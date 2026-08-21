@@ -598,6 +598,183 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(transport.requests.suffix(2).map(\.route.method), [.post, .get])
     }
 
+    func testCleanPOSTFirstReadbackMissingLaterReadbackConfirmsWithOnePOST() async throws {
+        let shown = try await createSnapshot(document: document)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            jsonResponse([:], status: 201),
+            phrasesResponse([]),
+            phrasesResponse([phraseRecord()]),
+        ])
+        let sleeper = RecordingSleeper()
+
+        let summary = try await executePhrase(
+            snapshot: shown,
+            transport: transport,
+            sleeper: sleeper
+        )
+
+        XCTAssertEqual(summary.results.map(\.outcome), [.confirmed])
+        XCTAssertEqual(transport.postCount, 1)
+        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .clean2xx)
+        XCTAssertEqual(
+            summary.results[0].diagnostic?.readbackAttempts.map(\.category),
+            [.targetNotVisible, .success]
+        )
+        XCTAssertEqual(sleeper.seconds.count, transport.requests.count - 1)
+        XCTAssertTrue(sleeper.seconds.allSatisfy { $0 == CompanionConstants.pacingSeconds })
+    }
+
+    func testUncertainPOSTMissingThenLaterReadbackRecoversWithOnePOST() async throws {
+        let shown = try await createSnapshot(document: document)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            .failure(.transport),
+            phrasesResponse([]),
+            phrasesResponse([phraseRecord()]),
+        ])
+
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+        XCTAssertEqual(summary.results.map(\.outcome), [.recovered])
+        XCTAssertEqual(transport.postCount, 1)
+        XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, .uncertain)
+        XCTAssertEqual(
+            summary.results[0].diagnostic?.readbackAttempts.map(\.category),
+            [.targetNotVisible, .success]
+        )
+    }
+
+    func testBoundedReadbacksNeverConfirmAndStopLaterBatchItem() async throws {
+        let batch = document + """
+
+
+        ## liquidity
+        EN: Liquidity matters.
+        ZH: 流动性很重要。
+        SOURCE: 自编
+        """
+        let initial: [StubbedResult] = [
+            vocabularyResponse("INVALID_VOC_A", "acquisition"), phrasesResponse([]),
+            vocabularyResponse("INVALID_VOC_B", "liquidity"), phrasesResponse([]),
+        ]
+        let (shown, _, _) = try await makePhraseSnapshot(document: batch, results: initial)
+        let transport = FakeHTTPTransport(initial + [
+            jsonResponse([:], status: 201),
+            phrasesResponse([]), phrasesResponse([]), phrasesResponse([]),
+        ])
+
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+        XCTAssertEqual(summary.results.map(\.outcome), [.notVerified])
+        XCTAssertEqual(transport.postCount, 1)
+        XCTAssertEqual(summary.results[0].diagnostic?.readbackAttempts.count, 3)
+        XCTAssertEqual(
+            summary.results[0].diagnostic?.readbackAttempts.map(\.category),
+            [.targetNotVisible, .targetNotVisible, .targetNotVisible]
+        )
+    }
+
+    func testAuthenticationRejectionStopsConfirmationWindowImmediately() async throws {
+        let shown = try await createSnapshot(document: document)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            jsonResponse([:], status: 201),
+            jsonResponse(["error": "auth"], status: 401),
+        ])
+
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+        XCTAssertEqual(summary.terminalError, .authenticationRejected)
+        XCTAssertEqual(transport.postCount, 1)
+        XCTAssertEqual(summary.results[0].diagnostic?.readbackAttempts.count, 1)
+        XCTAssertEqual(
+            summary.results[0].diagnostic?.readbackAttempts.first?.category,
+            .authenticationRejected
+        )
+    }
+
+    func testReadbackTransportServerAndSchemaFailuresHaveDistinctDiagnostics() async throws {
+        let cases: [([StubbedResult], ReadbackCategory, Int)] = [
+            ([.failure(.transport), .failure(.transport), .failure(.transport)],
+             .transportFailure, 3),
+            ([jsonResponse(["error": "server"], status: 503),
+              jsonResponse(["error": "server"], status: 503),
+              jsonResponse(["error": "server"], status: 503)],
+             .serverFailure, 3),
+            ([jsonResponse(["unexpected": []])], .responseSchemaRejected, 1),
+        ]
+
+        for (readbacks, expectedCategory, expectedCount) in cases {
+            let shown = try await createSnapshot(document: document)
+            let transport = FakeHTTPTransport([
+                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                jsonResponse([:], status: 201),
+            ] + readbacks)
+
+            let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+            XCTAssertEqual(summary.results.map(\.outcome), [.notVerified])
+            XCTAssertEqual(transport.postCount, 1)
+            XCTAssertEqual(summary.results[0].diagnostic?.readbackAttempts.count, expectedCount)
+            XCTAssertEqual(
+                summary.results[0].diagnostic?.readbackAttempts.last?.category,
+                expectedCategory
+            )
+        }
+    }
+
+    func testRateLimitAndAmbiguousTargetStopWithoutExtraReadback() async throws {
+        let cases: [(StubbedResult, ReadbackCategory)] = [
+            (jsonResponse(["error": "rate"], status: 429), .rateLimited),
+            (phrasesResponse([
+                phraseRecord(id: "INVALID_A"),
+                phraseRecord(id: "INVALID_B"),
+            ]), .targetAmbiguous),
+        ]
+
+        for (readback, expectedCategory) in cases {
+            let shown = try await createSnapshot(document: document)
+            let transport = FakeHTTPTransport([
+                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                jsonResponse([:], status: 201), readback,
+            ])
+
+            let summary = try await executePhrase(snapshot: shown, transport: transport)
+
+            XCTAssertEqual(transport.postCount, 1)
+            XCTAssertEqual(summary.results[0].diagnostic?.readbackAttempts.count, 1)
+            XCTAssertEqual(
+                summary.results[0].diagnostic?.readbackAttempts[0].category,
+                expectedCategory
+            )
+        }
+    }
+
+    func testSameEnglishMismatchDiagnosticStoresOnlyClosedKeysAndCounts() async throws {
+        let shown = try await createSnapshot(document: document)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            jsonResponse([:], status: 201),
+            phrasesResponse([phraseRecord(id: "INVALID_PRIVATE_RECORD", chinese: "不同中文")]),
+        ])
+
+        let summary = try await executePhrase(snapshot: shown, transport: transport)
+        let attempt = try XCTUnwrap(summary.results[0].diagnostic?.readbackAttempts.first)
+        let facts = try XCTUnwrap(attempt.phraseFacts)
+
+        XCTAssertEqual(attempt.category, .intendedStateMismatch)
+        XCTAssertEqual(facts.activeRecordCount, 1)
+        XCTAssertEqual(facts.sameEnglishCount, 1)
+        XCTAssertEqual(facts.mismatchKeys, [.chinese])
+        let encoded = String(
+            decoding: try JSONEncoder().encode(attempt),
+            as: UTF8.self
+        )
+        XCTAssertFalse(encoded.contains("INVALID_PRIVATE_RECORD"))
+        XCTAssertFalse(encoded.contains(chinese))
+    }
+
     func testMultiEntryBatchDispatchesAtMostOnePOSTPerCreateItem() async throws {
         let batch = document + """
 
@@ -699,7 +876,8 @@ final class PhraseCreateCoreTests: XCTestCase {
             let shown = try await createSnapshot(document: document)
             let transport = FakeHTTPTransport([
                 vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
-                jsonResponse([:], status: 201), phrasesResponse(records),
+                jsonResponse([:], status: 201),
+                phrasesResponse(records), phrasesResponse(records), phrasesResponse(records),
             ])
             let summary = try await executePhrase(snapshot: shown, transport: transport)
             XCTAssertEqual(summary.failed, 1)
@@ -915,14 +1093,15 @@ final class PhraseCreateCoreTests: XCTestCase {
     private func executePhrase(
         snapshot: PhrasePreviewSnapshot,
         transport: FakeHTTPTransport,
-        control: ExecutionControl = ExecutionControl()
+        control: ExecutionControl = ExecutionControl(),
+        sleeper: RecordingSleeper = RecordingSleeper()
     ) async throws -> PhraseExecutionSummary {
         let lease = try credentialLease()
         let executor = PhraseWriteExecutor(
             api: MaimemoTransport(
                 transport: transport,
                 credential: lease,
-                sleeper: RecordingSleeper()
+                sleeper: sleeper
             )
         )
         let summary = await executor.execute(
