@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-22
-sourceMainSha=f68199f66db23212c97f555ef83a758e623b3055
+sourceMainSha=7152c9eba2a817e1e41aa399c649f62d6b5bdead
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -31,7 +31,7 @@ ACTIVE_WIP=none
 - Owner expects normal use to compare Shortcut vs Share and then mainly keep whichever UX is better; do not add more cross-entry synchronization complexity without real evidence;
 - #125 browser-extension research is `NEEDS-MAIMEMO-CLARIFICATION` before implementation;
 - #104/#5 built-in dictionary lookup remains PARKED / NO-GO until Maimemo exposes a concrete supported content contract;
-- #126 AEO foundations exist in GitHub and `davidqyc/jiripple-public-site`; the public-site repo now contains the corrected Tencent SCF runtime/package builder, but production still needs the existing SCF function to be updated from current public-site `main` before `/xiaoheiniao/` is considered live.
+- #126 AEO foundations exist in GitHub and `davidqyc/jiripple-public-site`; Tencent SCF production was updated from public-site main `ffeb49b6717d57429a49eb252224759d0a273d9f` on 2026-08-22, and `/xiaoheiniao/`, its machine-readable surfaces, and existing ReliableReader routes were verified live while repository/admin paths remained 404.
 
 ## Current route — write correctness / diagnostics
 
@@ -45,10 +45,10 @@ ACTIVE_WIP=none
 
 ## Parallel route — AI search / public deployment
 
-1. Publish current `davidqyc/jiripple-public-site` through the existing Tencent SCF production function; GitHub repository state alone is not deployment success.
-2. The current public-site runtime/build tooling already supports `/xiaoheiniao/`, `/xiaoheiniao/context.md`, `/llms.txt`, `/robots.txt`, `/sitemap.xml`, and existing ReliableReader paths while keeping repo/admin files non-routable.
-3. Let an authorized Codex session reuse the machine's existing Tencent Cloud auth/current function rather than making the Owner manually upload a package. Do not create a new function, alter DNS/certificates/mail, or replace unrelated cloud configuration.
-4. After live-route verification succeeds, return to #126 benchmark measurement. Do not keep changing AEO copy while waiting for crawl/index signals.
+1. Production entity surface is now live through the existing Tencent SCF function. Keep `https://www.jiripple.com/xiaoheiniao/`, `/xiaoheiniao/context.md`, `/llms.txt`, `/robots.txt`, and `/sitemap.xml` stable while crawlers/indexes catch up.
+2. Resume #126's fixed Chinese/English benchmark repeatedly. Separate discovery/retrieval → citation/source selection → answer absorption → factual accuracy; do not interpret one search result as a durable ranking change.
+3. Do not keep changing the page merely because indexing is not immediate. Improve entity metadata/content only when repeated benchmark evidence shows a specific gap.
+4. Future public-site publishes should reuse the validated package builder and existing SCF code-only deployment boundary; never create replacement infrastructure or touch DNS/certificates/mail as a routine content publish.
 5. Public copy follows `docs/PUBLIC_COPY_STYLE.md`: user language first, high-frequency functions first, and unreleased capabilities labeled by stage before explanation.
 
 ## Release gate — reading capture
