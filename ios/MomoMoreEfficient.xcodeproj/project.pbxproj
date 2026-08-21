@@ -42,6 +42,15 @@
 		A10000000000000000000021 /* CaptureReviewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023 /* CaptureReviewStore.swift */; };
 		A10000000000000000000022 /* CaptureTextIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024 /* CaptureTextIntent.swift */; };
 		A10000000000000000000023 /* CaptureReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025 /* CaptureReviewTests.swift */; };
+		A10000000000000000000024 /* PendingCaptureInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000026 /* PendingCaptureInbox.swift */; };
+		A10000000000000000000025 /* ShareItemProviderDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000027 /* ShareItemProviderDecoder.swift */; };
+		A10000000000000000000026 /* ShareCaptureActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* ShareCaptureActions.swift */; };
+		A10000000000000000000027 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000029 /* ShareViewController.swift */; };
+		A10000000000000000000028 /* PendingCaptureInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000026 /* PendingCaptureInbox.swift */; };
+		A10000000000000000000029 /* ShareItemProviderDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000027 /* ShareItemProviderDecoder.swift */; };
+		A1000000000000000000002A /* ShareCaptureActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* ShareCaptureActions.swift */; };
+		A1000000000000000000002B /* ShareCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002D /* ShareCaptureTests.swift */; };
+		A1000000000000000000002C /* ShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002E /* ShareExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,7 +61,26 @@
 			remoteGlobalIDString = A50000000000000000000001;
 			remoteInfo = MomoMoreEfficient;
 		};
+		A30000000000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A40000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A50000000000000000000003;
+			remoteInfo = ShareExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AC0000000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (A1000000000000000000002C /* ShareExtension.appex in Embed App Extensions */);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* MomoMoreEfficientApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MomoMoreEfficientApp.swift; sourceTree = "<group>"; };
@@ -92,11 +120,21 @@
 		A20000000000000000000023 /* CaptureReviewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureReviewStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000024 /* CaptureTextIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureTextIntent.swift; sourceTree = "<group>"; };
 		A20000000000000000000025 /* CaptureReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureReviewTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000026 /* PendingCaptureInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingCaptureInbox.swift; sourceTree = "<group>"; };
+		A20000000000000000000027 /* ShareItemProviderDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareItemProviderDecoder.swift; sourceTree = "<group>"; };
+		A20000000000000000000028 /* ShareCaptureActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareCaptureActions.swift; sourceTree = "<group>"; };
+		A20000000000000000000029 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		A2000000000000000000002A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000002B /* MomoMoreEfficient.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MomoMoreEfficient.entitlements; sourceTree = "<group>"; };
+		A2000000000000000000002C /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
+		A2000000000000000000002D /* ShareCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareCaptureTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000002E /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A60000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A60000000000000000000002 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A60000000000000000000003 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -104,6 +142,8 @@
 			isa = PBXGroup;
 			children = (
 				A70000000000000000000002 /* MomoMoreEfficient */,
+				A70000000000000000000009 /* Shared */,
+				A7000000000000000000000A /* ShareExtension */,
 				A70000000000000000000006 /* MomoMoreEfficientTests */,
 				A70000000000000000000008 /* Products */,
 			);
@@ -111,7 +151,7 @@
 		};
 		A70000000000000000000002 /* MomoMoreEfficient */ = {
 			isa = PBXGroup;
-			children = (A70000000000000000000003, A70000000000000000000004, A70000000000000000000005, A20000000000000000000016 /* Assets.xcassets */);
+			children = (A70000000000000000000003, A70000000000000000000004, A70000000000000000000005, A20000000000000000000016 /* Assets.xcassets */, A2000000000000000000002B /* MomoMoreEfficient.entitlements */);
 			path = MomoMoreEfficient;
 			sourceTree = "<group>";
 		};
@@ -125,21 +165,23 @@
 		A70000000000000000000005 /* UI */ = {isa = PBXGroup; children = (A2000000000000000000000A, A2000000000000000000000B); path = UI; sourceTree = "<group>"; };
 		A70000000000000000000006 /* MomoMoreEfficientTests */ = {
 			isa = PBXGroup;
-			children = (A2000000000000000000000C, A20000000000000000000025, A2000000000000000000000D, A20000000000000000000020, A2000000000000000000000E, A20000000000000000000021, A20000000000000000000022, A2000000000000000000000F, A20000000000000000000010, A20000000000000000000015, A20000000000000000000018, A2000000000000000000001B, A2000000000000000000001C, A2000000000000000000001D, A70000000000000000000007);
+			children = (A2000000000000000000000C, A20000000000000000000025, A2000000000000000000002D, A2000000000000000000000D, A20000000000000000000020, A2000000000000000000000E, A20000000000000000000021, A20000000000000000000022, A2000000000000000000000F, A20000000000000000000010, A20000000000000000000015, A20000000000000000000018, A2000000000000000000001B, A2000000000000000000001C, A2000000000000000000001D, A70000000000000000000007);
 			path = MomoMoreEfficientTests;
 			sourceTree = "<group>";
 		};
 		A70000000000000000000007 /* Fixtures */ = {isa = PBXGroup; children = (A20000000000000000000011); path = Fixtures; sourceTree = "<group>"; };
-		A70000000000000000000008 /* Products */ = {isa = PBXGroup; children = (A20000000000000000000012, A20000000000000000000013); name = Products; sourceTree = "<group>"; };
+		A70000000000000000000008 /* Products */ = {isa = PBXGroup; children = (A20000000000000000000012, A20000000000000000000013, A2000000000000000000002E); name = Products; sourceTree = "<group>"; };
+		A70000000000000000000009 /* Shared */ = {isa = PBXGroup; children = (A20000000000000000000026, A20000000000000000000027, A20000000000000000000028); path = Shared; sourceTree = "<group>"; };
+		A7000000000000000000000A /* ShareExtension */ = {isa = PBXGroup; children = (A20000000000000000000029, A2000000000000000000002A, A2000000000000000000002C); path = ShareExtension; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
 		A50000000000000000000001 /* MomoMoreEfficient */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AB0000000000000000000002 /* Build configuration list for PBXNativeTarget */;
-			buildPhases = (A80000000000000000000001, A60000000000000000000001, A90000000000000000000001);
+			buildPhases = (A80000000000000000000001, A60000000000000000000001, A90000000000000000000001, AC0000000000000000000001 /* Embed App Extensions */);
 			buildRules = ();
-			dependencies = ();
+			dependencies = (A30000000000000000000004 /* PBXTargetDependency */);
 			name = MomoMoreEfficient;
 			productName = MomoMoreEfficient;
 			productReference = A20000000000000000000012 /* MomoMoreEfficient.app */;
@@ -156,6 +198,17 @@
 			productReference = A20000000000000000000013 /* MomoMoreEfficientTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		A50000000000000000000003 /* ShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB0000000000000000000004 /* Build configuration list for PBXNativeTarget */;
+			buildPhases = (A80000000000000000000003, A60000000000000000000003, A90000000000000000000003);
+			buildRules = ();
+			dependencies = ();
+			name = ShareExtension;
+			productName = ShareExtension;
+			productReference = A2000000000000000000002E /* ShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -168,6 +221,7 @@
 				TargetAttributes = {
 					A50000000000000000000001 = {CreatedOnToolsVersion = 26.0;};
 					A50000000000000000000002 = {CreatedOnToolsVersion = 26.0; TestTargetID = A50000000000000000000001;};
+					A50000000000000000000003 = {CreatedOnToolsVersion = 26.0;};
 				};
 			};
 			buildConfigurationList = AB0000000000000000000001 /* Build configuration list for PBXProject */;
@@ -178,42 +232,48 @@
 			productRefGroup = A70000000000000000000008 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (A50000000000000000000001, A50000000000000000000002);
+			targets = (A50000000000000000000001, A50000000000000000000002, A50000000000000000000003);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A90000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000014 /* Assets.xcassets in Resources */); runOnlyForDeploymentPostprocessing = 0; };
 		A90000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000011); runOnlyForDeploymentPostprocessing = 0; };
+		A90000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A80000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A10000000000000000000001, A10000000000000000000022, A10000000000000000000002, A10000000000000000000003, A10000000000000000000021, A10000000000000000000012, A10000000000000000000015, A10000000000000000000004, A1000000000000000000001C, A10000000000000000000005, A10000000000000000000006, A1000000000000000000001D, A10000000000000000000007, A10000000000000000000008, A10000000000000000000009, A1000000000000000000000A, A1000000000000000000000B, A10000000000000000000017, A10000000000000000000018);
+			files = (A10000000000000000000001, A10000000000000000000022, A10000000000000000000024, A10000000000000000000025, A10000000000000000000026, A10000000000000000000002, A10000000000000000000003, A10000000000000000000021, A10000000000000000000012, A10000000000000000000015, A10000000000000000000004, A1000000000000000000001C, A10000000000000000000005, A10000000000000000000006, A1000000000000000000001D, A10000000000000000000007, A10000000000000000000008, A10000000000000000000009, A1000000000000000000000A, A1000000000000000000000B, A10000000000000000000017, A10000000000000000000018);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000C, A10000000000000000000023, A1000000000000000000000D, A1000000000000000000001E, A1000000000000000000000E, A1000000000000000000001F, A10000000000000000000020, A1000000000000000000000F, A10000000000000000000010, A10000000000000000000013, A10000000000000000000016, A10000000000000000000019, A1000000000000000000001A, A1000000000000000000001B); runOnlyForDeploymentPostprocessing = 0; };
+		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000C, A10000000000000000000023, A1000000000000000000002B, A1000000000000000000000D, A1000000000000000000001E, A1000000000000000000000E, A1000000000000000000001F, A10000000000000000000020, A1000000000000000000000F, A10000000000000000000010, A10000000000000000000013, A10000000000000000000016, A10000000000000000000019, A1000000000000000000001A, A1000000000000000000001B); runOnlyForDeploymentPostprocessing = 0; };
+		A80000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000027, A10000000000000000000028, A10000000000000000000029, A1000000000000000000002A); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		A30000000000000000000002 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A50000000000000000000001 /* MomoMoreEfficient */; targetProxy = A30000000000000000000001 /* PBXContainerItemProxy */; };
+		A30000000000000000000004 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A50000000000000000000003 /* ShareExtension */; targetProxy = A30000000000000000000003 /* PBXContainerItemProxy */; };
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AA0000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 18.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
 		AA0000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; VALIDATE_PRODUCT = YES;}; name = Release; };
-		AA0000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; DEVELOPMENT_TEAM = W26LH686PD; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "小黑鸟伴侣"; INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO; INFOPLIST_KEY_UILaunchScreen_Generation = YES; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.jiripple.xiaoheiniao; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
-		AA0000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; DEVELOPMENT_TEAM = W26LH686PD; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "小黑鸟伴侣"; INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO; INFOPLIST_KEY_UILaunchScreen_Generation = YES; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.jiripple.xiaoheiniao; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Release; };
+		AA0000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_ENTITLEMENTS = MomoMoreEfficient/MomoMoreEfficient.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; DEVELOPMENT_TEAM = W26LH686PD; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "小黑鸟伴侣"; INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO; INFOPLIST_KEY_UILaunchScreen_Generation = YES; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.jiripple.xiaoheiniao; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
+		AA0000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_ENTITLEMENTS = MomoMoreEfficient/MomoMoreEfficient.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; DEVELOPMENT_TEAM = W26LH686PD; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "小黑鸟伴侣"; INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO; INFOPLIST_KEY_UILaunchScreen_Generation = YES; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.jiripple.xiaoheiniao; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Release; };
 		AA0000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"; PRODUCT_BUNDLE_IDENTIFIER = com.davidqyc.momoMoreEfficient.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MomoMoreEfficient.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MomoMoreEfficient";}; name = Debug; };
 		AA0000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"; PRODUCT_BUNDLE_IDENTIFIER = com.davidqyc.momoMoreEfficient.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MomoMoreEfficient.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MomoMoreEfficient";}; name = Release; };
+		AA0000000000000000000007 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; DEVELOPMENT_TEAM = W26LH686PD; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = ShareExtension/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.jiripple.xiaoheiniao.ShareExtension; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
+		AA0000000000000000000008 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 3; DEVELOPMENT_TEAM = W26LH686PD; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = ShareExtension/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.jiripple.xiaoheiniao.ShareExtension; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
 		AB0000000000000000000001 /* Build configuration list for PBXProject */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000001, AA0000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		AB0000000000000000000002 /* Build configuration list for PBXNativeTarget */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000003, AA0000000000000000000004); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		AB0000000000000000000003 /* Build configuration list for PBXNativeTarget */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000005, AA0000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AB0000000000000000000004 /* Build configuration list for PBXNativeTarget */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000007, AA0000000000000000000008); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 	};
 	rootObject = A40000000000000000000001 /* Project object */;

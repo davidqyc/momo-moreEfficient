@@ -4,6 +4,8 @@ import XCTest
 
 @MainActor
 final class CaptureReviewTests: XCTestCase {
+    private var temporaryDirectories: [URL] = []
+
     override func setUp() {
         super.setUp()
         CaptureReviewStore.shared.cancel()
@@ -11,6 +13,8 @@ final class CaptureReviewTests: XCTestCase {
 
     override func tearDown() {
         CaptureReviewStore.shared.cancel()
+        temporaryDirectories.forEach { try? FileManager.default.removeItem(at: $0) }
+        temporaryDirectories = []
         super.tearDown()
     }
 
@@ -19,11 +23,16 @@ final class CaptureReviewTests: XCTestCase {
         let original = "  Word\r\nline “quoted”\n\n末尾空格  "
         let intent = CaptureTextIntent()
         intent.text = original
+        let handoffStartedAt = Date()
 
         _ = try await intent.perform()
+        let handoffFinishedAt = Date()
 
         XCTAssertEqual(CaptureReviewStore.shared.review?.text, original)
         XCTAssertFalse(CaptureReviewStore.shared.review?.replacedExistingReview ?? true)
+        let capturedAt = try XCTUnwrap(CaptureReviewStore.shared.review?.capturedAt)
+        XCTAssertGreaterThanOrEqual(capturedAt, handoffStartedAt)
+        XCTAssertLessThanOrEqual(capturedAt, handoffFinishedAt)
     }
 
     func testEditReplaceAndCancelAreExplicitAndDeterministic() {
@@ -59,6 +68,25 @@ final class CaptureReviewTests: XCTestCase {
         XCTAssertEqual(CaptureReviewStore.shared.review?.text, " second intent ")
         XCTAssertEqual(CaptureReviewStore.shared.review?.replacementCount, 1)
         XCTAssertTrue(CaptureReviewStore.shared.review?.replacedExistingReview ?? false)
+    }
+
+    func testStoreRejectsOlderAndEqualCapturesAndCountsOnlyStrictlyNewerReplacement() {
+        let store = CaptureReviewStore()
+        let originalTime = Date(timeIntervalSince1970: 2_000)
+
+        XCTAssertTrue(store.receive("original", capturedAt: originalTime))
+        let originalID = store.review?.id
+        XCTAssertFalse(store.receive("older", capturedAt: originalTime.addingTimeInterval(-1)))
+        XCTAssertFalse(store.receive("equal", capturedAt: originalTime))
+        XCTAssertEqual(store.review?.id, originalID)
+        XCTAssertEqual(store.review?.text, "original")
+        XCTAssertEqual(store.review?.replacementCount, 0)
+        XCTAssertFalse(store.review?.replacedExistingReview ?? true)
+
+        XCTAssertTrue(store.receive("newer", capturedAt: originalTime.addingTimeInterval(1)))
+        XCTAssertEqual(store.review?.text, "newer")
+        XCTAssertEqual(store.review?.replacementCount, 1)
+        XCTAssertTrue(store.review?.replacedExistingReview ?? false)
     }
 
     func testCaptureSurvivesInProcessLifecycleButFreshProcessStateStartsEmpty() {
@@ -159,6 +187,7 @@ final class CaptureReviewTests: XCTestCase {
         await CaptureReviewForegroundGate.activate(
             sceneIsActive: false,
             captureReviewStore: store,
+            captureInbox: { self.makeEmptyInbox() },
             viewModel: model
         )
 
@@ -172,6 +201,7 @@ final class CaptureReviewTests: XCTestCase {
         await CaptureReviewForegroundGate.activate(
             sceneIsActive: true,
             captureReviewStore: store,
+            captureInbox: { self.makeEmptyInbox() },
             viewModel: model
         )
 
@@ -200,6 +230,7 @@ final class CaptureReviewTests: XCTestCase {
         await CaptureReviewForegroundGate.activate(
             sceneIsActive: true,
             captureReviewStore: CaptureReviewStore(),
+            captureInbox: { self.makeEmptyInbox() },
             viewModel: model
         )
 
@@ -215,6 +246,17 @@ final class CaptureReviewTests: XCTestCase {
             CaptureTextIntent.supportedModes,
             [.foreground(.deferred)]
         )
+    }
+
+    private func makeEmptyInbox() -> PendingCaptureInbox {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try! FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        temporaryDirectories.append(directory)
+        return PendingCaptureInbox(containerURL: directory)
     }
 }
 

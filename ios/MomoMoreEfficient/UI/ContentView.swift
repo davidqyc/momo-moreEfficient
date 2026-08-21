@@ -8,16 +8,53 @@ import SwiftUI
 /// only an actually active scene is therefore allowed to restore a normal launch.
 @MainActor
 enum CaptureReviewForegroundGate {
+    enum Result: Equatable {
+        case inactive
+        case deferredBusy
+        case reviewReady
+        case restoredNormally
+        case inboxFailure(PendingCaptureInboxError)
+    }
+
+    @discardableResult
     static func activate(
         sceneIsActive: Bool,
         captureReviewStore: CaptureReviewStore,
+        captureInbox: () throws -> PendingCaptureInbox = {
+            try PendingCaptureInbox.appGroup()
+        },
         viewModel: CompanionViewModel
-    ) async {
-        guard sceneIsActive else { return }
+    ) async -> Result {
+        guard sceneIsActive else { return .inactive }
+        // An already-authorized operation owns the current lifecycle. Do not even
+        // claim the durable share file until the operation reaches a safe idle.
+        guard !viewModel.isBusy else { return .deferredBusy }
+
+        do {
+            let inbox = try captureInbox()
+            if try inbox.consume(install: { capture in
+                captureReviewStore.receive(
+                    capture.text,
+                    sourceURL: capture.sourceURL,
+                    sourceTitle: capture.sourceTitle,
+                    capturedAt: capture.capturedAt
+                )
+            }) != nil {
+                viewModel.prepareForCaptureReview()
+                return .reviewReady
+            }
+        } catch let error as PendingCaptureInboxError {
+            return .inboxFailure(error)
+        } catch {
+            return .inboxFailure(.ioFailure)
+        }
+
         if captureReviewStore.review != nil {
             viewModel.prepareForCaptureReview()
+            return .reviewReady
         } else {
             await viewModel.enterForeground()
+            return .restoredNormally
         }
     }
 }
@@ -26,16 +63,22 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel: CompanionViewModel
     @ObservedObject private var captureReviewStore: CaptureReviewStore
+    private let captureInbox: () throws -> PendingCaptureInbox
     @State private var showingTokenSheet = false
     @State private var tokenDraft = ""
     @State private var isSubmittingToken = false
+    @State private var captureInboxErrorMessage: String?
 
     init(
         viewModel: @autoclosure @escaping () -> CompanionViewModel,
-        captureReviewStore: CaptureReviewStore
+        captureReviewStore: CaptureReviewStore,
+        captureInbox: @escaping () throws -> PendingCaptureInbox = {
+            try PendingCaptureInbox.appGroup()
+        }
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
         self.captureReviewStore = captureReviewStore
+        self.captureInbox = captureInbox
     }
 
     var body: some View {
@@ -154,6 +197,18 @@ struct ContentView: View {
         } message: {
             Text(viewModel.pendingPhraseConfirmation?.message ?? "")
         }
+        .alert(
+            "无法读取共享内容",
+            isPresented: Binding(
+                get: { captureInboxErrorMessage != nil },
+                set: { if !$0 { captureInboxErrorMessage = nil } }
+            )
+        ) {
+            Button("移除共享内容", role: .destructive) { removePendingCapture() }
+            Button("保留", role: .cancel) {}
+        } message: {
+            Text(captureInboxErrorMessage ?? "")
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
@@ -170,8 +225,8 @@ struct ContentView: View {
             }
         }
         .onChange(of: viewModel.isBusy) { _, isBusy in
-            if !isBusy, captureReviewStore.review != nil {
-                viewModel.prepareForCaptureReview()
+            if !isBusy {
+                Task { await activateCurrentSurface(sceneIsActive: scenePhase == .active) }
             }
         }
         .task {
@@ -196,6 +251,13 @@ struct ContentView: View {
                     Text("新的捕获文本已替换上一次待检查内容。")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.orange)
+                }
+                if let sourceURL = review.sourceURL {
+                    let title = review.sourceTitle.map { "\($0) · " } ?? ""
+                    Text("来源：\(title)\(sourceURL.absoluteString)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
 
@@ -247,20 +309,39 @@ struct ContentView: View {
     private func finishCaptureReview(in mode: ContentMode) {
         guard let text = captureReviewStore.takeReviewedText() else { return }
         viewModel.acceptCapturedText(text, in: mode)
-        Task { await viewModel.enterForeground() }
+        Task { await activateCurrentSurface(sceneIsActive: scenePhase == .active) }
     }
 
     private func cancelCaptureReview() {
         captureReviewStore.cancel()
-        Task { await viewModel.enterForeground() }
+        Task { await activateCurrentSurface(sceneIsActive: scenePhase == .active) }
     }
 
     private func activateCurrentSurface(sceneIsActive: Bool) async {
-        await CaptureReviewForegroundGate.activate(
+        let result = await CaptureReviewForegroundGate.activate(
             sceneIsActive: sceneIsActive,
             captureReviewStore: captureReviewStore,
+            captureInbox: captureInbox,
             viewModel: viewModel
         )
+        switch result {
+        case let .inboxFailure(error):
+            captureInboxErrorMessage = error.localizedDescription
+        case .reviewReady, .restoredNormally:
+            captureInboxErrorMessage = nil
+        case .inactive, .deferredBusy:
+            break
+        }
+    }
+
+    private func removePendingCapture() {
+        do {
+            try captureInbox().removePending()
+            captureInboxErrorMessage = nil
+            Task { await activateCurrentSurface(sceneIsActive: scenePhase == .active) }
+        } catch {
+            captureInboxErrorMessage = error.localizedDescription
+        }
     }
 
     @ViewBuilder
