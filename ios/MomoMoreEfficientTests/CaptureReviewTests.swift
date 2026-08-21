@@ -4,6 +4,8 @@ import XCTest
 
 @MainActor
 final class CaptureReviewTests: XCTestCase {
+    private var temporaryDirectories: [URL] = []
+
     override func setUp() {
         super.setUp()
         CaptureReviewStore.shared.cancel()
@@ -11,6 +13,8 @@ final class CaptureReviewTests: XCTestCase {
 
     override func tearDown() {
         CaptureReviewStore.shared.cancel()
+        temporaryDirectories.forEach { try? FileManager.default.removeItem(at: $0) }
+        temporaryDirectories = []
         super.tearDown()
     }
 
@@ -159,6 +163,7 @@ final class CaptureReviewTests: XCTestCase {
         await CaptureReviewForegroundGate.activate(
             sceneIsActive: false,
             captureReviewStore: store,
+            captureInbox: { self.makeEmptyInbox() },
             viewModel: model
         )
 
@@ -172,6 +177,7 @@ final class CaptureReviewTests: XCTestCase {
         await CaptureReviewForegroundGate.activate(
             sceneIsActive: true,
             captureReviewStore: store,
+            captureInbox: { self.makeEmptyInbox() },
             viewModel: model
         )
 
@@ -200,6 +206,7 @@ final class CaptureReviewTests: XCTestCase {
         await CaptureReviewForegroundGate.activate(
             sceneIsActive: true,
             captureReviewStore: CaptureReviewStore(),
+            captureInbox: { self.makeEmptyInbox() },
             viewModel: model
         )
 
@@ -215,6 +222,17 @@ final class CaptureReviewTests: XCTestCase {
             CaptureTextIntent.supportedModes,
             [.foreground(.deferred)]
         )
+    }
+
+    private func makeEmptyInbox() -> PendingCaptureInbox {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try! FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        temporaryDirectories.append(directory)
+        return PendingCaptureInbox(containerURL: directory)
     }
 }
 

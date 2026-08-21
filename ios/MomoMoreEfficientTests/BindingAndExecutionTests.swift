@@ -456,7 +456,7 @@ final class BindingAndExecutionTests: XCTestCase {
         )
         XCTAssertEqual(
             project.components(separatedBy: "CURRENT_PROJECT_VERSION = 3;").count - 1,
-            2
+            4 // app Debug/Release + Share Extension Debug/Release
         )
         XCTAssertEqual(
             project.components(separatedBy: "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;").count - 1,

@@ -12,6 +12,8 @@ final class CaptureReviewStore: ObservableObject {
     struct Review: Equatable, Identifiable {
         let id: UInt64
         var text: String
+        let sourceURL: URL?
+        let sourceTitle: String?
         let replacementCount: Int
 
         var replacedExistingReview: Bool { replacementCount > 0 }
@@ -26,11 +28,17 @@ final class CaptureReviewStore: ObservableObject {
 
     /// Accepts the boundary value exactly as supplied. Parsing and any parser
     /// normalization remain in the existing explicit Preview action.
-    func receive(_ text: String) {
+    func receive(
+        _ text: String,
+        sourceURL: URL? = nil,
+        sourceTitle: String? = nil
+    ) {
         nextID += 1
         review = Review(
             id: nextID,
             text: text,
+            sourceURL: sourceURL,
+            sourceTitle: sourceTitle,
             replacementCount: review.map { $0.replacementCount + 1 } ?? 0
         )
     }
