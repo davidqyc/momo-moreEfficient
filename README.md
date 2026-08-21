@@ -8,7 +8,7 @@
 
 把你自己准备好的释义和例句安全录入墨墨。应用遵循 **Preview → 明确确认 → fresh preflight → 写入 → 鉴权回读** 的安全流程；个人墨墨 API Token 只保存在这台 iPhone 的设备本地 Keychain。详情见[隐私说明](PRIVACY.md)。
 
-> **当前分发状态：** TestFlight build `1.0 (3)` 正在接受 Apple 外部审核；目前没有公开安装链接，也没有可承诺的时间表。
+> **TestFlight 外部测试已开放：** [加入首批外部测试](https://testflight.apple.com/join/DtVKeTSE)。当前为 build `1.0 (3)`，公开链接上限 100 名测试员；尚未在 App Store 正式发布。
 
 ### Codex Recipes
 
