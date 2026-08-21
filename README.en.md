@@ -1,70 +1,143 @@
-# momo-moreEfficient / 小黑鸟伴侣
+# Xiaoheiniao / momo-moreEfficient
 
-**momo-moreEfficient (小黑鸟伴侣)** is an independent, unofficial, open-source companion project for **Maimemo / 墨墨背单词**.
+**Xiaoheiniao (小黑鸟伴侣 / momo-moreEfficient)** is an independent, unofficial, open-source **Maimemo / 墨墨背单词 companion**. The point is simple: make a few frequent but annoying Maimemo workflows much easier — first importing prepared interpretations and examples, then capture while reading, plus reproducible **Maimemo × Codex** learning workflows.
 
-It currently provides two public routes:
+> **Current public version:** [iPhone TestFlight build `1.0 (3)`](https://testflight.apple.com/join/DtVKeTSE). It is not yet a production App Store release.
+>
+> **Not an official Maimemo project.** This is an independent community/open-source project and is not affiliated with, sponsored by, or endorsed by Maimemo or its operator.
 
-1. **iPhone companion** — safely import user-prepared custom interpretations and example sentences into Maimemo with Preview, explicit confirmation, fresh preflight, at-most-one POST per changed item, no automatic POST retry, and authenticated readback.
-2. **Maimemo × Codex Recipes** — small reproducible learning workflows built around the documented Maimemo Open API, starting with a forgotten-words → study-article workflow.
+## Quick start
 
-This project is **not affiliated with, sponsored by, or endorsed by Maimemo or its operator**.
+| I want to | Go here |
+| --- | --- |
+| Try Xiaoheiniao on iPhone | **[Join TestFlight](https://testflight.apple.com/join/DtVKeTSE)** |
+| Turn today's forgotten words into a Codex study article | **[Recipe 1: forgotten words → Codex study article](recipes/forgotten-words-study-article/README.md)** |
+| Read the stable product page | **[www.jiripple.com/xiaoheiniao/](https://www.jiripple.com/xiaoheiniao/)** |
+| Report a bug, get help, or suggest something | **[GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues)** |
 
-## Install the iPhone beta
+[中文 README](README.md) · [Project FAQ](docs/FAQ.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
 
-The current external TestFlight beta is build `1.0 (3)`:
+## Feature 1 | Batch-import prepared interpretations and examples
 
-https://testflight.apple.com/join/DtVKeTSE
+This is the first group of features already available in the public TestFlight.
 
-The app is not yet a production App Store release.
+If you already prepared content in ChatGPT, Codex, your notes, or somewhere else, you do not need to add it to Maimemo item by item. Xiaoheiniao puts that prepared content into a review-and-confirm flow before anything is written.
 
-## Token and privacy model
+Public build `1.0 (3)` supports:
 
-The iPhone companion stores the user's Maimemo API Token only in the local iPhone Keychain. The project does not operate a backend that receives or stores that Token.
+- **custom interpretations:** batch create / update;
+- **examples / phrases:** create;
+- Preview before any write;
+- explicit confirmation before writing;
+- fresh authenticated preflight immediately before POST;
+- at most one POST per changed item, with **no automatic POST retry**;
+- authenticated readback after dispatched writes.
 
-Never post a real Maimemo Token, Authorization/Cookie, account identifier, private vocabulary export, or private learning data in a GitHub Issue, Pull Request, log, review artifact, or public example.
+The normal flow is:
 
-## Codex Recipe 1
+```text
+prepare content → paste once → Preview
+→ check create / update items → confirm
+→ fresh preflight → write → authenticated readback
+```
 
-**Forgotten words today → Codex study article**
+### Your Maimemo Token stays on your iPhone
 
-https://github.com/davidqyc/momo-moreEfficient/tree/main/recipes/forgotten-words-study-article
+The personal Maimemo API Token is stored only in the local iPhone Keychain. This project does not run a remote backend that receives or stores that Token.
 
-Recipe 1 reads the user's own Maimemo study data, selects the target forgotten words, and uses Codex/ChatGPT to produce a controlled English article, coverage checklist, grammar notes, and Chinese translation.
+Real Tokens, Authorization/Cookie values, account identifiers, private vocabulary exports, and private learning data should never be put into public Issues, PRs, logs, examples, or review material.
 
-It does not require a separately purchased OpenAI API key; it uses the user's existing Codex/ChatGPT access path.
+## Feature 2 | Capture while reading — coming soon
 
-## Bugs, requests and contributions
+This work is **complete on source `main`, but it is not in public TestFlight build `1.0 (3)` yet**.
 
-Issues:
-https://github.com/davidqyc/momo-moreEfficient/issues
+The goal is to shorten one common action:
 
-Contributing guide:
-https://github.com/davidqyc/momo-moreEfficient/blob/main/CONTRIBUTING.md
+```text
+see a word / sentence worth keeping → send it to Xiaoheiniao
+→ review and edit → then decide whether to enter the normal Preview/import flow
+```
 
-The repository provides structured Issue Forms for bugs/setup failures and feature/workflow requests.
+Two candidate entries currently exist:
 
-## Not shipped yet
+- **Shortcut (iOS 26+)**: pass selected text to Xiaoheiniao and open the app into the separate pre-Preview review state;
+- **Share (iOS 18+)**: save selected text from the iOS share sheet, then review it the next time Xiaoheiniao is opened normally.
 
-Do not treat these as current released capabilities:
+Both stop **before Preview**. Capturing text alone does not read the Maimemo Token, call Maimemo, run Preview, or write anything.
 
-- production App Store release;
-- desktop browser capture extension;
-- iOS Share Extension capture entry;
-- App Intent / Action Button capture entry;
-- background automatic import queue;
-- automatic phrase replacement / phrase UPDATE;
-- a separately maintained full dictionary/phonetics/audio service;
-- a cloud account system that stores users' Maimemo Tokens.
+The next step is a physical-iPhone UX comparison. The project will prefer whichever route is actually less work in daily use rather than keeping two entry paths prominent just for technical symmetry.
 
-These become real capabilities only after the corresponding GitHub work is reviewed, merged, and released.
+## Feature 3 | Maimemo × Codex learning workflows
 
-## Canonical sources
+This route does not depend on the iPhone app. Each Recipe is meant to be small, clear, and reproducible rather than part of a large automation platform.
 
-- Project home: https://github.com/davidqyc/momo-moreEfficient
-- Project FAQ: https://github.com/davidqyc/momo-moreEfficient/blob/main/docs/FAQ.md
-- TestFlight: https://testflight.apple.com/join/DtVKeTSE
-- Security: https://github.com/davidqyc/momo-moreEfficient/blob/main/SECURITY.md
-- Privacy: https://github.com/davidqyc/momo-moreEfficient/blob/main/PRIVACY.md
-- Issues: https://github.com/davidqyc/momo-moreEfficient/issues
+### Available now: Recipe 1 — forgotten words → Codex study article
 
-If a third-party post conflicts with current GitHub `main` or current Issue/PR authority, the live GitHub sources above take precedence.
+Recipe 1 reads your own Maimemo study data, identifies the target forgotten words, and asks Codex / ChatGPT to produce:
+
+- an English study article covering the words;
+- a coverage checklist;
+- grammar notes;
+- a Chinese translation.
+
+**[Open Recipe 1](recipes/forgotten-words-study-article/README.md)**
+
+It does not require a separately purchased OpenAI API key; it uses your existing Codex / ChatGPT access path. The Maimemo side is read-only for this workflow.
+
+## What is next?
+
+Unreleased work is labeled by stage so source code is not mistaken for something users can already install:
+
+| Capability | Stage |
+| --- | --- |
+| iPhone interpretation / example import | **Available now** in TestFlight build `1.0 (3)` |
+| Shortcut capture | **Coming soon** — source implementation complete; pending physical UX comparison and release decision |
+| Share-sheet capture | **Coming soon** — source implementation complete; pending App Group / physical validation and release decision |
+| Desktop browser capture extension | **Researching** — not implemented; waiting for Maimemo Open Platform clarification on OAuth redirect / CORS / API contracts |
+| Built-in Maimemo dictionary / pronunciation service | **Not available** |
+| Background automatic import queue | **No current plan** |
+
+Current engineering state: [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md).
+
+## Safety floor
+
+These rules remain in force as the project grows:
+
+- Preview is not write authorization;
+- writes require explicit user confirmation;
+- state-sensitive writes get fresh authenticated preflight before POST;
+- each changed item gets at most one POST and POST is not automatically retried;
+- dispatched writes require authenticated readback; uncertain outcomes use GET-only recovery;
+- UPDATE targets only an unambiguous authenticated-user record;
+- no automatic DELETE, rollback, or replay;
+- real Tokens and private learning data must not enter Git, logs, or public artifacts.
+
+## Bugs, help, requests, contributions
+
+- **Bug / install / setup problem:** [GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues)
+- **Feature or workflow idea:** also [GitHub Issues](https://github.com/davidqyc/momo-moreEfficient/issues)
+- **Code or docs contribution:** read [`CONTRIBUTING.md`](CONTRIBUTING.md), then open a Pull Request
+
+GitHub is the canonical home for source, Recipes, Issues, PRs, and current engineering truth. [`www.jiripple.com/xiaoheiniao/`](https://www.jiripple.com/xiaoheiniao/) is the stable user/search/AI product-facts page.
+
+## For developers / historical material
+
+Normal users can stop here. Engineering and historical references:
+
+- [Project FAQ](docs/FAQ.md)
+- [Current project state](docs/PROJECT_STATE.md)
+- [AI-search benchmark](docs/ai-search-benchmark.md)
+- [Product/API plan](docs/product-and-api-plan.md)
+- [Decision log](docs/decision-log.md)
+- [Agent/Codex rules](AGENTS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
+- [Legacy CLI v0.1.0](docs/legacy-cli-v0.1.0.md)
+
+## Trademark / disclaimer
+
+This is an independent, unofficial third-party open-source project. “Maimemo”, “墨墨”, and “墨墨背单词” are referenced only to identify the compatible service and public API integration. All related names and trademarks belong to their respective owners.
+
+## License
+
+[MIT](LICENSE)
