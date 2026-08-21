@@ -1,0 +1,70 @@
+name: 功能 / 工作流建议
+description: 从真实使用问题出发，提出新功能、自动化或工作流需求
+title: "[Request] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先描述真实问题和现在怎么绕过去，再讨论具体实现。
+
+        **不要粘贴墨墨 API Token、Authorization/Cookie、账号标识、私人词库/例句或其他个人学习数据。**
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: 这个需求主要属于哪一部分？
+      options:
+        - iPhone companion
+        - Maimemo × Codex Recipe
+        - GitHub / 文档 / 安装支持
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你实际遇到的问题是什么？
+      description: 描述使用场景、摩擦或重复劳动，不要只写功能名称。
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 你现在怎么解决？
+      description: 当前手工步骤、快捷指令、其他 App 或临时方法都可以。
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 你希望最终能做到什么？
+      description: 描述结果和成功标准；不要求你设计技术方案。
+    validations:
+      required: true
+
+  - type: textarea
+    id: frequency
+    attributes:
+      label: 这个场景多久会发生一次？（可选）
+      placeholder: 例如每天阅读时 5–10 次 / 每周整理一次
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 其他可公开的背景（可选）
+      description: 可以提供脱敏截图或公开链接，但不要提供私人学习数据。
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: 边界确认
+      options:
+        - label: 我理解这里讨论的是独立第三方 companion / workflow，不要求复制墨墨本体。
+          required: true
+        - label: 我理解任何真实墨墨写入都应保留明确 review/confirmation，而不是静默自动写入。
+          required: true
+        - label: 我已确认本 Issue 不包含墨墨 Token、Authorization/Cookie、账号标识或私人学习数据。
+          required: true
