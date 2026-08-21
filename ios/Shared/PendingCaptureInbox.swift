@@ -3,23 +3,47 @@ import Foundation
 /// The complete non-secret payload allowed in the Share Extension App Group.
 /// No credential, Preview, approval, API response or execution state belongs here.
 struct PendingCapture: Codable, Equatable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let text: String
     let sourceURL: URL?
     let sourceTitle: String?
+    let capturedAt: Date
 
     init(
         text: String,
         sourceURL: URL? = nil,
         sourceTitle: String? = nil,
+        capturedAt: Date = Date(),
         version: Int = Self.currentVersion
     ) {
         self.version = version
         self.text = text
         self.sourceURL = sourceURL
         self.sourceTitle = sourceTitle
+        self.capturedAt = capturedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case text
+        case sourceURL
+        case sourceTitle
+        case capturedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .version)
+        guard version == Self.currentVersion else {
+            throw PendingCaptureInboxError.unsupportedVersion
+        }
+        self.version = version
+        text = try container.decode(String.self, forKey: .text)
+        sourceURL = try container.decodeIfPresent(URL.self, forKey: .sourceURL)
+        sourceTitle = try container.decodeIfPresent(String.self, forKey: .sourceTitle)
+        capturedAt = try container.decode(Date.self, forKey: .capturedAt)
     }
 }
 
@@ -199,6 +223,8 @@ struct PendingCaptureInbox {
             let capture: PendingCapture
             do {
                 capture = try JSONDecoder().decode(PendingCapture.self, from: data)
+            } catch let error as PendingCaptureInboxError {
+                throw error
             } catch {
                 throw PendingCaptureInboxError.corruptData
             }

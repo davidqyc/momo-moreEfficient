@@ -36,7 +36,8 @@ enum CaptureReviewForegroundGate {
                 captureReviewStore.receive(
                     capture.text,
                     sourceURL: capture.sourceURL,
-                    sourceTitle: capture.sourceTitle
+                    sourceTitle: capture.sourceTitle,
+                    capturedAt: capture.capturedAt
                 )
             }) != nil {
                 viewModel.prepareForCaptureReview()
@@ -337,6 +338,7 @@ struct ContentView: View {
         do {
             try captureInbox().removePending()
             captureInboxErrorMessage = nil
+            Task { await activateCurrentSurface(sceneIsActive: scenePhase == .active) }
         } catch {
             captureInboxErrorMessage = error.localizedDescription
         }

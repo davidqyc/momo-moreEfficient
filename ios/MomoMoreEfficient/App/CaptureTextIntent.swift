@@ -1,4 +1,5 @@
 import AppIntents
+import Foundation
 
 /// A transport-only Shortcut action. Its complete effect is one exact, in-memory
 /// capture handoff; it has no route to credentials, Preview or Maimemo transport.
@@ -32,7 +33,8 @@ struct CaptureTextIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        CaptureReviewStore.shared.receive(text)
+        let capturedAt = Date()
+        CaptureReviewStore.shared.receive(text, capturedAt: capturedAt)
         return .result()
     }
 }

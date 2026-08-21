@@ -14,6 +14,7 @@ final class CaptureReviewStore: ObservableObject {
         var text: String
         let sourceURL: URL?
         let sourceTitle: String?
+        let capturedAt: Date
         let replacementCount: Int
 
         var replacedExistingReview: Bool { replacementCount > 0 }
@@ -28,19 +29,31 @@ final class CaptureReviewStore: ObservableObject {
 
     /// Accepts the boundary value exactly as supplied. Parsing and any parser
     /// normalization remain in the existing explicit Preview action.
+    @discardableResult
     func receive(
         _ text: String,
         sourceURL: URL? = nil,
-        sourceTitle: String? = nil
-    ) {
+        sourceTitle: String? = nil,
+        capturedAt: Date = Date()
+    ) -> Bool {
+        let previousReview = review
+        // CaptureReviewStore is the single ordering authority across transports.
+        // Only a strictly newer capture replaces the current review; the existing
+        // review deterministically wins an exact timestamp tie.
+        guard previousReview.map({ capturedAt > $0.capturedAt }) ?? true else {
+            return false
+        }
+
         nextID += 1
         review = Review(
             id: nextID,
             text: text,
             sourceURL: sourceURL,
             sourceTitle: sourceTitle,
-            replacementCount: review.map { $0.replacementCount + 1 } ?? 0
+            capturedAt: capturedAt,
+            replacementCount: previousReview.map { $0.replacementCount + 1 } ?? 0
         )
+        return true
     }
 
     func edit(_ text: String) {

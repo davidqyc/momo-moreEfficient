@@ -53,16 +53,19 @@ final class ShareCaptureTests: XCTestCase {
     func testInboxPreservesExactTextAndSourceMetadata() throws {
         let inbox = makeInbox()
         let exact = "\tleading\r\nUnicode 🐦\n\ntrailing  "
+        let capturedAt = Date(timeIntervalSince1970: 1_900_000_000.125)
         let capture = PendingCapture(
             text: exact,
             sourceURL: URL(string: "https://example.invalid/article")!,
-            sourceTitle: "Exact source title"
+            sourceTitle: "Exact source title",
+            capturedAt: capturedAt
         )
 
         try inbox.save(capture)
 
         XCTAssertEqual(try inbox.load(), capture)
         XCTAssertEqual(try inbox.load()?.text, exact)
+        XCTAssertEqual(try inbox.load()?.capturedAt, capturedAt)
     }
 
     func testSizeBoundaryFailsVisiblyWithoutTruncationOrReplacement() throws {
@@ -120,7 +123,7 @@ final class ShareCaptureTests: XCTestCase {
         XCTAssertNil(try inbox.load())
     }
 
-    func testCorruptAndOversizedInboxFailClosedAndCanBeRemoved() throws {
+    func testCorruptOversizedAndUnsupportedInboxFailClosedAndCanBeRemoved() throws {
         let corruptInbox = makeInbox()
         try Data("{not-json".utf8).write(to: corruptInbox.pendingFileURL, options: [.atomic])
         XCTAssertThrowsError(try corruptInbox.load()) { error in
@@ -144,15 +147,28 @@ final class ShareCaptureTests: XCTestCase {
         }
         try oversizedInbox.removePending()
         XCTAssertNil(try oversizedInbox.load())
+
+        let unsupportedInbox = makeInbox()
+        let oldVersion = Data(#"{"version":1,"text":"old unreleased format"}"#.utf8)
+        try oldVersion.write(to: unsupportedInbox.pendingFileURL, options: [.atomic])
+        XCTAssertThrowsError(try unsupportedInbox.load()) { error in
+            XCTAssertEqual(error as? PendingCaptureInboxError, .unsupportedVersion)
+        }
+        try unsupportedInbox.removePending()
+        XCTAssertNil(try unsupportedInbox.load())
     }
 
-    func testShareCaptureReplacesExistingIntentReviewThroughSameStore() async throws {
+    func testOlderDurableShareIsConsumedWithoutReplacingNewerIntentReview() async throws {
         let inbox = makeInbox()
-        try inbox.save(PendingCapture(text: "share is latest"))
+        let shareTime = Date(timeIntervalSince1970: 1_900_000_000)
+        let intentTime = shareTime.addingTimeInterval(10)
+        try inbox.save(PendingCapture(text: "share A", capturedAt: shareTime))
         let store = CaptureReviewStore()
-        store.receive("intent review")
+        store.receive("intent B", capturedAt: intentTime)
         let tokenStore = CountingShareTokenStore(token: fakeToken)
-        let transport = FakeHTTPTransport([])
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
         let model = makeModel(tokenStore: tokenStore, transport: transport)
 
         let result = await CaptureReviewForegroundGate.activate(
@@ -163,12 +179,81 @@ final class ShareCaptureTests: XCTestCase {
         )
 
         XCTAssertEqual(result, .reviewReady)
-        XCTAssertEqual(store.review?.text, "share is latest")
+        XCTAssertEqual(store.review?.text, "intent B")
+        XCTAssertEqual(store.review?.capturedAt, intentTime)
+        XCTAssertEqual(store.review?.replacementCount, 0)
+        XCTAssertFalse(store.review?.replacedExistingReview ?? true)
+        XCTAssertEqual(tokenStore.loadCount, 0)
+        XCTAssertEqual(transport.getCount, 0)
+        XCTAssertEqual(transport.postCount, 0)
+        XCTAssertNil(model.preview)
+        XCTAssertNil(model.phrasePreview)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertNil(model.pendingConfirmation)
+        XCTAssertNil(model.pendingPhraseConfirmation)
+        XCTAssertNil(try inbox.load())
+
+        // A second foreground cannot replay the consumed stale Share capture.
+        let replayCheck = await CaptureReviewForegroundGate.activate(
+            sceneIsActive: true,
+            captureReviewStore: store,
+            captureInbox: { inbox },
+            viewModel: model
+        )
+        XCTAssertEqual(replayCheck, .reviewReady)
+        XCTAssertEqual(store.review?.text, "intent B")
+        XCTAssertEqual(store.review?.replacementCount, 0)
+        XCTAssertEqual(tokenStore.loadCount, 0)
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    func testNewerDurableShareReplacesOlderIntentReviewExactlyOnce() async throws {
+        let inbox = makeInbox()
+        let intentTime = Date(timeIntervalSince1970: 1_900_000_000)
+        let shareTime = intentTime.addingTimeInterval(10)
+        let store = CaptureReviewStore()
+        store.receive("intent A", capturedAt: intentTime)
+        try inbox.save(PendingCapture(text: "share B", capturedAt: shareTime))
+        let tokenStore = CountingShareTokenStore(token: fakeToken)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
+        let model = makeModel(tokenStore: tokenStore, transport: transport)
+
+        let result = await CaptureReviewForegroundGate.activate(
+            sceneIsActive: true,
+            captureReviewStore: store,
+            captureInbox: { inbox },
+            viewModel: model
+        )
+
+        XCTAssertEqual(result, .reviewReady)
+        XCTAssertEqual(store.review?.text, "share B")
+        XCTAssertEqual(store.review?.capturedAt, shareTime)
         XCTAssertEqual(store.review?.replacementCount, 1)
         XCTAssertTrue(store.review?.replacedExistingReview ?? false)
         XCTAssertEqual(tokenStore.loadCount, 0)
-        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertEqual(transport.getCount, 0)
+        XCTAssertEqual(transport.postCount, 0)
+        XCTAssertNil(model.preview)
+        XCTAssertNil(model.phrasePreview)
+        XCTAssertFalse(model.hasExecutablePreview)
+        XCTAssertNil(model.pendingConfirmation)
+        XCTAssertNil(model.pendingPhraseConfirmation)
         XCTAssertNil(try inbox.load())
+
+        // No pending file remains, so replacement behavior is not repeated.
+        let replayCheck = await CaptureReviewForegroundGate.activate(
+            sceneIsActive: true,
+            captureReviewStore: store,
+            captureInbox: { inbox },
+            viewModel: model
+        )
+        XCTAssertEqual(replayCheck, .reviewReady)
+        XCTAssertEqual(store.review?.text, "share B")
+        XCTAssertEqual(store.review?.replacementCount, 1)
+        XCTAssertEqual(tokenStore.loadCount, 0)
+        XCTAssertTrue(transport.requests.isEmpty)
     }
 
     func testAuthorizedBusyOperationDefersInboxUntilSafeIdle() async throws {
@@ -282,9 +367,20 @@ final class ShareCaptureTests: XCTestCase {
         XCTAssertEqual(tokenStore.loadCount, 0)
         XCTAssertTrue(transport.requests.isEmpty)
         try inbox.removePending()
-        XCTAssertEqual(tokenStore.loadCount, 0)
-        XCTAssertTrue(transport.requests.isEmpty)
         XCTAssertNil(try inbox.load())
+
+        // ContentView performs this activation immediately after successful
+        // explicit removal, without waiting for another scene transition.
+        let resumed = await CaptureReviewForegroundGate.activate(
+            sceneIsActive: true,
+            captureReviewStore: CaptureReviewStore(),
+            captureInbox: { inbox },
+            viewModel: model
+        )
+        XCTAssertEqual(resumed, .restoredNormally)
+        XCTAssertEqual(tokenStore.loadCount, 1)
+        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.postCount, 0)
     }
 
     func testProjectUsesExactAppGroupAndExtensionCannotCompileTokenOrMaimemoSources() throws {
@@ -356,6 +452,10 @@ final class ShareCaptureTests: XCTestCase {
         ] {
             XCTAssertFalse(extensionController.contains(forbidden), forbidden)
         }
+        XCTAssertTrue(
+            extensionController.contains("showError(error.localizedDescription, allowsRetry: true)"),
+            "A Save validation error must allow editing and retrying"
+        )
     }
 
     private func makeInbox() -> PendingCaptureInbox {

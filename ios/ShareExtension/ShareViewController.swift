@@ -107,13 +107,14 @@ final class ShareViewController: UIViewController {
                 .save(PendingCapture(
                     text: textView.text ?? "",
                     sourceURL: sourceURL,
-                    sourceTitle: sourceTitle
+                    sourceTitle: sourceTitle,
+                    capturedAt: Date()
                 )),
                 inbox: { try PendingCaptureInbox.appGroup() }
             )
             extensionContext?.completeRequest(returningItems: nil)
         } catch {
-            showError(error.localizedDescription)
+            showError(error.localizedDescription, allowsRetry: true)
         }
     }
 
@@ -127,9 +128,9 @@ final class ShareViewController: UIViewController {
         )
     }
 
-    private func showError(_ message: String) {
+    private func showError(_ message: String, allowsRetry: Bool = false) {
         statusLabel.text = message
         statusLabel.textColor = .systemRed
-        saveButton.isEnabled = false
+        saveButton.isEnabled = allowsRetry
     }
 }
