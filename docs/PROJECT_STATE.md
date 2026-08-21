@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-21
-sourceMainSha=7f31f62dc6bf4e1f6ec8d121e2e6da684ff63beb
+sourceMainSha=a4a5ea38a1f799e0bea4529866250dd1a1651697
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
