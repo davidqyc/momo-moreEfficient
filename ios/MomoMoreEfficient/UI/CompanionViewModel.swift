@@ -1128,6 +1128,27 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         invalidateArmedApproval()
     }
 
+    /// Capture review is pre-Preview. Entering it can only remove existing read
+    /// and execution authority; it never creates a credential lease or transport.
+    func prepareForCaptureReview() {
+        guard !isBusy else { return }
+        invalidatePreview()
+        detachInlineExecutionFeedback()
+    }
+
+    /// An explicit normal-UI action moves reviewed text into one existing editor.
+    /// The next Preview remains a separate user action and keeps the existing
+    /// Preview -> approval -> fresh-preflight -> write/readback path unchanged.
+    func acceptCapturedText(_ text: String, in mode: ContentMode) {
+        guard !isBusy else { return }
+        prepareForCaptureReview()
+        if contentMode != mode {
+            contentMode = mode
+        }
+        sourceText = text
+        updateLocalParseState()
+    }
+
     var isShowingEditor: Bool {
         contentMode == .interpretation ? preview == nil : phrasePreview == nil
     }
