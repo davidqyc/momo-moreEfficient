@@ -15,6 +15,7 @@ final class CaptureReviewTests: XCTestCase {
     }
 
     func testIntentHandsOffRequiredTextExactlyWithoutStartingPreview() async throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("App Intent requires iOS 26") }
         let original = "  Word\r\nline “quoted”\n\n末尾空格  "
         let intent = CaptureTextIntent()
         intent.text = original
@@ -46,6 +47,7 @@ final class CaptureReviewTests: XCTestCase {
     }
 
     func testRepeatedIntentCaptureUsesLatestWinsSemantics() async throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("App Intent requires iOS 26") }
         let first = CaptureTextIntent()
         first.text = "first intent"
         _ = try await first.perform()
@@ -114,6 +116,7 @@ final class CaptureReviewTests: XCTestCase {
     }
 
     func testIntentHasNoCredentialOrMaimemoDependency() async throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("App Intent requires iOS 26") }
         let tokenStore = CountingTokenStore(token: fakeToken)
         let transport = FakeHTTPTransport([])
         let model = CompanionViewModel(
@@ -139,13 +142,79 @@ final class CaptureReviewTests: XCTestCase {
         XCTAssertFalse(model.hasExecutablePreview)
     }
 
-    func testCurrentForegroundModeIsDeferredOnIOS26() {
-        if #available(iOS 26.0, *) {
-            XCTAssertEqual(
-                CaptureTextIntent.supportedModes,
-                [.foreground(.deferred)]
-            )
-        }
+    func testDeferredCaptureLaunchCannotRestoreCredentialBeforeReviewHandoff() async {
+        let tokenStore = CountingTokenStore(token: fakeToken)
+        let transport = FakeHTTPTransport([vocabularyResponse("INVALID_VOC", "word")])
+        let model = CompanionViewModel(
+            tokenStore: tokenStore,
+            historyStore: InMemoryHistoryStore(),
+            transportFactory: { transport },
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+        let store = CaptureReviewStore()
+
+        // A deferred App Intent can construct the app UI while its action still
+        // runs in the background. That pre-handoff launch must be a hard no-op.
+        await CaptureReviewForegroundGate.activate(
+            sceneIsActive: false,
+            captureReviewStore: store,
+            viewModel: model
+        )
+
+        XCTAssertNil(store.review)
+        XCTAssertEqual(tokenStore.loadCount, 0)
+        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertFalse(model.isConnected)
+
+        // `perform()` installs this exact boundary before deferred foregrounding.
+        store.receive("handoff now exists")
+        await CaptureReviewForegroundGate.activate(
+            sceneIsActive: true,
+            captureReviewStore: store,
+            viewModel: model
+        )
+
+        XCTAssertEqual(store.review?.text, "handoff now exists")
+        XCTAssertEqual(tokenStore.loadCount, 0)
+        XCTAssertEqual(tokenStore.saveCount, 0)
+        XCTAssertEqual(tokenStore.deleteCount, 0)
+        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertNil(model.preview)
+        XCTAssertNil(model.phrasePreview)
+        XCTAssertFalse(model.hasExecutablePreview)
+    }
+
+    func testNormalActiveLaunchStillRestoresStoredCredentialWithoutCapture() async {
+        let tokenStore = CountingTokenStore(token: fakeToken)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
+        ])
+        let model = CompanionViewModel(
+            tokenStore: tokenStore,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() }
+        )
+
+        await CaptureReviewForegroundGate.activate(
+            sceneIsActive: true,
+            captureReviewStore: CaptureReviewStore(),
+            viewModel: model
+        )
+
+        XCTAssertEqual(tokenStore.loadCount, 1)
+        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.postCount, 0)
+        XCTAssertTrue(model.isConnected)
+    }
+
+    func testCurrentForegroundModeIsDeferredOnIOS26() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("App Intent requires iOS 26") }
+        XCTAssertEqual(
+            CaptureTextIntent.supportedModes,
+            [.foreground(.deferred)]
+        )
     }
 }
 

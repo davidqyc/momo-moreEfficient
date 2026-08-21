@@ -2,6 +2,7 @@ import AppIntents
 
 /// A transport-only Shortcut action. Its complete effect is one exact, in-memory
 /// capture handoff; it has no route to credentials, Preview or Maimemo transport.
+@available(iOS 26.0, *)
 struct CaptureTextIntent: AppIntent {
     static let title: LocalizedStringResource = "在小黑鸟伴侣中检查文本"
     static let description = IntentDescription(
@@ -25,15 +26,9 @@ struct CaptureTextIntent: AppIntent {
         Summary("在小黑鸟伴侣中检查 \(\.$text)")
     }
 
-    /// `supportedModes` is Apple's current foreground-execution API. Deferred
-    /// foregrounding lets this zero-I/O handoff land before the review UI appears.
-    @available(iOS 26.0, *)
+    /// Deferred mode runs `perform()` in the background and foregrounds the app
+    /// near the end. The first synchronous statement below installs the review.
     static let supportedModes: IntentModes = [.foreground(.deferred)]
-
-    /// The app still deploys to iOS 18. This availability-isolated compatibility
-    /// witness is invisible from iOS 26 onward, where `supportedModes` is used.
-    @available(iOS, introduced: 18.0, obsoleted: 26.0)
-    static var openAppWhenRun: Bool { true }
 
     @MainActor
     func perform() async throws -> some IntentResult {

@@ -1,5 +1,27 @@
 import SwiftUI
 
+/// The deterministic boundary between app lifecycle and credential restoration.
+///
+/// An iOS 26 deferred App Intent starts in the background. View construction may
+/// happen there, so it must never restore credentials. The intent installs its
+/// review synchronously before the system's guaranteed foreground transition;
+/// only an actually active scene is therefore allowed to restore a normal launch.
+@MainActor
+enum CaptureReviewForegroundGate {
+    static func activate(
+        sceneIsActive: Bool,
+        captureReviewStore: CaptureReviewStore,
+        viewModel: CompanionViewModel
+    ) async {
+        guard sceneIsActive else { return }
+        if captureReviewStore.review != nil {
+            viewModel.prepareForCaptureReview()
+        } else {
+            await viewModel.enterForeground()
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel: CompanionViewModel
@@ -42,8 +64,8 @@ struct ContentView: View {
                 }
             }
             .navigationTitle(
-                captureReviewStore.review == nil
-                    ? viewModel.contentMode.navigationTitle : "检查捕获文本"
+                isShowingCaptureReview
+                    ? "检查捕获文本" : viewModel.contentMode.navigationTitle
             )
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -62,7 +84,7 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if captureReviewStore.review != nil, !viewModel.isBusy {
+                if isShowingCaptureReview {
                     captureReviewActionBar
                 } else if viewModel.isShowingEditor {
                     previewActionBar
@@ -135,7 +157,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                activateCurrentSurface()
+                Task { await activateCurrentSurface(sceneIsActive: true) }
             case .inactive, .background:
                 viewModel.enterBackground()
             @unknown default:
@@ -152,7 +174,13 @@ struct ContentView: View {
                 viewModel.prepareForCaptureReview()
             }
         }
-        .task { activateCurrentSurface() }
+        .task {
+            await activateCurrentSurface(sceneIsActive: scenePhase == .active)
+        }
+    }
+
+    private var isShowingCaptureReview: Bool {
+        captureReviewStore.review != nil && !viewModel.isBusy
     }
 
     private func captureReviewSurface(_ review: CaptureReviewStore.Review) -> some View {
@@ -227,12 +255,12 @@ struct ContentView: View {
         Task { await viewModel.enterForeground() }
     }
 
-    private func activateCurrentSurface() {
-        if captureReviewStore.review != nil {
-            viewModel.prepareForCaptureReview()
-        } else {
-            Task { await viewModel.enterForeground() }
-        }
+    private func activateCurrentSurface(sceneIsActive: Bool) async {
+        await CaptureReviewForegroundGate.activate(
+            sceneIsActive: sceneIsActive,
+            captureReviewStore: captureReviewStore,
+            viewModel: viewModel
+        )
     }
 
     @ViewBuilder
