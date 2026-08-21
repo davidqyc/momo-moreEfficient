@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-08-22
-sourceMainSha=25e07e55fdc6791de9179a8b8d68aab61f5470bf
+sourceMainSha=f68199f66db23212c97f555ef83a758e623b3055
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,8 +12,8 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
-CURRENT_PRIMARY_ISSUE=#126
-CURRENT_UNIQUE_NEXT=RESTORE_PUBLIC_XIAOHEINIAO_PAGE_THEN_MEASURE_AI_SEARCH_INDEXING
+CURRENT_PRIMARY_ISSUE=#139
+CURRENT_UNIQUE_NEXT=FIX_FALSE_NEGATIVE_WRITE_CONFIRMATION_AND_ADD_PRIVACY_SAFE_DIAGNOSTICS
 OPEN_PRODUCT_PR=none
 ACTIVE_WIP=none
 ```
@@ -23,26 +23,37 @@ ACTIVE_WIP=none
 - interpretation batch CREATE/UPDATE and phrase CREATE are production/device validated under the existing Preview → approval → fresh preflight → max-one-POST/no-retry → authenticated readback safety floor;
 - personal Maimemo API Token remains device-local in `WhenUnlockedThisDeviceOnly` Keychain for the iOS app;
 - TestFlight build `1.0 (3)` passed external review; Public Link `https://testflight.apple.com/join/DtVKeTSE` is live with tester limit `100`;
+- real Owner usage on build `1.0 (3)` produced a phrase batch where the app reported 3 success / 1 failure / 11 not attempted, but the item reported failed was subsequently confirmed present in the Maimemo app with the expected content;
+- current phrase and interpretation executors both collapse a dispatched-write readback failure/mismatch to `.notVerified` after one readback attempt; current History stores only spelling + final outcome, so the exact failure layer cannot be reconstructed after the fact;
+- #139 is therefore the current correctness/diagnostics priority: keep max-one-POST/no-retry, add the narrowest bounded GET-only confirmation recovery for the observed phrase CREATE false-negative class, and add small privacy-safe per-item diagnostics reusable across real write types;
 - #120 is COMPLETE via PR #129: iOS 26+ Shortcut/App Intent capture reaches an editable pre-Preview state without Token/API/Preview/write activity;
 - #124 is COMPLETE via PR #132: Share Extension uses one bounded non-secret App Group inbox and reaches the same pre-Preview review boundary without Token/Maimemo/write machinery in the extension;
 - Owner expects normal use to compare Shortcut vs Share and then mainly keep whichever UX is better; do not add more cross-entry synchronization complexity without real evidence;
 - #125 browser-extension research is `NEEDS-MAIMEMO-CLARIFICATION` before implementation;
 - #104/#5 built-in dictionary lookup remains PARKED / NO-GO until Maimemo exposes a concrete supported content contract;
-- #126 AEO foundations exist in GitHub (`README`, `README.en`, FAQ, fixed benchmark) and in `davidqyc/jiripple-public-site` (`/xiaoheiniao/`, `context.md`, `llms.txt`, robots, sitemap, canonical/structured facts);
-- Owner browser validation on 2026-08-22 showed `https://www.jiripple.com/xiaoheiniao/` returning HTTP 404 even though the files exist on public-site `main`; therefore the public entity surface is not yet considered deployed/usable.
+- #126 AEO foundations exist in GitHub and `davidqyc/jiripple-public-site`; the public-site repo now contains the corrected Tencent SCF runtime/package builder, but production still needs the existing SCF function to be updated from current public-site `main` before `/xiaoheiniao/` is considered live.
 
-## Current route — AI search / answer discoverability
+## Current route — write correctness / diagnostics
 
-1. P0: restore the actual public deployment of `https://www.jiripple.com/xiaoheiniao/`. Do not treat repository presence as deployment success.
-2. After the page returns normally, verify `/xiaoheiniao/`, `/xiaoheiniao/context.md`, `/llms.txt`, `/robots.txt`, and `/sitemap.xml` from an independent client before measuring indexing.
-3. Then run the fixed Chinese/English benchmark repeatedly. Separate discovery/retrieval → citation/source selection → answer absorption → factual accuracy.
-4. Keep one stable entity page with direct answers to real user questions. Do not generate doorway pages or keep changing copy while waiting for crawl/index signals.
-5. Improve high-ROI entity metadata and genuine external authority only when benchmark evidence shows a gap. No keyword stuffing, fake backlinks/reviews, or manufactured community activity.
-6. Public copy follows `docs/PUBLIC_COPY_STYLE.md`: user language first, high-frequency functions first, and unreleased capabilities labeled by stage before explanation.
+1. Implement #139 as one focused iOS correctness PR.
+2. Never add a POST retry. Once a POST is dispatched, recovery may use authenticated GET only.
+3. For the observed phrase CREATE false-negative class, allow a small bounded GET-only confirmation window rather than treating the first visibility/readback miss as final failure.
+4. Preserve a compact local diagnostic trail sufficient to distinguish POST dispatch state, readback failure category, decoded-match counts/mismatch category, and final outcome without storing Token/Auth/Cookie/raw Maimemo IDs or raw private batch bodies in shareable diagnostics.
+5. Use the existing History/receipt surface if practical; do not build a remote analytics/logging system.
+6. Unresolved dispatched writes still stop later writes and must tell the user not to repeat the write blindly; a later re-Preview is the safe manual check.
+7. Treat #139 as a fix to include before the next broader TestFlight promotion.
+
+## Parallel route — AI search / public deployment
+
+1. Publish current `davidqyc/jiripple-public-site` through the existing Tencent SCF production function; GitHub repository state alone is not deployment success.
+2. The current public-site runtime/build tooling already supports `/xiaoheiniao/`, `/xiaoheiniao/context.md`, `/llms.txt`, `/robots.txt`, `/sitemap.xml`, and existing ReliableReader paths while keeping repo/admin files non-routable.
+3. Let an authorized Codex session reuse the machine's existing Tencent Cloud auth/current function rather than making the Owner manually upload a package. Do not create a new function, alter DNS/certificates/mail, or replace unrelated cloud configuration.
+4. After live-route verification succeeds, return to #126 benchmark measurement. Do not keep changing AEO copy while waiting for crawl/index signals.
+5. Public copy follows `docs/PUBLIC_COPY_STYLE.md`: user language first, high-frequency functions first, and unreleased capabilities labeled by stage before explanation.
 
 ## Release gate — reading capture
 
-This runs in parallel and does not block AEO work:
+This runs after the correctness fix and does not need more architecture work now:
 
 1. register/verify App Group `group.com.jiripple.xiaoheiniao.capture` for the app and Share Extension, then refresh provisioning as required;
 2. physically compare Shortcut vs Share on iPhone, focusing on actual daily friction rather than an interoperability matrix;
@@ -62,10 +73,11 @@ This runs in parallel and does not block AEO work:
 
 - Preview is not write authorization;
 - changed items max one POST and no automatic POST retry;
-- dispatched writes require authenticated readback; uncertain outcomes use GET-only recovery;
+- dispatched writes require authenticated readback; uncertain/unconfirmed outcomes may use bounded GET-only recovery;
 - UPDATE targets only explicit authenticated-user records; ambiguity blocks;
 - no automatic delete/rollback/replay;
 - personal API Tokens and private learning data must not enter Git, logs, review artifacts or public examples;
+- local diagnostics must not become a remote telemetry path and sanitized export must exclude Token/Auth/Cookie/raw Maimemo IDs/private payloads by default;
 - Shortcut/App Intent and Share capture remain pre-Preview input surfaces only;
 - Share Extension/App Group must never contain or gain access to the personal Maimemo Token;
 - browser-extension work remains blocked on first-party contract evidence;
