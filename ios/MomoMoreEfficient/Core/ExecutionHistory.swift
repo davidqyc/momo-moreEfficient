@@ -7,6 +7,29 @@ enum ReceiptContentKind: String, Codable, Equatable, Sendable {
     var displayLabel: String { self == .interpretation ? "释义" : "例句" }
 }
 
+struct DiagnosticEnvironment: Codable, Equatable, Sendable {
+    let appVersion: String
+    let appBuild: String
+    let systemVersion: String
+
+    static var current: DiagnosticEnvironment {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return DiagnosticEnvironment(
+            appVersion: info["CFBundleShortVersionString"] as? String ?? "未知",
+            appBuild: info["CFBundleVersion"] as? String ?? "未知",
+            systemVersion: ProcessInfo.processInfo.operatingSystemVersionString
+        )
+    }
+
+    static let legacy = DiagnosticEnvironment(
+        appVersion: "历史版本未记录",
+        appBuild: "历史版本未记录",
+        systemVersion: "历史版本未记录"
+    )
+
+    var appVersionAndBuild: String { "\(appVersion) (\(appBuild))" }
+}
+
 struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let timestamp: Date
@@ -14,9 +37,11 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     let operationGroup: OperationGroup
     let succeeded: Int
     let failed: Int
+    let unconfirmed: Int
     let notAttempted: Int
     let stopped: Bool
     let items: [ExecutionReceiptItem]
+    let diagnosticEnvironment: DiagnosticEnvironment
 
     init(
         id: UUID = UUID(),
@@ -24,53 +49,85 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         contentKind: ReceiptContentKind = .interpretation,
         operationGroup: OperationGroup,
         selectedSpellings: [String],
-        result: ExecutionSummary
+        result: ExecutionSummary,
+        diagnosticEnvironment: DiagnosticEnvironment = .current
     ) {
         self.id = id
         self.timestamp = timestamp
         self.contentKind = contentKind
         self.operationGroup = operationGroup
+        self.diagnosticEnvironment = diagnosticEnvironment
         items = selectedSpellings.enumerated().map { index, spelling in
             ExecutionReceiptItem(
+                ordinal: result.results.indices.contains(index)
+                    ? result.results[index].diagnostic?.ordinal ?? index + 1
+                    : index + 1,
                 spelling: spelling,
                 finalOutcome: result.results.indices.contains(index)
                     ? result.results[index].outcome
-                    : .notAttempted
+                    : .notAttempted,
+                diagnostic: result.results.indices.contains(index)
+                    ? result.results[index].diagnostic
+                    : nil
             )
         }
         succeeded = items.count { $0.finalOutcome == .confirmed || $0.finalOutcome == .recovered }
-        failed = items.count { $0.finalOutcome == .notVerified }
+        unconfirmed = items.count {
+            $0.finalOutcome == .notVerified
+                && $0.diagnostic?.postDispatch.wasDispatched == true
+        }
+        failed = items.count {
+            $0.finalOutcome == .notVerified
+                && $0.diagnostic?.postDispatch.wasDispatched != true
+        }
         notAttempted = items.count { $0.finalOutcome == .notAttempted }
-        stopped = result.cancelled || notAttempted > 0
+        stopped = result.cancelled || failed > 0 || unconfirmed > 0 || notAttempted > 0
     }
 
     init(
         id: UUID = UUID(),
         timestamp: Date = Date(),
         selectedSpellings: [String],
-        result: PhraseExecutionSummary
+        result: PhraseExecutionSummary,
+        diagnosticEnvironment: DiagnosticEnvironment = .current
     ) {
         self.id = id
         self.timestamp = timestamp
         contentKind = .phrase
         operationGroup = .create
+        self.diagnosticEnvironment = diagnosticEnvironment
         items = selectedSpellings.enumerated().map { index, spelling in
             ExecutionReceiptItem(
+                ordinal: result.results.indices.contains(index)
+                    ? result.results[index].diagnostic?.ordinal ?? index + 1
+                    : index + 1,
                 spelling: spelling,
                 finalOutcome: result.results.indices.contains(index)
                     ? result.results[index].outcome
-                    : .notAttempted
+                    : .notAttempted,
+                diagnostic: result.results.indices.contains(index)
+                    ? result.results[index].diagnostic
+                    : nil
             )
         }
         succeeded = items.count { $0.finalOutcome == .confirmed || $0.finalOutcome == .recovered }
-        failed = items.count { $0.finalOutcome == .notVerified }
+        unconfirmed = items.count {
+            $0.finalOutcome == .notVerified
+                && $0.diagnostic?.postDispatch.wasDispatched == true
+        }
+        failed = items.count {
+            $0.finalOutcome == .notVerified
+                && $0.diagnostic?.postDispatch.wasDispatched != true
+        }
         notAttempted = items.count { $0.finalOutcome == .notAttempted }
-        stopped = result.cancelled || result.stalePreview || failed > 0 || notAttempted > 0
+        stopped = result.cancelled || result.stalePreview || failed > 0
+            || unconfirmed > 0 || notAttempted > 0
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, contentKind, operationGroup
-        case succeeded, failed, notAttempted, stopped, items
+        case succeeded, failed, unconfirmed, notAttempted, stopped, items
+        case diagnosticEnvironment
     }
 
     init(from decoder: Decoder) throws {
@@ -82,13 +139,19 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         operationGroup = try values.decode(OperationGroup.self, forKey: .operationGroup)
         succeeded = try values.decode(Int.self, forKey: .succeeded)
         failed = try values.decode(Int.self, forKey: .failed)
+        unconfirmed = try values.decodeIfPresent(Int.self, forKey: .unconfirmed) ?? 0
         notAttempted = try values.decode(Int.self, forKey: .notAttempted)
         stopped = try values.decode(Bool.self, forKey: .stopped)
         items = try values.decode([ExecutionReceiptItem].self, forKey: .items)
+        diagnosticEnvironment = try values.decodeIfPresent(
+            DiagnosticEnvironment.self,
+            forKey: .diagnosticEnvironment
+        ) ?? .legacy
     }
 
     var isFullSuccess: Bool {
-        let allItemsVerified = succeeded == items.count && failed == 0 && notAttempted == 0
+        let allItemsVerified = succeeded == items.count && failed == 0
+            && unconfirmed == 0 && notAttempted == 0
         switch contentKind {
         case .interpretation:
             // Preserve the pre-#84 interpretation contract: a cancellation flag
@@ -100,11 +163,96 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
             return !stopped && allItemsVerified
         }
     }
+
+    var hasDiagnosticDetails: Bool { items.contains { $0.diagnostic != nil } }
+
+    /// A self-contained bug-report excerpt assembled only from the closed local
+    /// diagnostic model. It has no access to credentials, IDs, routes, request
+    /// bodies or raw responses, so those values cannot accidentally be exported.
+    var sanitizedDiagnosticText: String {
+        let formatter = ISO8601DateFormatter()
+        var lines = [
+            "小黑鸟伴侣诊断",
+            "版本：\(diagnosticEnvironment.appVersionAndBuild)",
+            "iOS：\(diagnosticEnvironment.systemVersion)",
+            "时间：\(formatter.string(from: timestamp))",
+            "内容：\(contentKind.displayLabel) [\(contentKind.rawValue)]",
+            "操作：\(operationGroup == .create ? "新建" : "更新") [\(operationGroup.rawValue)]",
+        ]
+
+        for (index, item) in items.enumerated() {
+            let ordinal = item.ordinal > 0 ? item.ordinal : index + 1
+            lines.append("第 \(ordinal) 条：\(item.spelling)")
+            lines.append("结果：\(item.outcomeDisplayLabel) [\(item.finalOutcome.rawValue)]")
+            guard let diagnostic = item.diagnostic else {
+                lines.append("诊断：此历史版本未记录")
+                continue
+            }
+            lines.append(
+                "POST：\(diagnostic.postDispatch.displayLabel) [\(diagnostic.postDispatch.diagnosticCode)]"
+            )
+            lines.append("回读次数：\(diagnostic.readbackAttempts.count)")
+            for (attemptIndex, attempt) in diagnostic.readbackAttempts.enumerated() {
+                var detail = "回读 \(attemptIndex + 1)：\(attempt.category.displayLabel) [\(attempt.category.rawValue)]"
+                if let facts = attempt.phraseFacts {
+                    detail += "；有效记录 \(facts.activeRecordCount)；相同英文 \(facts.sameEnglishCount)"
+                    if !facts.mismatchKeys.isEmpty {
+                        detail += "；不一致字段 "
+                            + facts.mismatchKeys.map(\.rawValue).joined(separator: ",")
+                    }
+                }
+                lines.append(detail)
+            }
+            lines.append(
+                "终止错误：\(diagnostic.terminalErrorCategory?.rawValue ?? "无")"
+            )
+        }
+        return lines.joined(separator: "\n")
+    }
 }
 
 struct ExecutionReceiptItem: Codable, Equatable, Sendable {
+    let ordinal: Int
     let spelling: String
     let finalOutcome: WriteOutcome
+    let diagnostic: WriteAttemptDiagnostic?
+
+    init(
+        ordinal: Int,
+        spelling: String,
+        finalOutcome: WriteOutcome,
+        diagnostic: WriteAttemptDiagnostic? = nil
+    ) {
+        self.ordinal = ordinal
+        self.spelling = spelling
+        self.finalOutcome = finalOutcome
+        self.diagnostic = diagnostic
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ordinal, spelling, finalOutcome, diagnostic
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        ordinal = try values.decodeIfPresent(Int.self, forKey: .ordinal) ?? 0
+        spelling = try values.decode(String.self, forKey: .spelling)
+        finalOutcome = try values.decode(WriteOutcome.self, forKey: .finalOutcome)
+        diagnostic = try values.decodeIfPresent(
+            WriteAttemptDiagnostic.self,
+            forKey: .diagnostic
+        )
+    }
+
+    var outcomeDisplayLabel: String {
+        switch finalOutcome {
+        case .confirmed: return "已确认"
+        case .recovered: return "已恢复确认"
+        case .notVerified:
+            return diagnostic?.postDispatch.wasDispatched == true ? "未确认" : "失败"
+        case .notAttempted: return "未执行"
+        }
+    }
 }
 
 protocol HistoryStore {

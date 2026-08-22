@@ -564,20 +564,28 @@ struct ContentView: View {
     private var stalePreviewRow: some View {
         if viewModel.isPreviewStale {
             HStack(spacing: 10) {
-                Text("需重新预览后才能写入")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                Spacer()
-                Button("重新预览") {
-                    Task { await viewModel.previewCurrentInput() }
+                if viewModel.isPreviewing {
+                    ProgressView()
+                    Text(previewLoadingTitle(repreview: true))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                } else {
+                    Text("需重新预览后才能写入")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("重新预览") {
+                        Task { await viewModel.previewCurrentInput() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .disabled(
+                        !viewModel.isConnected
+                            || !viewModel.localParseState.isValid
+                            || viewModel.isBusy
+                    )
                 }
-                .font(.subheadline.weight(.semibold))
-                .buttonStyle(.borderless)
-                .disabled(
-                    !viewModel.isConnected
-                        || !viewModel.localParseState.isValid
-                        || viewModel.isBusy
-                )
             }
             .listRowBackground(Color(.systemOrange).opacity(0.12))
         }
@@ -692,7 +700,7 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 if viewModel.isPreviewing {
                     ProgressView()
-                    Text(previewLoadingTitle)
+                    Text(previewLoadingTitle())
                 } else {
                     Text("预览")
                 }
@@ -779,22 +787,7 @@ struct ContentView: View {
     private var feedbackView: some View {
         if viewModel.hasExecutionFeedback {
             VStack(alignment: .leading, spacing: 3) {
-                Group {
-                    if viewModel.contentMode == .phrase {
-                        Text(
-                            "例句新建成功 \(viewModel.finalSummary.created) · "
-                                + "失败 \(viewModel.finalSummary.failed) · "
-                                + "未执行 \(viewModel.finalSummary.notAttempted)"
-                        )
-                    } else {
-                        Text(
-                            "新建成功 \(viewModel.finalSummary.created) · "
-                                + "更新成功 \(viewModel.finalSummary.updated) · "
-                                + "失败 \(viewModel.finalSummary.failed) · "
-                                + "未执行 \(viewModel.finalSummary.notAttempted)"
-                        )
-                    }
-                }
+                Text(executionFeedbackSummary)
                 .font(.footnote.monospacedDigit())
                 if let stoppedMessage = viewModel.finalSummary.stoppedMessage {
                     Text(stoppedMessage)
@@ -818,6 +811,28 @@ struct ContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.red)
         }
+    }
+
+    private var executionFeedbackSummary: String {
+        var parts: [String]
+        if viewModel.contentMode == .phrase {
+            parts = ["例句新建成功 \(viewModel.finalSummary.created)"]
+        } else {
+            parts = [
+                "新建成功 \(viewModel.finalSummary.created)",
+                "更新成功 \(viewModel.finalSummary.updated)",
+            ]
+        }
+        if viewModel.finalSummary.unconfirmed > 0 {
+            parts.append("未确认 \(viewModel.finalSummary.unconfirmed)")
+        }
+        if viewModel.finalSummary.failed > 0 {
+            parts.append("失败 \(viewModel.finalSummary.failed)")
+        }
+        if viewModel.finalSummary.notAttempted > 0 {
+            parts.append("未执行 \(viewModel.finalSummary.notAttempted)")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var tokenSheet: some View {
@@ -924,7 +939,13 @@ struct ContentView: View {
         isSubmittingToken || viewModel.isValidatingCredential
     }
 
-    private var previewLoadingTitle: String {
+    private func previewLoadingTitle(repreview: Bool = false) -> String {
+        if repreview {
+            if let progress = viewModel.previewProgress {
+                return "正在重新预览 \(progress.entry)/\(progress.total)…"
+            }
+            return "正在重新预览…"
+        }
         // Real per-entry read progress once the first entry has been reached.
         if let progress = viewModel.previewProgressLabel { return progress }
         if case let .valid(count, _, _) = viewModel.localParseState {
@@ -1159,6 +1180,7 @@ private struct HistoryRow: View {
         if receipt.isFullSuccess { return "成功" }
         var parts: [String] = []
         if receipt.succeeded > 0 { parts.append("\(receipt.succeeded) 成功") }
+        if receipt.unconfirmed > 0 { parts.append("\(receipt.unconfirmed) 未确认") }
         if receipt.failed > 0 { parts.append("\(receipt.failed) 失败") }
         if receipt.notAttempted > 0 { parts.append("\(receipt.notAttempted) 未执行") }
         return parts.joined(separator: " / ")
@@ -1180,13 +1202,52 @@ private struct HistoryDetailView: View {
                 LabeledContent("内容", value: receipt.contentKind.displayLabel)
                 LabeledContent("操作", value: receipt.operationGroup == .create ? "CREATE" : "UPDATE")
                 LabeledContent("成功", value: "\(receipt.succeeded)")
+                LabeledContent("未确认", value: "\(receipt.unconfirmed)")
                 LabeledContent("失败", value: "\(receipt.failed)")
                 LabeledContent("未执行", value: "\(receipt.notAttempted)")
                 LabeledContent("已停止", value: receipt.stopped ? "是" : "否")
             }
             Section("条目") {
                 ForEach(Array(receipt.items.enumerated()), id: \.offset) { _, item in
-                    LabeledContent(item.spelling, value: outcomeLabel(item.finalOutcome))
+                    LabeledContent(item.spelling, value: item.outcomeDisplayLabel)
+                }
+            }
+            if receipt.hasDiagnosticDetails {
+                Section("诊断") {
+                    ForEach(Array(receipt.items.enumerated()), id: \.offset) { index, item in
+                        if let diagnostic = item.diagnostic {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("第 \(item.ordinal > 0 ? item.ordinal : index + 1) 条 · \(item.spelling)")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("POST：\(diagnostic.postDispatch.displayLabel)")
+                                Text(
+                                    "回读：" + (diagnostic.readbackAttempts.isEmpty
+                                        ? "0 次"
+                                        : diagnostic.readbackAttempts
+                                            .map { $0.category.displayLabel }
+                                            .joined(separator: " → "))
+                                )
+                                if let facts = diagnostic.readbackAttempts.last?.phraseFacts {
+                                    Text(
+                                        "记录：有效 \(facts.activeRecordCount) · 相同英文 \(facts.sameEnglishCount)"
+                                    )
+                                    if !facts.mismatchKeys.isEmpty {
+                                        Text(
+                                            "不一致："
+                                                + facts.mismatchKeys.map(\.rawValue)
+                                                    .joined(separator: "、")
+                                        )
+                                    }
+                                }
+                                if let terminal = diagnostic.terminalErrorCategory {
+                                    Text("终止错误：\(terminal.rawValue)")
+                                }
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    ShareLink("复制或分享诊断信息", item: receipt.sanitizedDiagnosticText)
                 }
             }
         }
@@ -1194,12 +1255,4 @@ private struct HistoryDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func outcomeLabel(_ outcome: WriteOutcome) -> String {
-        switch outcome {
-        case .confirmed: return "已确认"
-        case .recovered: return "已恢复确认"
-        case .notVerified: return "未确认"
-        case .notAttempted: return "未执行"
-        }
-    }
 }

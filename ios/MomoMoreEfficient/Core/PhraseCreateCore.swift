@@ -61,6 +61,15 @@ struct PhraseRecord: Equatable, Sendable {
             && status == CompanionConstants.status
     }
 
+    func hardMismatchKeys(_ entry: PhraseBatchEntry) -> [PhraseMismatchKey] {
+        var keys: [PhraseMismatchKey] = []
+        if phrase != entry.english { keys.append(.english) }
+        if interpretation != entry.chinese { keys.append(.chinese) }
+        if let source = entry.source, origin != source { keys.append(.source) }
+        if status != CompanionConstants.status { keys.append(.status) }
+        return keys
+    }
+
     func observations(for entry: PhraseBatchEntry, tags intendedTags: [String])
         -> [PhraseObservation]
     {
@@ -239,6 +248,19 @@ struct PhraseItemExecutionResult: Equatable, Sendable {
     let spelling: String
     let outcome: WriteOutcome
     let observations: [PhraseObservation]
+    let diagnostic: WriteAttemptDiagnostic?
+
+    init(
+        spelling: String,
+        outcome: WriteOutcome,
+        observations: [PhraseObservation],
+        diagnostic: WriteAttemptDiagnostic? = nil
+    ) {
+        self.spelling = spelling
+        self.outcome = outcome
+        self.observations = observations
+        self.diagnostic = diagnostic
+    }
 }
 
 struct PhraseExecutionSummary: Equatable, Sendable {
@@ -628,6 +650,11 @@ enum PhraseCreateBinding {
 struct PhraseWriteExecutor {
     let api: MaimemoTransport
 
+    /// The first readback remains immediate. Two further paced GETs tolerate the
+    /// observed short visibility lag while keeping total latency and API pressure
+    /// bounded. No path through this window can dispatch another POST.
+    private static let maximumReadbackAttempts = 3
+
     func execute(
         displayedSnapshot: PhrasePreviewSnapshot,
         approval: PhraseCreateApproval,
@@ -709,56 +736,52 @@ struct PhraseWriteExecutor {
                         PhraseItemExecutionResult(
                             spelling: item.entry.spelling,
                             outcome: .notAttempted,
-                            observations: []
+                            observations: [],
+                            diagnostic: WriteAttemptDiagnostic(
+                                ordinal: item.entry.ordinal,
+                                postDispatch: .notDispatched,
+                                readbackAttempts: [],
+                                terminalErrorCategory: nil
+                            )
                         )
                     )
                     break
                 }
 
-                let records: [PhraseRecord]
-                do {
-                    records = try await api.phrases(
-                        vocabularyID: item.vocabularyID,
-                        control: control,
-                        readback: true
-                    )
-                } catch let error as CompanionError where error == .authenticationRejected {
-                    control.finishPostResolution()
-                    failed += 1
-                    terminalError = error
-                    results.append(
-                        PhraseItemExecutionResult(
-                            spelling: item.entry.spelling,
-                            outcome: .notVerified,
-                            observations: []
-                        )
-                    )
-                    break
-                } catch {
-                    control.finishPostResolution()
-                    failed += 1
-                    results.append(
-                        PhraseItemExecutionResult(
-                            spelling: item.entry.spelling,
-                            outcome: .notVerified,
-                            observations: []
-                        )
-                    )
-                    break
-                }
+                let confirmation = await confirmPhrase(
+                    item: item,
+                    control: control
+                )
                 control.finishPostResolution()
+                let diagnostic = WriteAttemptDiagnostic(
+                    ordinal: item.entry.ordinal,
+                    postDispatch: dispatch.diagnosticCategory,
+                    readbackAttempts: confirmation.attempts,
+                    terminalErrorCategory: confirmation.terminalError
+                )
 
-                let sameEnglish = records.filter {
-                    $0.status == CompanionConstants.status
-                        && $0.phrase == item.entry.english
+                if confirmation.terminalError == .authenticationRejected {
+                    failed += 1
+                    terminalError = .authenticationRejected
+                    results.append(
+                        PhraseItemExecutionResult(
+                            spelling: item.entry.spelling,
+                            outcome: .notVerified,
+                            observations: [],
+                            diagnostic: diagnostic
+                        )
+                    )
+                    break
                 }
-                guard sameEnglish.count == 1, sameEnglish[0].hardMatches(item.entry) else {
+
+                guard let matched = confirmation.matchedRecord else {
                     failed += 1
                     results.append(
                         PhraseItemExecutionResult(
                             spelling: item.entry.spelling,
                             outcome: .notVerified,
-                            observations: []
+                            observations: [],
+                            diagnostic: diagnostic
                         )
                     )
                     break
@@ -768,21 +791,29 @@ struct PhraseWriteExecutor {
                 results.append(
                     PhraseItemExecutionResult(
                         spelling: item.entry.spelling,
-                        outcome: dispatch == .clean ? .confirmed : .recovered,
-                        observations: sameEnglish[0].observations(
+                        outcome: dispatch.isClean2xx ? .confirmed : .recovered,
+                        observations: matched.observations(
                             for: item.entry,
                             tags: plan.tags
-                        )
+                        ),
+                        diagnostic: diagnostic
                     )
                 )
             } catch {
                 if control.allowsInFlightReadback() { control.finishPostResolution() }
                 failed += 1
+                let companionError = error as? CompanionError ?? .responseRejected
                 results.append(
                     PhraseItemExecutionResult(
                         spelling: item.entry.spelling,
                         outcome: .notVerified,
-                        observations: []
+                        observations: [],
+                        diagnostic: WriteAttemptDiagnostic(
+                            ordinal: item.entry.ordinal,
+                            postDispatch: .notDispatched,
+                            readbackAttempts: [],
+                            terminalErrorCategory: companionError
+                        )
                     )
                 )
                 break
@@ -798,4 +829,107 @@ struct PhraseWriteExecutor {
             terminalError: terminalError
         )
     }
+
+    private struct ConfirmationResult {
+        let matchedRecord: PhraseRecord?
+        let attempts: [ReadbackAttemptDiagnostic]
+        let terminalError: CompanionError?
+    }
+
+    private func confirmPhrase(
+        item: PhraseConfirmationPlan.Item,
+        control: ExecutionControl
+    ) async -> ConfirmationResult {
+        var attempts: [ReadbackAttemptDiagnostic] = []
+        var terminalError: CompanionError?
+
+        for attemptNumber in 1...Self.maximumReadbackAttempts {
+            do {
+                let records = try await api.phrases(
+                    vocabularyID: item.vocabularyID,
+                    control: control,
+                    readback: true
+                )
+                terminalError = nil
+                let evaluation = evaluatePhraseReadback(records, expected: item.entry)
+                attempts.append(evaluation.diagnostic)
+                if let matched = evaluation.matchedRecord {
+                    return ConfirmationResult(
+                        matchedRecord: matched,
+                        attempts: attempts,
+                        terminalError: nil
+                    )
+                }
+                guard evaluation.diagnostic.category.isRetryablePhraseConfirmationFailure,
+                      attemptNumber < Self.maximumReadbackAttempts
+                else {
+                    break
+                }
+            } catch {
+                let companionError = error as? CompanionError ?? .responseRejected
+                let category = ReadbackCategory(error: companionError)
+                attempts.append(ReadbackAttemptDiagnostic(category: category))
+                terminalError = companionError
+                guard companionError != .cancelled,
+                      category.isRetryablePhraseConfirmationFailure,
+                      attemptNumber < Self.maximumReadbackAttempts
+                else {
+                    break
+                }
+            }
+        }
+        return ConfirmationResult(
+            matchedRecord: nil,
+            attempts: attempts,
+            terminalError: terminalError
+        )
+    }
+
+    private func evaluatePhraseReadback(
+        _ records: [PhraseRecord],
+        expected entry: PhraseBatchEntry
+    ) -> (matchedRecord: PhraseRecord?, diagnostic: ReadbackAttemptDiagnostic) {
+        let active = records.filter { $0.status == CompanionConstants.status }
+        let sameEnglish = active.filter { $0.phrase == entry.english }
+        var mismatchKeys: [PhraseMismatchKey] = []
+
+        let category: ReadbackCategory
+        let matched: PhraseRecord?
+        if sameEnglish.count > 1 {
+            category = .targetAmbiguous
+            matched = nil
+        } else if let candidate = sameEnglish.first {
+            mismatchKeys = candidate.hardMismatchKeys(entry)
+            if mismatchKeys.isEmpty {
+                category = .success
+                matched = candidate
+            } else {
+                category = .intendedStateMismatch
+                matched = nil
+            }
+        } else {
+            // A deleted same-English tombstone may be visible before the new
+            // active record. Retain only the safe status mismatch fact, but keep
+            // treating the target as temporarily not visible inside the window.
+            let inactiveSameEnglish = records.filter { $0.phrase == entry.english }
+            if inactiveSameEnglish.count == 1 {
+                mismatchKeys = inactiveSameEnglish[0].hardMismatchKeys(entry)
+            }
+            category = .targetNotVisible
+            matched = nil
+        }
+
+        return (
+            matched,
+            ReadbackAttemptDiagnostic(
+                category: category,
+                phraseFacts: PhraseReadbackFacts(
+                    activeRecordCount: active.count,
+                    sameEnglishCount: sameEnglish.count,
+                    mismatchKeys: mismatchKeys
+                )
+            )
+        )
+    }
+
 }

@@ -320,7 +320,16 @@ struct WriteExecutor {
                 let dispatch = await api.post(route: route, body: body, control: control)
                 guard dispatch != .notDispatched else {
                     results.append(
-                        ItemExecutionResult(spelling: item.spelling, outcome: .notAttempted)
+                        ItemExecutionResult(
+                            spelling: item.spelling,
+                            outcome: .notAttempted,
+                            diagnostic: WriteAttemptDiagnostic(
+                                ordinal: item.ordinal,
+                                postDispatch: .notDispatched,
+                                readbackAttempts: [],
+                                terminalErrorCategory: nil
+                            )
+                        )
                     )
                     break
                 }
@@ -337,26 +346,87 @@ struct WriteExecutor {
                     failed += 1
                     terminalError = error
                     results.append(
-                        ItemExecutionResult(spelling: item.spelling, outcome: .notVerified)
+                        ItemExecutionResult(
+                            spelling: item.spelling,
+                            outcome: .notVerified,
+                            diagnostic: WriteAttemptDiagnostic(
+                                ordinal: item.ordinal,
+                                postDispatch: dispatch.diagnosticCategory,
+                                readbackAttempts: [ReadbackAttemptDiagnostic(
+                                    category: ReadbackCategory(error: error)
+                                )],
+                                terminalErrorCategory: error
+                            )
+                        )
+                    )
+                    break
+                } catch let error as CompanionError {
+                    control.finishPostResolution()
+                    failed += 1
+                    results.append(
+                        ItemExecutionResult(
+                            spelling: item.spelling,
+                            outcome: .notVerified,
+                            diagnostic: WriteAttemptDiagnostic(
+                                ordinal: item.ordinal,
+                                postDispatch: dispatch.diagnosticCategory,
+                                readbackAttempts: [ReadbackAttemptDiagnostic(
+                                    category: ReadbackCategory(error: error)
+                                )],
+                                terminalErrorCategory: error
+                            )
+                        )
                     )
                     break
                 } catch {
                     control.finishPostResolution()
                     failed += 1
                     results.append(
-                        ItemExecutionResult(spelling: item.spelling, outcome: .notVerified)
+                        ItemExecutionResult(
+                            spelling: item.spelling,
+                            outcome: .notVerified,
+                            diagnostic: WriteAttemptDiagnostic(
+                                ordinal: item.ordinal,
+                                postDispatch: dispatch.diagnosticCategory,
+                                readbackAttempts: [ReadbackAttemptDiagnostic(
+                                    category: .responseSchemaRejected
+                                )],
+                                terminalErrorCategory: .responseRejected
+                            )
+                        )
                     )
                     break
                 }
                 control.finishPostResolution()
 
-                guard records.count == 1,
-                      records[0].matchesIntendedState(item.interpretation, tags: plan.tags),
-                      plan.group != .update || records[0].id == item.baseline?.id
-                else {
+                let readbackCategory: ReadbackCategory
+                if records.isEmpty {
+                    readbackCategory = .targetNotVisible
+                } else if records.count > 1 {
+                    readbackCategory = .targetAmbiguous
+                } else if records[0].matchesIntendedState(
+                    item.interpretation,
+                    tags: plan.tags
+                ), plan.group != .update || records[0].id == item.baseline?.id {
+                    readbackCategory = .success
+                } else {
+                    readbackCategory = .intendedStateMismatch
+                }
+                let diagnostic = WriteAttemptDiagnostic(
+                    ordinal: item.ordinal,
+                    postDispatch: dispatch.diagnosticCategory,
+                    readbackAttempts: [ReadbackAttemptDiagnostic(category: readbackCategory)],
+                    terminalErrorCategory: nil
+                )
+
+                guard readbackCategory == .success else {
                     failed += 1
                     results.append(
-                        ItemExecutionResult(spelling: item.spelling, outcome: .notVerified)
+                        ItemExecutionResult(
+                            spelling: item.spelling,
+                            outcome: .notVerified,
+                            diagnostic: diagnostic
+                        )
                     )
                     break
                 }
@@ -364,13 +434,26 @@ struct WriteExecutor {
                 results.append(
                     ItemExecutionResult(
                         spelling: item.spelling,
-                        outcome: dispatch == .clean ? .confirmed : .recovered
+                        outcome: dispatch.isClean2xx ? .confirmed : .recovered,
+                        diagnostic: diagnostic
                     )
                 )
             } catch {
                 if control.allowsInFlightReadback() { control.finishPostResolution() }
                 failed += 1
-                results.append(ItemExecutionResult(spelling: item.spelling, outcome: .notVerified))
+                results.append(
+                    ItemExecutionResult(
+                        spelling: item.spelling,
+                        outcome: .notVerified,
+                        diagnostic: WriteAttemptDiagnostic(
+                            ordinal: item.ordinal,
+                            postDispatch: .notDispatched,
+                            readbackAttempts: [],
+                            terminalErrorCategory: error as? CompanionError
+                                ?? .responseRejected
+                        )
+                    )
+                )
                 break
             }
         }

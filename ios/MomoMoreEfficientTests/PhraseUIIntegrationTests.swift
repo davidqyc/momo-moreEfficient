@@ -68,7 +68,11 @@ final class PhraseUIIntegrationTests: XCTestCase {
         await model.executeConfirmedPhrase()?.value
 
         XCTAssertFalse(model.isConnected)
-        XCTAssertEqual(model.errorMessage, CompanionError.authenticationRejected.description)
+        XCTAssertEqual(
+            model.errorMessage,
+            CompanionError.authenticationRejected.description + "\n"
+                + CompanionError.uncertainWriteOutcome.description
+        )
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
         XCTAssertEqual(model.history.count, 1)
         XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.notVerified])
@@ -264,7 +268,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
         XCTAssertNil(model.phrasePreview)
         XCTAssertFalse(model.hasExecutablePreview)
         XCTAssertEqual(model.history.first?.contentKind, .phrase)
-        XCTAssertEqual(model.history.first?.failed, 1)
+        XCTAssertEqual(model.history.first?.failed, 0)
+        XCTAssertEqual(model.history.first?.unconfirmed, 1)
         XCTAssertEqual(model.history.first?.notAttempted, 1)
         XCTAssertEqual(factory.transports.last?.postCount, 1)
     }

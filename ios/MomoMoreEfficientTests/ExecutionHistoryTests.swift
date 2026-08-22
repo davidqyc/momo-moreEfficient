@@ -3,6 +3,13 @@ import XCTest
 @testable import MomoMoreEfficient
 
 final class ExecutionHistoryTests: XCTestCase {
+    func testUnconfirmedWriteGuidanceDoesNotDescribeDispatchedPOSTAsOrdinaryFailure() {
+        XCTAssertEqual(
+            CompanionError.uncertainWriteOutcome.description,
+            "写入已发出，但暂时无法确认结果。不要重复执行；稍后重新预览，已经写入的内容会显示为一致。"
+        )
+    }
+
     func testReceiptPreservesConfirmedAndRecoveredOutcomes() {
         let result = ExecutionSummary(
             group: .create,
@@ -176,6 +183,135 @@ final class ExecutionHistoryTests: XCTestCase {
         XCTAssertEqual(receipts.count, 1)
         XCTAssertEqual(receipts[0].contentKind, .interpretation)
         XCTAssertEqual(receipts[0].items.map(\.spelling), ["legacy"])
+        XCTAssertEqual(receipts[0].unconfirmed, 0)
+        XCTAssertEqual(receipts[0].diagnosticEnvironment, .legacy)
+    }
+
+    func testPhraseAndInterpretationReceiptsPreserveSharedDiagnosticData() throws {
+        let interpretationDiagnostic = WriteAttemptDiagnostic(
+            ordinal: 2,
+            postDispatch: .clean2xx(status: 201),
+            readbackAttempts: [ReadbackAttemptDiagnostic(category: .success)],
+            terminalErrorCategory: nil
+        )
+        let interpretationReceipt = ExecutionReceipt(
+            operationGroup: .update,
+            selectedSpellings: ["word"],
+            result: ExecutionSummary(
+                group: .update,
+                succeeded: 1,
+                failed: 0,
+                cancelled: false,
+                stalePreview: false,
+                results: [ItemExecutionResult(
+                    spelling: "word",
+                    outcome: .confirmed,
+                    diagnostic: interpretationDiagnostic
+                )]
+            )
+        )
+
+        let phraseDiagnostic = WriteAttemptDiagnostic(
+            ordinal: 4,
+            postDispatch: .transportFailure(errorCategory: .transport),
+            readbackAttempts: [ReadbackAttemptDiagnostic(
+                category: .targetNotVisible,
+                phraseFacts: PhraseReadbackFacts(
+                    activeRecordCount: 2,
+                    sameEnglishCount: 0,
+                    mismatchKeys: []
+                )
+            )],
+            terminalErrorCategory: .transport
+        )
+        let phraseReceipt = ExecutionReceipt(
+            selectedSpellings: ["phrase-word"],
+            result: PhraseExecutionSummary(
+                succeeded: 0,
+                failed: 1,
+                cancelled: false,
+                stalePreview: false,
+                results: [PhraseItemExecutionResult(
+                    spelling: "phrase-word",
+                    outcome: .notVerified,
+                    observations: [],
+                    diagnostic: phraseDiagnostic
+                )]
+            )
+        )
+
+        let data = try JSONEncoder().encode([interpretationReceipt, phraseReceipt])
+        let decoded = try JSONDecoder().decode([ExecutionReceipt].self, from: data)
+
+        XCTAssertEqual(decoded[0].items[0].diagnostic, interpretationDiagnostic)
+        XCTAssertEqual(decoded[1].items[0].diagnostic, phraseDiagnostic)
+        XCTAssertEqual(decoded[1].unconfirmed, 1)
+        XCTAssertEqual(decoded[1].failed, 0)
+    }
+
+    func testSanitizedDiagnosticExportContainsUsefulMetadataWithoutSecretsOrRawIDs() {
+        let environment = DiagnosticEnvironment(
+            appVersion: "1.2",
+            appBuild: "42",
+            systemVersion: "iOS 26.5"
+        )
+        let diagnostic = WriteAttemptDiagnostic(
+            ordinal: 4,
+            postDispatch: .clean2xx(status: 201),
+            readbackAttempts: [
+                ReadbackAttemptDiagnostic(
+                    category: .targetNotVisible,
+                    phraseFacts: PhraseReadbackFacts(
+                        activeRecordCount: 3,
+                        sameEnglishCount: 0,
+                        mismatchKeys: []
+                    )
+                ),
+                ReadbackAttemptDiagnostic(
+                    category: .intendedStateMismatch,
+                    phraseFacts: PhraseReadbackFacts(
+                        activeRecordCount: 4,
+                        sameEnglishCount: 1,
+                        mismatchKeys: [.chinese, .source]
+                    )
+                ),
+            ],
+            terminalErrorCategory: .responseRejected
+        )
+        let receipt = ExecutionReceipt(
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            selectedSpellings: ["board directors"],
+            result: PhraseExecutionSummary(
+                succeeded: 0,
+                failed: 1,
+                cancelled: false,
+                stalePreview: false,
+                results: [PhraseItemExecutionResult(
+                    spelling: "board directors",
+                    outcome: .notVerified,
+                    observations: [],
+                    diagnostic: diagnostic
+                )]
+            ),
+            diagnosticEnvironment: environment
+        )
+
+        let text = receipt.sanitizedDiagnosticText
+
+        for expected in [
+            "版本：1.2 (42)", "iOS：iOS 26.5", "第 4 条：board directors",
+            "结果：未确认 [notVerified]", "POST：HTTP 201 [clean2xx]",
+            "回读次数：2", "targetNotVisible", "intendedStateMismatch",
+            "有效记录 4", "相同英文 1", "chinese,source", "responseRejected",
+        ] {
+            XCTAssertTrue(text.contains(expected), expected)
+        }
+        for forbidden in [
+            fakeToken, "Bearer ", "Authorization:", "Cookie:",
+            "INVALID_RECORD", "INVALID_VOC", "PRIVATE_FULL_PAYLOAD_SENTINEL",
+        ] {
+            XCTAssertFalse(text.contains(forbidden), forbidden)
+        }
     }
 
     func testPhraseReceiptEncodingContainsOnlyAllowedReceiptFields() throws {
