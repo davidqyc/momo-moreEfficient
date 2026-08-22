@@ -1,156 +1,89 @@
-# AGENT_SKILLS_CONNECTOR
-
-status=ACTIVE
-source_repo=davidqyc/agent-skills
-source_branch=main
-project_instance=instances/momo-moreEfficient.yml
-
-本文件只负责把 momo-moreEfficient 路由到 Owner 的跨项目 Agent Skills。不要把 Skill 全文复制进本仓库。
-
-## 1. 读取顺序
-
-Owner 当前明确指令
-> 当前 GitHub Issue / 最新评论
-> `docs/decision-log.md`
-> `docs/PROJECT_STATE.md`
-> 本项目 `AGENTS.md`
-> 本 connector + project instance
-> 跨项目 Skill 默认
-
-跨项目 Skill 不覆盖本项目当前产品事实。
-
-## 2. Required cross-project skills
-
-从 `davidqyc/agent-skills@main` 读取：
-
-- `skills/owner-coordinator-high-value-delivery/SKILL.md`
-- `skills/anti-overengineering-mechanism-routing/SKILL.md`
-- `skills/fresh-context-architecture-reset/SKILL.md`
-- `skills/mechanism-memory-and-certainty-routing/SKILL.md`
-- `skills/coding-reasoning-depth-routing/SKILL.md`
-- `skills/claude-model-effort-routing/SKILL.md`
-- `skills/claude-code-english-output-boundary/SKILL.md`
-- `skills/multi-file-agent-dispatch/SKILL.md`
-- `skills/cloud-canonical-agent-handoff/SKILL.md`
-- `skills/owner-terminal-pre-send-enforcement/SKILL.md`
-
-再读取：
-
-`instances/momo-moreEfficient.yml`
-
-## 3. momo-specific routing
-
-### Normal bounded implementation
+# momo-moreEfficient ↔ agent-skills Connector
 
 ```text
-Builder = Codex / GPT-5.6 Sol
-Depth = High
-Execution = Single Agent
+status=CANONICAL_PROJECT_AGENT_SKILLS_CONNECTOR
+sourceRepo=davidqyc/agent-skills
+projectInstance=instances/momo-moreEfficient.yml
+connectorContract=PROJECT_CONNECTOR_CONTRACT.md
 ```
 
-### Real-write / credential / recovery change
+This file is intentionally a **thin routing entry**. It must not copy Skill bodies, maintain a second model/effort matrix, or store momo's current Issue/PR/WIP/next/dates.
+
+## Read order
+
+Resolve current project truth first:
 
 ```text
-Builder or Fresh Reviewer = GPT-5.6 Sol Extra or Claude Opus 5 Extra
-Execution = Single Agent
+latest explicit Owner instruction
+> current GitHub Issue / latest comments / PR
+> docs/decision-log.md
+> docs/PROJECT_STATE.md
+> AGENTS.md
+> davidqyc/agent-skills@main:instances/momo-moreEfficient.yml
+> cross-project Skill defaults
+> old prompts / chats
 ```
 
-具体看任务类型，不做永久模型排名。
+Cross-project Skills never override current product facts.
 
-### Architecture simplification checkpoint
+## Cross-project routing
 
-若出现以下任一信号，在继续派 Builder 前切 fresh architecture Agent：
-
-- 小机制合同超过一屏；
-- 低频 edge case 准备新增平行 executor / approval / binding / recovery stack；
-- proof/gate/harness 的复杂度超过被保护机制；
-- 同一机制连续修补而主要新增证明层；
-- Owner 明确质疑复杂度或 ROI。
-
-默认：
+Before a new/fresh formal external-Agent Prompt, live-read:
 
 ```text
-Model = Fable 5
-Product effort = Max
-Speed = Standard
-Execution = Single Agent
-Prompt language = English
-Output language = English
-Role = independent simplifier / architecture re-framer
+davidqyc/agent-skills@main:README.md
+skills/prompt-release-skill-preflight/SKILL.md
+instances/momo-moreEfficient.yml
 ```
 
-如果任务规模不需要最高能力，可用 Opus 5 / Extra；不要默认 Ultracode。
+Let the live Prompt-release preflight + project instance determine the task-relevant Skill set. Do not keep a manually duplicated Skill inventory in this file.
 
-成功标准是减少状态、合同或机制，或证明现有简单路线已足够；如果 Claude 只提出更大框架，不采用。
-
-## 4. Lightweight-product route
-
-momo-moreEfficient 是小型效率 App。默认顺序：
+For every coding-Agent model / reasoning-depth / effort decision, also apply the live JIT route:
 
 ```text
-real user pain / real safety risk
-→ cheapest safe fallback
-→ minimum mechanism
-→ bounded implementation
-→ proportionate validation
-→ real use
+skills/reasoning-depth-remote-preflight/SKILL.md
+→ skills/coding-reasoning-depth-routing/SKILL.md
+→ task/tool-specific additions as required
 ```
 
-不是：
+Do not inherit a previous round's depth by inertia.
+
+If an Owner-facing terminal/shell/bootstrap/recovery command is about to be sent, immediately before presentation apply:
 
 ```text
-new edge case
-→ complete automation contract
-→ new safety stack
-→ full proof suite
+skills/owner-terminal-pre-send-enforcement/SKILL.md
 ```
 
-低频 edge case 且人工 fallback 清楚、便宜时，默认 guard + 提示 + defer。
+Session-start reading does not satisfy that JIT gate.
 
-不要使用固定“发生 N 次”作为硬 Gate；看实际频率、损失半径、fallback 成本和是否已有真实外部用户。
+## Project-specific authority
 
-## 5. Review / rehearsal route
-
-Fresh independent review 默认只保留给：
-
-- 新真实写入操作类型；
-- credential / Keychain / identity / ownership 变化；
-- readback / unknown-outcome / recovery 变化；
-- 第一次外部分发 build；
-- 已出现跨多个安全不变量的实质 blocker。
-
-Parser、UI 文案/布局、block-only guard、docs/test-only change 默认 Builder 自测 + Coordinator 定向检查；需要时加一次 Owner smoke。
-
-实体 rehearsal 只在新写入类型第一次真实使用或设备 lifecycle 行为真正变化时默认需要。
-
-## 6. Claude language boundary
-
-所有 Claude coding / review / architecture Agent：
+momo-specific product/safety/risk/ROI behavior belongs in:
 
 ```text
-Prompt language: English
-Output language: English
+AGENTS.md
+docs/decision-log.md
+docs/PROJECT_STATE.md
+current Issue / PR / task authority
 ```
 
-中文 Owner 输入由 Coordinator 保真翻译；必须精确保留的中文 UI/错误/来源作为 task data 引用。
-
-## 7. Current reset rule
-
-2026-08-12 architecture reset 的长期结论：
-
-- 当前 merged App 不需要大重构；
-- 优先停止增加产品范围，而不是把现有复杂度抽象成框架；
-- 不自动补完整 phrase CRUD；
-- real use 的信息增益高于下一项假设性功能时，停止工程。
-
-## 8. Owner-facing terminal pre-send gate
-
-如果 momo-moreEfficient Coordinator / Agent 准备把 terminal / shell / sudo / bootstrap / recovery / local-repair 命令直接发给 Owner，必须在**发送前这一刻**重新读取：
+Stable project-specific Agent routing belongs in:
 
 ```text
-davidqyc/agent-skills@main:skills/owner-terminal-pre-send-enforcement/SKILL.md
+davidqyc/agent-skills@main:instances/momo-moreEfficient.yml
 ```
 
-并按其路由读取 `workstation-ops` 当前中央规则。不能用“本轮开始时已经读过 AGENTS/Skill”替代这个 just-in-time gate。
+Do not put dated architecture-reset conclusions or current release state back into this connector.
 
-任何未通过 executable-path、privilege-boundary、failure-evidence、evidence-monotonicity、known-prohibited-pattern 五项审查的命令，都先在 Agent 内部修正，不得交给 Owner 试错。项目只保留本段薄 adapter，不复制中央正文。
+## Failure behavior
+
+If `agent-skills` is unreadable:
+
+- do not claim current cross-project Agent routing was verified;
+- do not guess reasoning depth/model rules from this thin connector;
+- use project-local product/safety authority only for what it actually governs;
+- re-verify `agent-skills` before the next formal external-Agent Prompt or Owner-facing terminal command.
+
+Core rule:
+
+> Route, do not mirror.
