@@ -1,14 +1,18 @@
-# AI Search / AEO Benchmark
+# AI Search / GitHub AI Keyword Optimization Benchmark
 
-This document defines a repeatable measurement protocol for Issue #126. It is not a claim about any provider's ranking algorithm.
+This document defines a repeatable measurement protocol for Issues #126, #144 and #147. It is not a claim about any provider's ranking algorithm.
 
 ## Goal
 
-Measure whether realistic users asking ChatGPT Search or another answer engine can:
+Measure whether realistic users who do **not** know the product name can discover the project from the language of their problem.
 
-1. discover a public source about 小黑鸟伴侣 / momo-moreEfficient;
-2. select/cite that source;
-3. actually use its facts in the generated answer;
+The first optimization surface is GitHub repository discovery; the same vocabulary is then measured in ChatGPT Search / other answer engines and ordinary Web search.
+
+Track whether users can:
+
+1. find `davidqyc/momo-moreEfficient` from cold-start category/problem language;
+2. discover/select a canonical public source about 小黑鸟伴侣 / momo-moreEfficient;
+3. cite/use that source in an AI answer;
 4. describe the project accurately without promoting unreleased capabilities.
 
 The most important queries are **cold-start queries from people who do not know the product name yet**. `小黑鸟伴侣`, `小黑鸟`, `momo-moreEfficient`, `companion` and similar entity terms are controls, not the main discovery benchmark.
@@ -17,22 +21,44 @@ Do not optimize for a single screenshot, one exact keyword, or one lucky run.
 
 ## Canonical public sources under test
 
+- Canonical source/support repository: `https://github.com/davidqyc/momo-moreEfficient`
 - Product/entity page: `https://www.jiripple.com/xiaoheiniao/`
 - Machine-readable context: `https://www.jiripple.com/xiaoheiniao/context.md`
 - AI-readable site index: `https://www.jiripple.com/llms.txt`
-- Canonical source/support repository: `https://github.com/davidqyc/momo-moreEfficient`
 - Project FAQ: `https://github.com/davidqyc/momo-moreEfficient/blob/main/docs/FAQ.md`
 - Recipe 1: `https://github.com/davidqyc/momo-moreEfficient/tree/main/recipes/forgotten-words-study-article`
 
-## Query-source rule
+## Vocabulary authority
 
-The cold-start query set below is currently a **hypothesis set**, not a claim that users actually use every phrase.
+Issue #144 is the durable audience-language discovery lane.
 
-Issue #144 is the durable vocabulary-discovery lane. Xiaohongshu read-only discovery, existing GitHub/Web/AI evidence and later real user feedback should progressively replace or supplement guessed wording with observed audience language.
+The cold-start query set below is currently a **hypothesis set**, not a claim that users actually use every phrase. Xiaohongshu read-only discovery, existing GitHub/Web/AI evidence and later real user feedback should progressively replace or supplement guessed wording with observed audience language.
 
 Do not keep a query merely because it sounds SEO-friendly. Do not delete a useful disconfirming query merely because it performs poorly.
 
-## Core query set
+## GitHub repository-search checkpoint
+
+Issue #147 owns the GitHub-specific measurement loop.
+
+For important cold-start intents, record whether `davidqyc/momo-moreEfficient` appears in the first 10 GitHub repository results and at what position.
+
+Priority probe families include:
+
+```text
+墨墨 工具 / 墨墨 第三方 / 墨墨背单词 工具
+墨墨 批量导入 / 墨墨 批量录入
+墨墨 API / 墨墨 开放 API
+墨墨 自动化
+墨墨 插件 / 墨墨 扩展
+墨墨 ChatGPT / 墨墨 Codex
+墨墨 抓词 / 墨墨 快速加单词
+Maimemo tool / Maimemo API / Maimemo batch import
+Maimemo ChatGPT / Maimemo Codex
+```
+
+Measure repository name/About/Topics effects separately from README/FAQ/AI-answer effects. GitHub repository search and answer-engine retrieval are related discovery surfaces, not the same ranking system.
+
+## Core AI / Web query set
 
 Run natural-language queries without forcing the project URL or repository name unless the query specifically tests entity recognition.
 
@@ -100,7 +126,7 @@ These are useful category queries even before capture ships, but any surfaced an
 30. `momo-moreEfficient`
 31. `Maimemo companion`
 
-These controls answer a different question from category discovery: whether the entity is indexed/understood **after the user already knows a brand/repository term**. They must not dominate AEO or future ASO decisions.
+These controls answer a different question from category discovery: whether the entity is indexed/understood **after the user already knows a brand/repository term**. They must not dominate AI keyword optimization decisions.
 
 ## Query-intent interpretation
 
@@ -121,20 +147,20 @@ Useful intent clusters include:
 
 The same user intent may be expressed with different words. Prefer intent coverage over mechanically repeating synonyms in public copy.
 
-## ASO handoff rule
+## AI keyword optimization rule
 
-This benchmark is primarily for AI/Web/GitHub discovery. It may inform future App Store ASO, but it is **not** an App Store keyword sheet today.
+This is not a keyword-stuffing sheet. Vocabulary research is used to decide **which natural association belongs on which public surface**.
 
-When a real App Store release is being prepared:
+For GitHub:
 
-1. take Tier A/B language validated in #144 and repeated benchmark evidence;
-2. separate broad user-facing terms from developer-only terms;
-3. judge title/subtitle/keyword-field value under the actual App Store listing constraints at that time;
-4. do not use `API`, `automation`, `plugin`, `script` or other technical words merely because they are relevant to developers if normal App Store users do not search that way;
-5. keep brand/entity words and category/problem words as separate measurement groups;
-6. never describe unreleased capabilities in App Store metadata as shipped.
+1. repository name stays stable unless a separate future decision proves overwhelming ROI;
+2. About description carries only the highest-value entity + category + current-job language that can be written naturally;
+3. Topics carry accurate, durable English category labels only;
+4. README / FAQ carry long-tail questions and complete human-readable answers;
+5. real Issues/PRs are not manufactured as keyword surfaces;
+6. a query such as `自动化` may describe user intent, but must not become a false claim that writes happen automatically.
 
-Until then, ASO is a downstream consumer of this research, not a reason to churn App Store metadata prematurely.
+Only change these surfaces after a repeated gap or strong structural evidence explains why the repository is not being matched.
 
 ## Release-truth checks
 
@@ -155,7 +181,8 @@ Record these separately. Do not collapse them into one vague "ranking" score.
 
 | Field | Values | Meaning |
 | --- | --- | --- |
-| Search used | yes / no | Did the answer engine trigger web retrieval? |
+| GitHub repository position | absent / #1–#10 / not tested | For GitHub probes, did the canonical repo appear? |
+| Search used | yes / no | Did an answer engine trigger web retrieval? |
 | Project discovered | yes / no | Did any canonical project source enter retrieved/search sources? |
 | Canonical domain selected | yes / no | Was `jiripple.com/xiaoheiniao/` or its machine context selected? |
 | GitHub selected | yes / no | Was the canonical repository/FAQ/Recipe selected? |
@@ -175,25 +202,26 @@ For a meaningful checkpoint:
 1. run a bounded subset of the cold-start/core query set at least three times over separate sessions or time windows where practical;
 2. preserve the exact query and date;
 3. use at least one natural paraphrase for important category queries;
-4. record source selection and answer absorption separately;
+4. record GitHub repository matching, source selection and answer absorption separately;
 5. treat one-off appearance/disappearance as noise until repeated;
 6. compare against the previous checkpoint, not against an imagined fixed rank;
 7. rotate query wording using #144 evidence rather than running all 31 queries mechanically every time.
 
-Provider/model/search changes can alter results without any site change. AEO is therefore monitored as a stochastic retrieval/citation system, not a deterministic SERP position.
+Provider/model/search changes can alter results without any site change. AI discovery is therefore monitored as a stochastic retrieval/citation system, not a deterministic SERP position.
 
 ## Optimization decision rule
 
-Only change public content when a repeated gap has a plausible content/source fix.
+Only change public content/metadata when a repeated gap has a plausible fix.
 
 Examples:
 
-- **Not discovered at all:** inspect crawlability, indexing, internal links, canonical URL, source authority and third-party references before rewriting prose.
+- **GitHub category query does not match the repo:** inspect About description / Topics against truthful category language before changing README prose.
+- **Not discovered by answer engines at all:** inspect crawlability, indexing, internal links, canonical URL, source authority and third-party references before rewriting prose.
 - **Discovered but not cited:** improve direct relevance, extractable facts and source clarity.
 - **Cited but not used:** make the relevant passage easier to extract: direct definition, concrete facts, comparison, procedure, evidence/citation.
 - **Used but wrong:** strengthen explicit current-vs-unreleased status and canonical-source language.
 - **Exact entity works but category discovery fails:** entity indexing exists; focus on category/task relevance and earned external references rather than repeating the brand name.
-- **Developer terms work but ordinary problem language fails:** improve user-language relevance first; do not conclude that technical wording should dominate ASO/public copy.
+- **Developer terms work but ordinary problem language fails:** improve user-language relevance first; do not let technical vocabulary dominate About/README merely because developers search it.
 
 Do not use keyword stuffing, hidden text, generated doorway pages, fake reviews, fake backlinks, manufactured Issues/Stars, or unsourced authority claims.
 
@@ -201,4 +229,4 @@ Do not use keyword stuffing, hidden text, generated doorway pages, fake reviews,
 
 Coordinator web-search probes before the dedicated JiRiPPLE product/entity page was deployed did not reliably surface this project for core queries including `Maimemo iPhone companion`, `Maimemo Codex`, `墨墨 + Codex`, `momo-moreEfficient`, and `小黑鸟伴侣`.
 
-Treat this only as the pre-entity-page baseline, not as a permanent verdict. Later GitHub repository-metadata work has already improved exact Chinese entity searches; the next meaningful benchmark should emphasize cold-start problem/category queries rather than congratulating the project for being searchable by its own name.
+Later GitHub repository-metadata work improved exact Chinese entity searches, proving that entity association is now materially stronger. The current priority is cold-start category/problem matching, not proving that the repository can be found by its own name.
