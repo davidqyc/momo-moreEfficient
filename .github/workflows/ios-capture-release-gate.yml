@@ -1,0 +1,37 @@
+name: iOS capture release gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'scripts/verify_ios_capture_release_gate.sh'
+      - '.github/workflows/ios-capture-release-gate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'scripts/verify_ios_capture_release_gate.sh'
+      - '.github/workflows/ios-capture-release-gate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-capture-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture-release-gate:
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show selected Xcode
+        run: xcodebuild -version
+
+      - name: Verify capture release gate
+        run: bash scripts/verify_ios_capture_release_gate.sh
