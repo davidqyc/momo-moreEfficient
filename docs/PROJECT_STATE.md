@@ -14,7 +14,7 @@ PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
 CURRENT_PRIMARY_ISSUE=#105
 CURRENT_UNIQUE_NEXT=fresh Claude architecture/product-complexity review, then a separate TestFlight release decision
-OPEN_PRODUCT_PR=claude/issue-105-zhuaci-copy (Draft, capture terminology + state-sync copy pass)
+OPEN_PRODUCT_PR=#162 claude/issue-105-zhuaci-copy (Draft, capture terminology + state-sync copy pass)
 ACTIVE_WIP=none
 IMPLEMENTATION_HOLD=false
 ```
@@ -138,7 +138,7 @@ Share Extension visual polish is deferred to a later combined visual batch and i
 
 ## Remote closeout note
 
-- `claude/issue-105-zhuaci-copy` is the open Draft PR for this #105 copy/state-sync closeout;
+- PR #162 (`claude/issue-105-zhuaci-copy`) is the open Draft PR for this #105 copy/state-sync closeout;
 - two unrelated accidental Coordinator-tooling files were each created and immediately reverted in normal Git history (a root `dummy` file around the 2026-08-22 closeout, and a root `__noop__` file in commit `c9971cdb2841dc0046a5bfafc24c6baf0bebad44` reverted in `dff23b410e20f60cbbd3cfa65596543baec55fb9`); the current tree contains neither file and no product residue from either mistake; do not force-rewrite published history merely to hide them;
 - newly created #149, #150, #152–#158 are backlog/planning authority only, not implementation status.
 
