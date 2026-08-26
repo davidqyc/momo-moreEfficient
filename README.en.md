@@ -60,11 +60,11 @@ see a word / sentence worth keeping → send it to Xiaoheiniao
 
 Recommended normal route:
 
-- **Share:** send text to Xiaoheiniao from the system share sheet, then open the app normally to continue. After pinning Xiaoheiniao once, this starts directly from selected text in any reading app without per-source setup.
+- **Share:** in reading apps that expose selected text to the system Share Sheet, send it to Xiaoheiniao, then open the app normally to continue. After pinning Xiaoheiniao once, no per-source setup is required.
 
 Faster preconfigured alternative:
 
-- **Shortcut (iOS 26+):** pass selected text to Xiaoheiniao's capture Shortcut action; the app foregrounds automatically once configured.
+- **Shortcut (iOS 26+):** configure a Shortcut that passes selected text into Xiaoheiniao's capture action. Once configured, running it foregrounds the app automatically.
 
 Both stay before Preview. Capturing text alone does not read the Maimemo Token, contact Maimemo, run Preview, or write anything.
 
@@ -92,7 +92,7 @@ The table below is about what users can actually use, not merely what exists som
 | Feature | Stage | Current status |
 | --- | --- | --- |
 | iPhone interpretation / example batch import | **Shipped** | Available in TestFlight build `1.0 (3)` |
-| Reading-time capture | **Coming soon** | Source is complete and physical-device validation has passed; Share is the recommended normal route, Shortcut is a faster preconfigured alternative; one more copy/architecture review comes before the next release decision |
+| Reading-time capture | **Coming soon** | Source is complete and physical-device validation has passed; Share is the recommended normal route, Shortcut is a faster preconfigured alternative; the public product page still needs syncing and one architecture/complexity review remains before the next release decision |
 | Desktop browser capture | **Research** | No public implementation yet; waiting for Maimemo Open Platform clarification on browser OAuth callback, CORS / direct API access, and related contracts |
 | Built-in Maimemo dictionary / pronunciation | **Not offered** | The current public API contract is not sufficient for this project to claim a reliable implementation |
 | Automatic background import | **Not offered** | Not shipped and not a near-term primary route |

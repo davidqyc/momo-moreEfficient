@@ -13,11 +13,13 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
 CURRENT_PRIMARY_ISSUE=#105
-CURRENT_UNIQUE_NEXT=fresh Claude architecture/product-complexity review, then a separate TestFlight release decision
+CURRENT_UNIQUE_NEXT=merge PR #162 -> Coordinator syncs davidqyc/jiripple-public-site 抓词 facts -> fresh Claude architecture/product-complexity review -> separate TestFlight release decision
 OPEN_PRODUCT_PR=#162 claude/issue-105-zhuaci-copy (Draft, capture terminology + state-sync copy pass)
-ACTIVE_WIP=none
-IMPLEMENTATION_HOLD=false
+ACTIVE_WIP=#105 release-closeout copy pass (PR #162)
+IMPLEMENTATION_HOLD=true
 ```
+
+`IMPLEMENTATION_HOLD=true` covers #161/#154 and all other new product implementation: neither starts until #105 fully closes (PR #162 merged, public-site synced, fresh Claude review done, TestFlight decision made). It does not block this PR's own copy-only work.
 
 #105 is the current capture release-closeout lane. App Group/signing setup is complete, the automated capture release gate (#160) is PASS, and both physical-iPhone runtime canaries (Shortcut/App Intent and Share Extension) are PASS. **Share is the recommended normal reading-capture route; Shortcut/App Intent is the supported faster preconfigured alternative.** The final Chinese product term is **抓词**. Share Extension visual polish is deferred to a later combined visual batch and is not a release gate. Current public TestFlight remains `1.0 (3)` and does not contain 抓词.
 
@@ -81,7 +83,7 @@ This work is **AI keyword optimization / GitHub discovery**, not App Store ASO.
 
 Unless the Owner changes direction, the current planning preference is:
 
-1. finish the existing capture release gate (this copy-sync PR, then the fresh Claude review, then the separate TestFlight release decision);
+1. finish the existing capture release gate (merge PR #162, then Coordinator syncs `jiripple-public-site`, then the fresh Claude review, then the separate TestFlight release decision);
 2. **#161 — batch read-only checking of user-owned interpretations/examples — is the next product feature after #105 closeout**;
 3. #154 context-preserving capture remains backlog and no longer directly precedes #161;
 4. #153 mnemonic/Note import with the respect/content-review gate;
@@ -112,9 +114,10 @@ No new capture architecture is needed. Sequence and current status:
 1. ~~register/verify App Group `group.com.jiripple.xiaoheiniao.capture` for app + Share Extension and refresh provisioning~~ — **DONE**;
 2. ~~compare Shortcut vs Share on physical iPhone for actual daily friction~~ — **DONE**; both physical canaries PASS;
 3. ~~choose the materially better normal route~~ — **DONE**: Share is the recommended normal route, Shortcut/App Intent remains a supported faster preconfigured alternative;
-4. replace temporary `捕获检查` / `capture review` wording consistently across UI + README/README.en + FAQ + public site with the frozen `抓词` terminology — **this repository-side copy pass**; `davidqyc/jiripple-public-site` sync follows as a separate Coordinator-owned step once this PR is accepted;
-5. run one fresh Claude architecture/product-complexity review before the next TestFlight release decision — **current unique next**; Claude prompts must follow central `claude-external-retrieval-discipline` and must not block completion on WebFetch/WebSearch/browser `Fetching`;
-6. only then make a separate TestFlight release decision.
+4. replace temporary `捕获检查` / `capture review` wording consistently across UI + README/README.en + FAQ with the frozen `抓词` terminology — repository-side copy pass in PR #162, **pending merge**;
+5. Coordinator synchronizes `davidqyc/jiripple-public-site` to the same current 抓词 facts (comparison complete, Share = normal route, still not in TestFlight `1.0 (3)`) — **required before the release gate can be read as closed**, still pending;
+6. run one fresh Claude architecture/product-complexity review before the next TestFlight release decision; Claude prompts must follow central `claude-external-retrieval-discipline` and must not block completion on WebFetch/WebSearch/browser `Fetching`;
+7. only then make a separate TestFlight release decision.
 
 Share Extension visual polish is deferred to a later combined visual batch and is explicitly not part of this gate.
 
@@ -138,8 +141,7 @@ Share Extension visual polish is deferred to a later combined visual batch and i
 
 ## Remote closeout note
 
-- PR #162 (`claude/issue-105-zhuaci-copy`) is the open Draft PR for this #105 copy/state-sync closeout;
-- two unrelated accidental Coordinator-tooling files were each created and immediately reverted in normal Git history (a root `dummy` file around the 2026-08-22 closeout, and a root `__noop__` file in commit `c9971cdb2841dc0046a5bfafc24c6baf0bebad44` reverted in `dff23b410e20f60cbbd3cfa65596543baec55fb9`); the current tree contains neither file and no product residue from either mistake; do not force-rewrite published history merely to hide them;
+- PR #162 (`claude/issue-105-zhuaci-copy`) is the open Draft PR for this #105 copy/state-sync closeout; the current tree contains no residue from any prior accidental Coordinator-tooling commit (history preserved, not rewritten);
 - newly created #149, #150, #152–#158 are backlog/planning authority only, not implementation status.
 
 ## Maintenance rule
