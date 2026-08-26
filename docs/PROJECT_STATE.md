@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-08-22
-sourceMainSha=bd4b9bc55cb64124135ada9f1a712f8737d831f0
+updatedAt=2026-08-26
+sourceMainSha=dff23b410e20f60cbbd3cfa65596543baec55fb9
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,14 +12,14 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
-CURRENT_PRIMARY_ISSUE=#126
-CURRENT_UNIQUE_NEXT=WAIT_FOR_OWNER_NEXT_COMMAND_AFTER_REMOTE_CLOSEOUT
-OPEN_PRODUCT_PR=none
+CURRENT_PRIMARY_ISSUE=#105
+CURRENT_UNIQUE_NEXT=fresh Claude architecture/product-complexity review, then a separate TestFlight release decision
+OPEN_PRODUCT_PR=claude/issue-105-zhuaci-copy (Draft, capture terminology + state-sync copy pass)
 ACTIVE_WIP=none
-IMPLEMENTATION_HOLD=true
+IMPLEMENTATION_HOLD=false
 ```
 
-No new product implementation should start from this snapshot until the Owner gives the next command.
+#105 is the current capture release-closeout lane. App Group/signing setup is complete, the automated capture release gate (#160) is PASS, and both physical-iPhone runtime canaries (Shortcut/App Intent and Share Extension) are PASS. **Share is the recommended normal reading-capture route; Shortcut/App Intent is the supported faster preconfigured alternative.** The final Chinese product term is **抓词**. Share Extension visual polish is deferred to a later combined visual batch and is not a release gate. Current public TestFlight remains `1.0 (3)` and does not contain 抓词.
 
 ## What is already proven
 
@@ -30,6 +30,9 @@ No new product implementation should start from this snapshot until the Owner gi
 - #142 received Coordinator review plus a fresh independent Claude safety review that returned `PASS / SAFE TO MERGE`; the reviewer independently ran the complete XCTest/Release/adversarial verification set;
 - stale Preview refresh now shows real `正在重新预览…` / per-item progress rather than appearing hung;
 - #120 and #124 are complete: iOS Shortcut/App Intent and Share Extension capture both terminate at an editable pre-Preview boundary without Maimemo Token/API/write activity;
+- #160 (merged `4cf44a7d9bfa22541c749b7b6d65ee042cf86410`) automates the capture release gate: exact Bundle ID/entitlement/App Group contract, `ShareCaptureTests` + `CaptureReviewTests` (25 passed / 0 failed), Release simulator build and generic-device compile all PASS in CI;
+- both physical-iPhone runtime canaries are PASS (2026-08-25): Shortcut/App Intent foregrounds the app automatically into the editable pre-Preview state; Share Extension saves to the App Group inbox and the pending capture appears correctly once the main app is opened; both preserved the synthetic payload text exactly and neither reached Preview/write. Recommended normal route: **Share**; Shortcut/App Intent remains a supported faster preconfigured alternative;
+- the Owner froze the Chinese user-facing product term as **抓词**, retiring the temporary `捕获检查` / `capture review` engineering wording from user-facing surfaces (internal `CaptureReview*` implementation identifiers may remain);
 - #125 browser-extension research remains `NEEDS-MAIMEMO-CLARIFICATION`; #104/#5 built-in dictionary/content lookup remains parked until first-party contracts support it;
 - Tencent SCF production is live for `/xiaoheiniao/`, machine-readable discovery surfaces and existing ReliableReader routes; repository/admin paths remain non-public;
 - public copy authority remains the Owner-edited README plus `docs/PUBLIC_COPY_STYLE.md`; unreleased source-main capability must never be described as present in TestFlight build `1.0 (3)`.
@@ -78,16 +81,17 @@ This work is **AI keyword optimization / GitHub discovery**, not App Store ASO.
 
 Unless the Owner changes direction, the current planning preference is:
 
-1. finish the existing capture release gate and real-iPhone Shortcut-vs-Share comparison;
-2. #154 context-preserving capture as the closest extension of work already built;
-3. #153 mnemonic/Note import with the respect/content-review gate;
-4. #155 read-only Today/forgotten/vague → AI;
-5. #157 notepad picker/create and safe batch membership;
-6. progressively extract #152 Universal Inbox / adapter contract as multiple real sources converge on it;
-7. #156 export/backup/interoperability as the larger reusable OSS/data-portability surface;
-8. #150 README demo/release conversion and #158 OSS-readiness evidence proceed as appropriate without fake stars/reviews/backlinks.
+1. finish the existing capture release gate (this copy-sync PR, then the fresh Claude review, then the separate TestFlight release decision);
+2. **#161 — batch read-only checking of user-owned interpretations/examples — is the next product feature after #105 closeout**;
+3. #154 context-preserving capture remains backlog and no longer directly precedes #161;
+4. #153 mnemonic/Note import with the respect/content-review gate;
+5. #155 read-only Today/forgotten/vague → AI;
+6. #157 notepad picker/create and safe batch membership;
+7. progressively extract #152 Universal Inbox / adapter contract as multiple real sources converge on it;
+8. #156 export/backup/interoperability as the larger reusable OSS/data-portability surface;
+9. #150 README demo/release conversion and #158 OSS-readiness evidence proceed as appropriate without fake stars/reviews/backlinks.
 
-This order is a planning snapshot only; the next Owner command may supersede it.
+This order is a planning snapshot only; the next Owner command may supersede it. The Owner's latest sequencing decision (#161 next, #154 backlog) supersedes the older #154-first planning snapshot.
 
 ## Codex for Open Source / stop-loss position
 
@@ -103,14 +107,16 @@ Current evidence does **not** support stopping the project merely because Maimem
 
 ## Release gate — reading capture
 
-No new capture architecture is needed before real-device validation:
+No new capture architecture is needed. Sequence and current status:
 
-1. register/verify App Group `group.com.jiripple.xiaoheiniao.capture` for app + Share Extension and refresh provisioning as needed;
-2. compare Shortcut vs Share on physical iPhone for actual daily friction;
-3. choose the materially better normal route; both do not need equal long-term prominence;
-4. before any capture-enabled TestFlight release, replace temporary `捕获检查` / `capture review` wording consistently across UI + README/README.en + FAQ + public site;
-5. run one fresh Claude architecture/product-complexity review before the next TestFlight release decision; Claude prompts must follow central `claude-external-retrieval-discipline` and must not block completion on WebFetch/WebSearch/browser `Fetching`;
+1. ~~register/verify App Group `group.com.jiripple.xiaoheiniao.capture` for app + Share Extension and refresh provisioning~~ — **DONE**;
+2. ~~compare Shortcut vs Share on physical iPhone for actual daily friction~~ — **DONE**; both physical canaries PASS;
+3. ~~choose the materially better normal route~~ — **DONE**: Share is the recommended normal route, Shortcut/App Intent remains a supported faster preconfigured alternative;
+4. replace temporary `捕获检查` / `capture review` wording consistently across UI + README/README.en + FAQ + public site with the frozen `抓词` terminology — **this repository-side copy pass**; `davidqyc/jiripple-public-site` sync follows as a separate Coordinator-owned step once this PR is accepted;
+5. run one fresh Claude architecture/product-complexity review before the next TestFlight release decision — **current unique next**; Claude prompts must follow central `claude-external-retrieval-discipline` and must not block completion on WebFetch/WebSearch/browser `Fetching`;
 6. only then make a separate TestFlight release decision.
+
+Share Extension visual polish is deferred to a later combined visual batch and is explicitly not part of this gate.
 
 ## Safety boundaries still current
 
@@ -132,9 +138,8 @@ No new capture architecture is needed before real-device validation:
 
 ## Remote closeout note
 
-- no product PR is open at this closeout;
-- the accidental root `dummy` file created during Coordinator tooling was immediately deleted in the next commit; the current tree contains no `dummy` file and no product residue from that mistake;
-- the create/revert commits remain in normal Git history; do not force-rewrite published history merely to hide the mistake;
+- `claude/issue-105-zhuaci-copy` is the open Draft PR for this #105 copy/state-sync closeout;
+- two unrelated accidental Coordinator-tooling files were each created and immediately reverted in normal Git history (a root `dummy` file around the 2026-08-22 closeout, and a root `__noop__` file in commit `c9971cdb2841dc0046a5bfafc24c6baf0bebad44` reverted in `dff23b410e20f60cbbd3cfa65596543baec55fb9`); the current tree contains neither file and no product residue from either mistake; do not force-rewrite published history merely to hide them;
 - newly created #149, #150, #152–#158 are backlog/planning authority only, not implementation status.
 
 ## Maintenance rule

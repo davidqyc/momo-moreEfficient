@@ -108,7 +108,7 @@ struct ContentView: View {
             }
             .navigationTitle(
                 isShowingCaptureReview
-                    ? "检查捕获文本" : viewModel.contentMode.navigationTitle
+                    ? "抓词" : viewModel.contentMode.navigationTitle
             )
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -241,14 +241,14 @@ struct ContentView: View {
     private func captureReviewSurface(_ review: CaptureReviewStore.Review) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Label("捕获检查 · 尚未预览", systemImage: "text.viewfinder")
+                Label("抓词 · 尚未预览", systemImage: "text.viewfinder")
                     .font(.headline)
                     .foregroundStyle(.blue)
                 Text("这一步不会读取 Token、访问墨墨、生成预览或授权写入。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if review.replacedExistingReview {
-                    Text("新的捕获文本已替换上一次待检查内容。")
+                    Text("新的抓词内容已替换上一次内容。")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.orange)
                 }
@@ -270,7 +270,7 @@ struct ContentView: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
             .autocorrectionDisabled()
-            .accessibilityLabel("待检查的捕获文本")
+            .accessibilityLabel("抓词内容")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
                 Color(.secondarySystemGroupedBackground),
@@ -296,7 +296,7 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
             }
-            Button("取消捕获", role: .cancel) { cancelCaptureReview() }
+            Button("取消抓词", role: .cancel) { cancelCaptureReview() }
                 .frame(maxWidth: .infinity)
         }
         .font(.subheadline.weight(.semibold))

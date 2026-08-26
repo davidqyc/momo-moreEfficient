@@ -27,18 +27,16 @@ This file records the public-facing wording rules for 小黑鸟伴侣 / momo-mor
 
 源码已完成 ≠ 已上线。README、FAQ、产品页和 AI/AEO 事实页必须保持这个区别。
 
-## Temporary capture wording
+## Frozen capture terminology — 抓词
 
-`捕获检查` / `capture review` 是当前实现阶段的临时工程/界面叫法，不视为最终产品语言。
+阅读抓词功能的最终用户叫法已经冻结：
 
-现在先不改，避免在抓词入口尚未选定前做无效文案返工。
-
-在下一版包含阅读抓词功能的 TestFlight 发布前，必须做一次统一 copy pass：
-
-1. 先根据真机体验决定快捷指令 / 共享哪个是主要日常入口；
-2. 确定最终用户叫法；
-3. 同步修改 App UI、README、README.en、FAQ、`www.jiripple.com/xiaoheiniao/` 和相关机器可读事实页；
-4. 不允许 README 继续使用已经被 App 改掉的旧叫法。
+- 中文产品名：`抓词`；正文需要说明语境时可以用 `阅读抓词`；
+- **共享**是推荐的正常日常入口；**快捷指令**是更快的预配置备选入口，两者都保留；
+- 旧的临时工程/界面叫法 `捕获检查` / `capture review` 已经从用户可见界面和公开文案中退役，不再作为当前产品语言使用；
+- 代码内部实现标识符（例如 `CaptureReviewStore`、`captureReviewSurface` 等）可以继续保留原名，这属于工程命名，不属于用户可见文案；
+- Share Extension 的视觉打磨已明确推迟到后续统一视觉批次处理，不是当前发布的阻塞项；
+- 公开文案仍须区分 source-main 与当前公开 TestFlight build：即使 `抓词` 源码已完成、真机验证已通过，只要还没有进入当前公开 build，就必须继续标注“即将上线”并说明当前 TestFlight 里还没有这个功能。
 
 ## English copy
 

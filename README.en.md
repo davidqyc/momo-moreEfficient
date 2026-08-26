@@ -49,7 +49,7 @@ The project does not intentionally write real Tokens, Authorization/Cookie value
 
 ## Feature 2 | Capture while reading — coming soon
 
-The source implementation is complete and is now waiting for a practical physical-device comparison before release. **This feature is not in the current public TestFlight build `1.0 (3)`.**
+The source implementation is complete and physical-device validation has passed. **This feature is not in the current public TestFlight build `1.0 (3)`.**
 
 The goal is simply to shorten this flow:
 
@@ -58,14 +58,15 @@ see a word / sentence worth keeping → send it to Xiaoheiniao
 → review and edit it → decide whether to continue into the normal Preview / import flow
 ```
 
-Two candidate entry points are implemented:
+Recommended normal route:
 
-- **Shortcut (iOS 26+):** pass selected text to Xiaoheiniao and open the app in the current temporary capture-review screen;
-- **Share (iOS 18+):** save text from the system share sheet and review it when Xiaoheiniao is normally opened.
+- **Share:** send text to Xiaoheiniao from the system share sheet, then open the app normally to continue. After pinning Xiaoheiniao once, this starts directly from selected text in any reading app without per-source setup.
+
+Faster preconfigured alternative:
+
+- **Shortcut (iOS 26+):** pass selected text to Xiaoheiniao's capture Shortcut action; the app foregrounds automatically once configured.
 
 Both stay before Preview. Capturing text alone does not read the Maimemo Token, contact Maimemo, run Preview, or write anything.
-
-The next step is a real-device usability comparison. The project will favor whichever daily path is actually simpler; both entry points do not have to remain equally prominent forever.
 
 ## Feature 3 | Turn today's forgotten Maimemo words into a Codex study article
 
@@ -91,7 +92,7 @@ The table below is about what users can actually use, not merely what exists som
 | Feature | Stage | Current status |
 | --- | --- | --- |
 | iPhone interpretation / example batch import | **Shipped** | Available in TestFlight build `1.0 (3)` |
-| Reading-time capture | **Coming soon** | Source is complete; physical-device Shortcut vs Share comparison comes before the next release decision |
+| Reading-time capture | **Coming soon** | Source is complete and physical-device validation has passed; Share is the recommended normal route, Shortcut is a faster preconfigured alternative; one more copy/architecture review comes before the next release decision |
 | Desktop browser capture | **Research** | No public implementation yet; waiting for Maimemo Open Platform clarification on browser OAuth callback, CORS / direct API access, and related contracts |
 | Built-in Maimemo dictionary / pronunciation | **Not offered** | The current public API contract is not sufficient for this project to claim a reliable implementation |
 | Automatic background import | **Not offered** | Not shipped and not a near-term primary route |

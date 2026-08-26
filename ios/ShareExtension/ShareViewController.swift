@@ -93,7 +93,7 @@ final class ShareViewController: UIViewController {
                 sourceLabel.text = "来源：\(title)\(sourceURL.absoluteString)"
                 sourceLabel.isHidden = false
             }
-            statusLabel.text = "文本可编辑；保存后请正常打开主应用检查。"
+            statusLabel.text = "文本可编辑；保存后请正常打开小黑鸟伴侣继续抓词。"
             statusLabel.textColor = .secondaryLabel
             saveButton.isEnabled = true
         } catch {

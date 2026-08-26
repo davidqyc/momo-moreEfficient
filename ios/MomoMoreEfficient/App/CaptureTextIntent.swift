@@ -5,14 +5,14 @@ import Foundation
 /// capture handoff; it has no route to credentials, Preview or Maimemo transport.
 @available(iOS 26.0, *)
 struct CaptureTextIntent: AppIntent {
-    static let title: LocalizedStringResource = "在小黑鸟伴侣中检查文本"
+    static let title: LocalizedStringResource = "在小黑鸟伴侣中抓词"
     static let description = IntentDescription(
-        "把文本带到小黑鸟伴侣中编辑和检查；不会自动预览或写入墨墨。"
+        "把文本带到小黑鸟伴侣中编辑；不会自动预览或写入墨墨。"
     )
 
     @Parameter(
-        title: "捕获文本",
-        description: "要在小黑鸟伴侣中检查的原文",
+        title: "抓词内容",
+        description: "要抓进小黑鸟伴侣编辑的原文",
         inputOptions: String.IntentInputOptions(
             capitalizationType: .none,
             multiline: true,
@@ -24,7 +24,7 @@ struct CaptureTextIntent: AppIntent {
     var text: String
 
     static var parameterSummary: some ParameterSummary {
-        Summary("在小黑鸟伴侣中检查 \(\.$text)")
+        Summary("在小黑鸟伴侣中抓词 \(\.$text)")
     }
 
     /// Deferred mode runs `perform()` in the background and foregrounds the app
