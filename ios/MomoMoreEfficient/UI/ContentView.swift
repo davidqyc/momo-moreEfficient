@@ -244,6 +244,7 @@ struct ContentView: View {
                 Label("抓词 · 尚未预览", systemImage: "text.viewfinder")
                     .font(.headline)
                     .foregroundStyle(.blue)
+                    .accessibilityIdentifier("captureReviewStatus")
                 Text("这一步不会读取 Token、访问墨墨、生成预览或授权写入。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -271,6 +272,7 @@ struct ContentView: View {
             .padding(.vertical, 6)
             .autocorrectionDisabled()
             .accessibilityLabel("抓词内容")
+            .accessibilityIdentifier("captureReviewTextEditor")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
                 Color(.secondarySystemGroupedBackground),
@@ -298,6 +300,7 @@ struct ContentView: View {
             }
             Button("取消抓词", role: .cancel) { cancelCaptureReview() }
                 .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("cancelCaptureButton")
         }
         .font(.subheadline.weight(.semibold))
         .padding(.horizontal, 16)

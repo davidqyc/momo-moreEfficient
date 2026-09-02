@@ -122,6 +122,7 @@ xcodebuild \
   -destination "$DESTINATION" \
   -only-testing:MomoMoreEfficientTests/ShareCaptureTests \
   -only-testing:MomoMoreEfficientTests/CaptureReviewTests \
+  -only-testing:MomoMoreEfficientUITests/CapturePendingReviewUITests \
   test
 
 note "Release simulator build including embedded ShareExtension"
@@ -143,4 +144,5 @@ xcodebuild \
   build
 
 note "Capture release automation PASS"
-echo "Residual manual evidence intentionally not automated here: one final physical-iPhone system Share Sheet / Shortcut invocation canary before release."
+echo "Residual manual evidence intentionally not automated here: selecting the app's row in the live system Share Sheet on a physical iPhone before release."
+echo "The real App Intents Testing lane (CaptureAppIntentUITests.swift) requires the iOS 27.0+ Beta SDK and does not run on this toolchain; see issue #165."

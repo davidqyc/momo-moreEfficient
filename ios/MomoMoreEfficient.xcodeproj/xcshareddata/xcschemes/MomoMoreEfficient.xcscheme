@@ -8,12 +8,18 @@
          <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A50000000000000000000002" BuildableName="MomoMoreEfficientTests.xctest" BlueprintName="MomoMoreEfficientTests" ReferencedContainer="container:MomoMoreEfficient.xcodeproj"/>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A50000000000000000000004" BuildableName="MomoMoreEfficientUITests.xctest" BlueprintName="MomoMoreEfficientUITests" ReferencedContainer="container:MomoMoreEfficient.xcodeproj"/>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
       <Testables>
          <TestableReference skipped="NO">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A50000000000000000000002" BuildableName="MomoMoreEfficientTests.xctest" BlueprintName="MomoMoreEfficientTests" ReferencedContainer="container:MomoMoreEfficient.xcodeproj"/>
+         </TestableReference>
+         <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A50000000000000000000004" BuildableName="MomoMoreEfficientUITests.xctest" BlueprintName="MomoMoreEfficientUITests" ReferencedContainer="container:MomoMoreEfficient.xcodeproj"/>
          </TestableReference>
       </Testables>
    </TestAction>
