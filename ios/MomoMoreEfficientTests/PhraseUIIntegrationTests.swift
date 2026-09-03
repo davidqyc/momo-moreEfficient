@@ -24,14 +24,14 @@ final class PhraseUIIntegrationTests: XCTestCase {
             XCTAssertFalse(model.hasExecutablePreview)
             XCTAssertEqual(model.errorMessage, expectedError.description)
             XCTAssertEqual(model.isConnected, remainsConnected)
-            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.readCount, 1)
             XCTAssertEqual(transport.postCount, 0)
         }
     }
 
     func testPhraseAuthRejectionDuringFreshWritePreflightDisconnectsBeforePOST() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([])],
             [jsonResponse(["error": "auth"], status: 401)],
         ])
         let model = connectedModel(factory: factory)
@@ -52,9 +52,9 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
     func testPhraseAuthRejectionDuringReadbackDisconnectsAndRecordsUnknownWrite() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([]),
                 jsonResponse([:], status: 201),
                 jsonResponse(["error": "auth"], status: 401),
             ],
@@ -111,7 +111,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
     func testModeSwitchIsDisabledWhilePreviewIsBusy() async {
         let gate = FirstPauseGateSleeper()
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
             phraseResponse([]),
         ])
         let model = connectedModel(
@@ -165,9 +165,9 @@ final class PhraseUIIntegrationTests: XCTestCase {
             chinese: "冲突翻译。"
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phraseResponse([unrelated]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phraseResponse([matching]),
-            vocabularyResponse("INVALID_VOC_C", "covenant"), phraseResponse([conflict]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity"), (id: "INVALID_VOC_C", spelling: "covenant")]), phraseResponse([unrelated]),
+            phraseResponse([matching]),
+            phraseResponse([conflict]),
         ])
         let model = connectedModel(transports: [transport])
         model.selectMode(.phrase)
@@ -243,8 +243,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
         SOURCE: 自编
         """
         let preview: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phraseResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phraseResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity")]), phraseResponse([]),
+            phraseResponse([]),
         ]
         let badReadback = phraseRecord(
             id: "INVALID_RECORD",
@@ -281,7 +281,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
             chinese: chinese
         )
         let preview: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([]),
         ]
         let factory = SequencedTransportFactory([
             preview,
@@ -297,8 +297,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
         XCTAssertEqual(factory.transports.last?.postCount, 1)
         XCTAssertEqual(
-            factory.transports.last?.requests.suffix(2).map(\.route.method),
-            [.post, .get]
+            factory.transports.last?.requests.suffix(2).map(\.route.isMutating),
+            [true, false]
         )
         XCTAssertEqual(model.history.first?.items.map(\.finalOutcome), [.recovered])
         XCTAssertTrue(model.history.first?.isFullSuccess == true)
@@ -313,7 +313,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
             chinese: chinese
         )
         let preview: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([]),
         ]
         let executionTransport = ExpiringPhrasePOSTTransport(
             results: preview + [jsonResponse([:], status: 201), phraseResponse([exact])]
@@ -358,8 +358,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
         SOURCE: 自编
         """
         let preview: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phraseResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phraseResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity")]), phraseResponse([]),
+            phraseResponse([]),
         ]
         let positive = phraseRecord(
             id: "INVALID_POSITIVE",
@@ -405,7 +405,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
             chinese: chinese
         )
         let preview: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([]),
         ]
         let executionTransport = PausingPOSTTransport(
             preview + [jsonResponse([:], status: 201), phraseResponse([exact])]
@@ -436,7 +436,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
     func testPhrasePreviewBackgroundRestoreRequiresModeDraftAndCredential() async {
         let gate = FirstPauseGateSleeper()
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phraseResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phraseResponse([]),
         ])
         let model = connectedModel(
             transports: [transport],

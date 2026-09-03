@@ -5,7 +5,11 @@ enum CompanionConstants {
     static let accountMode = "main"
     static let accountLabel = "主账号"
     static let status = "PUBLISHED"
-    static let maxBatchItems = 30
+    /// The provider's documented per-request maximum for the public batch
+    /// vocabulary query. It is a transport chunk bound only: #164 removed the
+    /// former artificial product-wide total-batch item cap, so a user batch is
+    /// bounded by real input/content/write limits instead.
+    static let vocabularyQueryChunkSize = 1_000
     static let maxInputBytes = 262_144
     static let maxInterpretationCharacters = 2_000
     static let maxTokenCharacters = 8_192
@@ -216,7 +220,12 @@ struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
 
     var compactBlockedReason: String? {
         guard classification == .blocked else { return nil }
-        return reason == "AMBIGUOUS" ? "存在多条自建释义" : "无法安全读取"
+        switch reason {
+        case "AMBIGUOUS": return "存在多条自建释义"
+        case "VOCABULARY_NOT_FOUND": return "未读取到可用词条目标"
+        case "VOCABULARY_MATCH_ANOMALY": return "词条目标匹配异常"
+        default: return "其他无法安全读取"
+        }
     }
 }
 

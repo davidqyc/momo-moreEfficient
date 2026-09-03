@@ -40,9 +40,6 @@ enum PhraseBatchParser {
                 throw CompanionError.inputRejected
             }
             blocks.append((spelling, currentValues))
-            guard blocks.count <= CompanionConstants.maxBatchItems else {
-                throw CompanionError.inputRejected
-            }
             currentSpelling = nil
             currentValues = []
             sawSeparatorAfterCompleteBlock = false
@@ -109,18 +106,12 @@ enum PhraseBatchParser {
         let logicalLines = lines.filter {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        guard logicalLines.count >= 3,
-              logicalLines.count <= CompanionConstants.maxBatchItems * 4
-        else {
-            throw CompanionError.inputRejected
-        }
+        guard logicalLines.count >= 3 else { throw CompanionError.inputRejected }
 
         let segments = try uniqueSegmentation(lineCount: logicalLines.count) { range in
             isValidNativeRecord(Array(logicalLines[range]))
         }
-        guard !segments.isEmpty, segments.count <= CompanionConstants.maxBatchItems else {
-            throw CompanionError.inputRejected
-        }
+        guard !segments.isEmpty else { throw CompanionError.inputRejected }
 
         var normalizedSpellings = Set<String>()
         return try segments.enumerated().map { index, range in
@@ -145,33 +136,54 @@ enum PhraseBatchParser {
     /// record validation local while making the ambiguity fail-closed branch
     /// directly testable even though the current Han/no-Han grammar is strongly
     /// self-synchronizing for ordinary input.
+    ///
+    /// Bounded by construction (#164): the former recursive search was kept
+    /// finite only by the artificial 30-item cap, so removing that cap would
+    /// have made it combinatorial. This counts segmentations backwards instead,
+    /// saturating at two because "more than one" is all the fail-closed
+    /// ambiguity rule needs. It validates at most two candidate records per
+    /// line and reconstructs the single accepted segmentation in one forward
+    /// pass, so work stays linear in the number of lines at any batch size.
     static func uniqueSegmentation(
         lineCount: Int,
         isValidRecord: (Range<Int>) -> Bool
     ) throws -> [Range<Int>] {
-        var solutions: [[Range<Int>]] = []
+        guard lineCount > 0 else { throw CompanionError.inputRejected }
+        let lengths = [3, 4]
 
-        func search(from index: Int, segments: [Range<Int>]) {
-            guard solutions.count < 2, segments.count <= CompanionConstants.maxBatchItems else {
-                return
+        // valid[index][n] — whether a record of `lengths[n]` starts at `index`.
+        var valid = Array(repeating: [false, false], count: lineCount + 1)
+        // ways[index] — segmentations of lines `index..<lineCount`, capped at 2.
+        var ways = Array(repeating: 0, count: lineCount + 1)
+        ways[lineCount] = 1
+
+        for index in stride(from: lineCount - 1, through: 0, by: -1) {
+            var total = 0
+            for (n, length) in lengths.enumerated() where index + length <= lineCount {
+                guard ways[index + length] > 0,
+                      isValidRecord(index..<(index + length))
+                else {
+                    continue
+                }
+                valid[index][n] = true
+                total += ways[index + length]
             }
-            if index == lineCount {
-                solutions.append(segments)
-                return
-            }
-            guard segments.count < CompanionConstants.maxBatchItems else { return }
-            for length in [3, 4] where index + length <= lineCount {
-                let range = index..<(index + length)
-                guard isValidRecord(range) else { continue }
-                search(from: range.upperBound, segments: segments + [range])
-            }
+            ways[index] = min(total, 2)
         }
 
-        search(from: 0, segments: [])
-        guard solutions.count == 1, let result = solutions.first else {
-            throw CompanionError.inputRejected
+        guard ways[0] == 1 else { throw CompanionError.inputRejected }
+
+        var segments: [Range<Int>] = []
+        var index = 0
+        while index < lineCount {
+            guard let n = valid[index].firstIndex(of: true) else {
+                throw CompanionError.inputRejected
+            }
+            let range = index..<(index + lengths[n])
+            segments.append(range)
+            index = range.upperBound
         }
-        return result
+        return segments
     }
 
     private static func isValidNativeRecord(_ values: [String]) -> Bool {

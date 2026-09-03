@@ -157,12 +157,12 @@ final class MixedBatchRunTests: XCTestCase {
         await model.executeConfirmedWholePlan()?.value
 
         let requests = factory.transports[1].requests
-        let firstPOST = try XCTUnwrap(requests.firstIndex { $0.route.method == .post })
+        let firstPOST = try XCTUnwrap(requests.firstIndex { $0.route.isMutating })
         // Every one of the ten approved items was re-read before anything was
-        // written: 10 entries × (vocabulary + interpretations). This is the gate
-        // a per-item GET → POST fusion would destroy.
-        XCTAssertEqual(firstPOST, 20)
-        XCTAssertTrue(requests.prefix(firstPOST).allSatisfy { $0.route.method == .get })
+        // written: one batch vocabulary resolution + 10 interpretations reads.
+        // This is the gate a per-item read → POST fusion would destroy.
+        XCTAssertEqual(firstPOST, 11)
+        XCTAssertTrue(requests.prefix(firstPOST).allSatisfy { !$0.route.isMutating })
     }
 
     func testStateChangeBeforeTheFirstPOSTStopsWithZeroPOST() async {
@@ -205,7 +205,7 @@ final class MixedBatchRunTests: XCTestCase {
         await model.executeConfirmedWholePlan()?.value
 
         let requests = factory.transports[1].requests
-        let posts = requests.filter { $0.route.method == .post }
+        let posts = requests.filter { $0.route.isMutating }
         XCTAssertEqual(posts.count, 10)
         // Max one POST per item, across both phases: no request ever repeats.
         for i in posts.indices {
@@ -214,7 +214,7 @@ final class MixedBatchRunTests: XCTestCase {
             }
         }
         // Immediate readback: every POST is followed straight away by a GET.
-        for (index, request) in requests.enumerated() where request.route.method == .post {
+        for (index, request) in requests.enumerated() where request.route.isMutating {
             XCTAssertLessThan(index + 1, requests.count)
             XCTAssertEqual(requests[index + 1].route.method, .get, "POST at \(index)")
         }
@@ -236,15 +236,15 @@ final class MixedBatchRunTests: XCTestCase {
         await model.executeConfirmedWholePlan()?.value
 
         let requests = factory.transports[1].requests
-        let posts = requests.enumerated().filter { $0.element.route.method == .post }
+        let posts = requests.enumerated().filter { $0.element.route.isMutating }
         XCTAssertEqual(posts.count, 3)
         // Between the last CREATE POST's readback and the UPDATE POST there is a
-        // fresh GET pair for the update target: its own preflight.
+        // fresh read pair for the update target: its own preflight.
         let lastCreatePOST = posts[1].offset
         let updatePOST = posts[2].offset
-        let between = requests[(lastCreatePOST + 1)..<updatePOST].map(\.route.method)
-        XCTAssertTrue(between.allSatisfy { $0 == .get })
-        // readback of create #2, then vocabulary + interpretations for the update.
+        let between = requests[(lastCreatePOST + 1)..<updatePOST]
+        XCTAssertTrue(between.allSatisfy { !$0.route.isMutating })
+        // readback of create #2, then batch resolution + interpretations for the update.
         XCTAssertEqual(between.count, 3)
         XCTAssertEqual(model.history.count, 2)
     }
@@ -254,7 +254,7 @@ final class MixedBatchRunTests: XCTestCase {
         // The UPDATE target's own fresh preflight no longer matches the approved
         // subplan: someone edited that interpretation while CREATE was running.
         let movedUpdatePreflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_2", "manning"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_2", spelling: "manning")]),
             interpretationsResponse([
                 interpretation("INVALID_RECORD_2", "n. 被别处改过", tags: ["考研"]),
             ]),
@@ -642,10 +642,8 @@ final class MixedBatchRunTests: XCTestCase {
             interpretation("INVALID_RECORD_B", "n. 旧二"),
         ]
         let preflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_CREATE", "create"), interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_BLOCKED_1", "blocked-one"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_CREATE", spelling: "create"), (id: "INVALID_VOC_BLOCKED_1", spelling: "blocked-one"), (id: "INVALID_VOC_BLOCKED_2", spelling: "blocked-two")]), interpretationsResponse([]),
             interpretationsResponse(ambiguous),
-            vocabularyResponse("INVALID_VOC_BLOCKED_2", "blocked-two"),
             interpretationsResponse(ambiguous),
         ]
         let factory = SequencedTransportFactory([
@@ -684,10 +682,8 @@ final class MixedBatchRunTests: XCTestCase {
             interpretation("INVALID_BLOCKED_B", "n. 旧二"),
         ]
         let fullPreflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_CREATE", "create"), interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_BLOCKED", "blocked"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_CREATE", spelling: "create"), (id: "INVALID_VOC_BLOCKED", spelling: "blocked"), (id: "INVALID_VOC_UPDATE", spelling: "update")]), interpretationsResponse([]),
             interpretationsResponse(ambiguous),
-            vocabularyResponse("INVALID_VOC_UPDATE", "update"),
             interpretationsResponse([oldUpdate]),
         ]
         let factory = SequencedTransportFactory([
@@ -697,7 +693,7 @@ final class MixedBatchRunTests: XCTestCase {
                 interpretationsResponse([
                     interpretation("INVALID_CREATED", "n. 新建"),
                 ]),
-                vocabularyResponse("INVALID_VOC_UPDATE", "update"),
+                vocabularyQueryResponse([(id: "INVALID_VOC_UPDATE", spelling: "update")]),
                 interpretationsResponse([oldUpdate]),
                 jsonResponse([:]),
                 interpretationsResponse([
@@ -730,8 +726,7 @@ final class MixedBatchRunTests: XCTestCase {
         let source = "create\nn. 新建\nupdate\nn. 新版"
         let oldUpdate = interpretation("INVALID_UPDATE", "n. 旧版")
         let preflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_CREATE", "create"), interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_UPDATE", "update"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_CREATE", spelling: "create"), (id: "INVALID_VOC_UPDATE", spelling: "update")]), interpretationsResponse([]),
             interpretationsResponse([oldUpdate]),
         ]
         let factory = SequencedTransportFactory([
@@ -762,9 +757,9 @@ final class MixedBatchRunTests: XCTestCase {
 
     func testSingleGroupBatchStillRunsThroughItsOwnSimpleFlow() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
                 jsonResponse([:], status: 201),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
             ],
@@ -932,15 +927,13 @@ struct MixedPlan {
         updateIndexes.sorted()
     }
 
-    /// One vocabulary + interpretations pair per entry, in document order.
+    /// One batch vocabulary resolution, then one interpretations read per
+    /// entry, in document order.
     var preflight: [StubbedResult] {
-        spellings.indices.flatMap { index -> [StubbedResult] in
-            [
-                vocabularyResponse(vocabularyID(index), spellings[index]),
-                updateIndexes.contains(index)
-                    ? interpretationsResponse([staleRecord(index)])
-                    : interpretationsResponse([]),
-            ]
+        [batchVocabulary(spellings.indices)] + spellings.indices.map { index in
+            updateIndexes.contains(index)
+                ? interpretationsResponse([staleRecord(index)])
+                : interpretationsResponse([])
         }
     }
 
@@ -956,12 +949,15 @@ struct MixedPlan {
 
     /// The remaining UPDATE subset's own fresh preflight.
     var updatePreflight: [StubbedResult] {
-        sortedUpdateIndexes.flatMap { index -> [StubbedResult] in
-            [
-                vocabularyResponse(vocabularyID(index), spellings[index]),
-                interpretationsResponse([staleRecord(index)]),
-            ]
+        [batchVocabulary(sortedUpdateIndexes)] + sortedUpdateIndexes.map { index in
+            interpretationsResponse([staleRecord(index)])
         }
+    }
+
+    private func batchVocabulary(_ indexes: some Sequence<Int>) -> StubbedResult {
+        vocabularyQueryResponse(
+            indexes.map { (id: vocabularyID($0), spelling: spellings[$0]) }
+        )
     }
 
     var updateWrites: [StubbedResult] {

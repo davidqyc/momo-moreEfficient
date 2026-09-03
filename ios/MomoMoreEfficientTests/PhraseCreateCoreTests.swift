@@ -143,14 +143,14 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, transport, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse([unrelated]),
             ]
         )
         XCTAssertEqual(snapshot.createCount, 1)
         XCTAssertEqual(snapshot.items[0].sameEnglishBaseline, [])
         XCTAssertEqual(transport.postCount, 0)
-        XCTAssertTrue(transport.requests.allSatisfy { $0.route.method == .get })
+        XCTAssertTrue(transport.requests.allSatisfy { !$0.route.isMutating })
     }
 
     func testZeroThroughFourActivePhrasesAllowCreate() async throws {
@@ -165,7 +165,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             let (snapshot, transport, _) = try await makePhraseSnapshot(
                 document: document,
                 results: [
-                    vocabularyResponse("INVALID_VOC", "acquisition"),
+                    vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                     phrasesResponse(records),
                 ]
             )
@@ -187,7 +187,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, transport, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse(records),
             ]
         )
@@ -213,7 +213,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, transport, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse(records),
             ]
         )
@@ -243,7 +243,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, _, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse(active + deleted),
             ]
         )
@@ -257,7 +257,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, _, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse([tombstone]),
             ]
         )
@@ -271,7 +271,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, _, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse([exact]),
             ]
         )
@@ -287,7 +287,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (matching, _, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse([phraseRecord(source: "server stored source")]),
             ]
         )
@@ -296,7 +296,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (wrongChinese, _, _) = try await makePhraseSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "acquisition"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                 phrasesResponse([phraseRecord(chinese: "不同中文", source: "anything")]),
             ]
         )
@@ -314,7 +314,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             let (snapshot, _, _) = try await makePhraseSnapshot(
                 document: document,
                 results: [
-                    vocabularyResponse("INVALID_VOC", "acquisition"),
+                    vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                     phrasesResponse(records),
                 ]
             )
@@ -332,7 +332,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             let (snapshot, _, _) = try await makePhraseSnapshot(
                 document: document,
                 results: [
-                    vocabularyResponse("INVALID_VOC", "acquisition"),
+                    vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
                     failure,
                 ]
             )
@@ -356,15 +356,17 @@ final class PhraseCreateCoreTests: XCTestCase {
         let (snapshot, transport, _) = try await makePhraseSnapshot(
             document: mixedDocument,
             results: [
-                jsonResponse([:]),
-                vocabularyResponse("INVALID_VOC_ACQUISITION", "acquisition"),
+                // The batch resolution simply has no record for "missingword".
+                vocabularyQueryResponse([(id: "INVALID_VOC_ACQUISITION", spelling: "acquisition")]),
                 phrasesResponse([]),
             ]
         )
 
         XCTAssertEqual(snapshot.items.map(\.classification), [.blocked, .create])
-        XCTAssertEqual(snapshot.items[0].reason, "READ_FAILED")
-        XCTAssertEqual(transport.getCount, 3)
+        XCTAssertEqual(snapshot.items[0].reason, "VOCABULARY_NOT_FOUND")
+        XCTAssertNil(snapshot.items[0].vocabularyID)
+        XCTAssertEqual(snapshot.items[1].vocabularyID, "INVALID_VOC_ACQUISITION")
+        XCTAssertEqual(transport.readCount, 2, "no unresolved entry costs a content read")
         XCTAssertEqual(transport.postCount, 0)
     }
 
@@ -395,7 +397,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             } catch let error as CompanionError {
                 XCTAssertTrue(error.abortsReadPlan)
             }
-            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.readCount, 1)
             XCTAssertEqual(transport.postCount, 0)
         }
     }
@@ -473,7 +475,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testFreshPreflightThenExactCREATEBodyAndImmediateReadback() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201), phrasesResponse([phraseRecord(highlight: [[4, 15]])]),
         ])
         let summary = try await executePhrase(snapshot: shown, transport: transport)
@@ -482,7 +484,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(
             transport.requests.map(\.route),
             [
-                .vocabulary(spelling: "acquisition"),
+                .vocabularyQuery,
                 .phrases(vocabularyID: "INVALID_VOC"),
                 .createPhrase,
                 .phrases(vocabularyID: "INVALID_VOC"),
@@ -517,7 +519,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             tags: ["MBA", "BEC"]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             phrasesResponse([
                 phraseRecord(tags: ["BEC", "MBA"], source: "server assigned"),
@@ -529,7 +531,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(summary.succeeded, 1)
         XCTAssertEqual(summary.results[0].outcome, .confirmed)
         XCTAssertTrue(summary.results[0].observations.contains(.tagsMatchRequested))
-        let post = try XCTUnwrap(transport.requests.first(where: { $0.route.method == .post }))
+        let post = try XCTUnwrap(transport.requests.first(where: { $0.route.isMutating }))
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: try XCTUnwrap(post.body)) as? [String: Any]
         )
@@ -541,7 +543,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testPostCreateReadbackIgnoresDeletedSameEnglishTombstone() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             phrasesResponse([
                 phraseRecord(id: "INVALID_DELETED", status: "DELETED"),
@@ -559,7 +561,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testFreshConflictInvalidatesApprovalBeforePOST() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
             phrasesResponse([phraseRecord(chinese: "changed")]),
         ])
         let summary = try await executePhrase(snapshot: shown, transport: transport)
@@ -570,7 +572,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testUnrelatedFreshBaselineChangeDoesNotInvalidateCreate() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
             phrasesResponse([
                 phraseRecord(
                     id: "INVALID_OTHER",
@@ -589,19 +591,19 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testUncertainPOSTUsesGETOnlyRecoveryAndNeverRetries() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             .failure(.transport), phrasesResponse([phraseRecord()]),
         ])
         let summary = try await executePhrase(snapshot: shown, transport: transport)
         XCTAssertEqual(summary.results.map(\.outcome), [.recovered])
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(transport.requests.suffix(2).map(\.route.method), [.post, .get])
+        XCTAssertEqual(transport.requests.suffix(2).map(\.route.isMutating), [true, false])
     }
 
     func testCleanPOSTFirstReadbackMissingLaterReadbackConfirmsWithOnePOST() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             phrasesResponse([]),
             phrasesResponse([phraseRecord()]),
@@ -628,7 +630,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testUncertainPOSTMissingThenLaterReadbackRecoversWithOnePOST() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             .failure(.transport),
             phrasesResponse([]),
             phrasesResponse([phraseRecord()]),
@@ -678,7 +680,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         for (postResult, expectedDispatch, expectedExport) in cases {
             let shown = try await createSnapshot(document: privateDocument)
             let transport = FakeHTTPTransport([
-                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
                 postResult,
                 phrasesResponse([]), phrasesResponse([]), phrasesResponse([]),
             ])
@@ -688,7 +690,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             XCTAssertEqual(summary.results.map(\.outcome), [.notVerified])
             XCTAssertEqual(summary.results[0].diagnostic?.postDispatch, expectedDispatch)
             XCTAssertEqual(transport.postCount, 1)
-            XCTAssertEqual(transport.requests.suffix(3).map(\.route.method), [.get, .get, .get])
+            XCTAssertTrue(transport.requests.suffix(3).allSatisfy { !$0.route.isMutating })
 
             let receipt = ExecutionReceipt(
                 selectedSpellings: ["acquisition"],
@@ -720,8 +722,8 @@ final class PhraseCreateCoreTests: XCTestCase {
         SOURCE: 自编
         """
         let initial: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phrasesResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity")]), phrasesResponse([]),
+            phrasesResponse([]),
         ]
         let (shown, _, _) = try await makePhraseSnapshot(document: batch, results: initial)
         let transport = FakeHTTPTransport(initial + [
@@ -743,7 +745,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testAuthenticationRejectionStopsConfirmationWindowImmediately() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             jsonResponse(["error": "auth"], status: 401),
         ])
@@ -773,7 +775,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         for (readbacks, expectedCategory, expectedCount) in cases {
             let shown = try await createSnapshot(document: document)
             let transport = FakeHTTPTransport([
-                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
                 jsonResponse([:], status: 201),
             ] + readbacks)
 
@@ -801,7 +803,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         for (readback, expectedCategory) in cases {
             let shown = try await createSnapshot(document: document)
             let transport = FakeHTTPTransport([
-                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
                 jsonResponse([:], status: 201), readback,
             ])
 
@@ -819,7 +821,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testSameEnglishMismatchDiagnosticStoresOnlyClosedKeysAndCounts() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             phrasesResponse([phraseRecord(id: "INVALID_PRIVATE_RECORD", chinese: "不同中文")]),
         ])
@@ -850,8 +852,8 @@ final class PhraseCreateCoreTests: XCTestCase {
         SOURCE: 自编
         """
         let initial: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phrasesResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity")]), phrasesResponse([]),
+            phrasesResponse([]),
         ]
         let (shown, _, _) = try await makePhraseSnapshot(document: batch, results: initial)
         let transport = FakeHTTPTransport(initial + [
@@ -870,7 +872,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(summary.results.map(\.outcome), [.confirmed, .confirmed])
         XCTAssertEqual(transport.postCount, 2)
         XCTAssertEqual(
-            transport.requests.filter { $0.route.method == .post }.map(\.route),
+            transport.requests.filter { $0.route.isMutating }.map(\.route),
             [.createPhrase, .createPhrase]
         )
     }
@@ -878,7 +880,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testTagAndHighlightImperfectionsRemainVerifiedClosedObservations() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             phrasesResponse([phraseRecord(tags: ["MBA"], highlight: nil)]),
         ])
@@ -897,7 +899,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         ] {
             let shown = try await createSnapshot(document: document)
             let transport = FakeHTTPTransport([
-                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
                 jsonResponse([:], status: 201),
                 phrasesResponse([phraseRecord(tags: tags, highlight: [])]),
             ])
@@ -916,7 +918,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             let effectiveHighlight: Any = highlight
             let shown = try await createSnapshot(document: document)
             let transport = FakeHTTPTransport([
-                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
                 jsonResponse([:], status: 201),
                 phrasesResponse([phraseRecord(highlight: effectiveHighlight)]),
             ])
@@ -940,7 +942,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         for records in mismatches {
             let shown = try await createSnapshot(document: document)
             let transport = FakeHTTPTransport([
-                vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
                 jsonResponse([:], status: 201),
                 phrasesResponse(records), phrasesResponse(records), phrasesResponse(records),
             ])
@@ -954,7 +956,7 @@ final class PhraseCreateCoreTests: XCTestCase {
     func testMalformedHighlightMakesReadbackUnverified() async throws {
         let shown = try await createSnapshot(document: document)
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "acquisition"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]), phrasesResponse([]),
             jsonResponse([:], status: 201),
             phrasesResponse([phraseRecord(highlight: [[4, english.count + 10]])]),
         ])
@@ -974,8 +976,8 @@ final class PhraseCreateCoreTests: XCTestCase {
         SOURCE: 自编
         """
         let initial: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phrasesResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity")]), phrasesResponse([]),
+            phrasesResponse([]),
         ]
         let (shown, _, _) = try await makePhraseSnapshot(
             document: twoEntryDocument,
@@ -1001,8 +1003,8 @@ final class PhraseCreateCoreTests: XCTestCase {
         SOURCE: 自编
         """
         let initial: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "acquisition"), phrasesResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "liquidity"), phrasesResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "acquisition"), (id: "INVALID_VOC_B", spelling: "liquidity")]), phrasesResponse([]),
+            phrasesResponse([]),
         ]
         let (shown, _, _) = try await makePhraseSnapshot(
             document: twoEntryDocument,
@@ -1023,7 +1025,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(summary.succeeded, 1)
         XCTAssertTrue(summary.cancelled)
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(transport.requests.suffix(2).map(\.route.method), [.post, .get])
+        XCTAssertEqual(transport.requests.suffix(2).map(\.route.isMutating), [true, false])
     }
 
     func testPhraseCoreDefinesNoUpdateDeleteOrReplayRoute() throws {
@@ -1138,14 +1140,14 @@ final class PhraseCreateCoreTests: XCTestCase {
         tags: [String] = []
     ) async throws -> PhrasePreviewSnapshot {
         let entries = try PhraseBatchParser.parse(document)
-        var results: [StubbedResult] = []
-        for entry in entries {
-            let vocabularyID = entries.count == 1
-                ? "INVALID_VOC"
-                : "INVALID_VOC_\(entry.ordinal)"
-            results.append(vocabularyResponse(vocabularyID, entry.spelling))
-            results.append(phrasesResponse([]))
+        let targets = entries.map { entry in
+            (
+                id: entries.count == 1 ? "INVALID_VOC" : "INVALID_VOC_\(entry.ordinal)",
+                spelling: entry.spelling
+            )
         }
+        let results: [StubbedResult] = [vocabularyQueryResponse(targets)]
+            + entries.map { _ in phrasesResponse([]) }
         let snapshot = try await makePhraseSnapshot(
             document: document,
             results: results,

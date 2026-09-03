@@ -11,23 +11,38 @@ struct PreflightPlanner {
         onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PreviewSnapshot {
         guard !entries.isEmpty,
-              entries.count <= CompanionConstants.maxBatchItems,
               (try? WriteTagPreference.canonicalized(tags)) == tags
         else {
             throw CompanionError.inputRejected
         }
 
+        // One shared batch resolution for the whole plan, before any per-item
+        // content read. Outcomes stay aligned to this batch's own entry order.
+        let resolution = try await VocabularyTargetResolver(api: api).resolve(
+            spellings: entries.map(\.spelling),
+            control: control
+        )
+
         var planned: [PrivatePreflightItem] = []
         for (index, entry) in entries.enumerated() {
             // 1-based index of the entry about to be preflighted.
             onEntryStarted?(index + 1, entries.count)
-            do {
-                let vocabulary = try await api.vocabulary(
-                    spelling: entry.spelling,
-                    control: control
+            let outcome = resolution.outcomes[index]
+            guard let vocabularyID = outcome.vocabularyID else {
+                planned.append(
+                    PrivatePreflightItem(
+                        entry: entry,
+                        classification: .blocked,
+                        vocabularyID: nil,
+                        baseline: nil,
+                        reason: outcome.blockedReason
+                    )
                 )
+                continue
+            }
+            do {
                 let records = try await api.interpretations(
-                    vocabularyID: vocabulary.id,
+                    vocabularyID: vocabularyID,
                     control: control
                 )
                 if records.isEmpty {
@@ -35,7 +50,7 @@ struct PreflightPlanner {
                         PrivatePreflightItem(
                             entry: entry,
                             classification: .create,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             baseline: nil,
                             reason: nil
                         )
@@ -51,7 +66,7 @@ struct PreflightPlanner {
                             )
                                 ? .alreadyMatching
                                 : .update,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             baseline: baseline,
                             reason: nil
                         )

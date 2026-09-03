@@ -52,13 +52,15 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, transport, _) = try await makeSnapshot(
             document: "createword\nn. 新建",
             results: [
-                vocabularyResponse("INVALID_VOC_A", "createword"),
+                vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "createword")]),
                 interpretationsResponse([]),
             ]
         )
         XCTAssertEqual(snapshot.presentation.counts.create, 1)
-        XCTAssertEqual(transport.getCount, 2)
-        XCTAssertEqual(transport.postCount, 0)
+        XCTAssertEqual(transport.requests.count, 2, "one batch resolution + one content read")
+        XCTAssertEqual(transport.vocabularyQueryCount, 1)
+        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.postCount, 0, "Preview never dispatches a mutating request")
     }
 
     func testMixedPreviewClassifiesCreateUpdateMatchingAndBlocked() async throws {
@@ -66,12 +68,9 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, _, _) = try await makeSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC_A", "create"), interpretationsResponse([]),
-                vocabularyResponse("INVALID_VOC_B", "update"),
+                vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "create"), (id: "INVALID_VOC_B", spelling: "update"), (id: "INVALID_VOC_C", spelling: "matching"), (id: "INVALID_VOC_D", spelling: "blocked")]), interpretationsResponse([]),
                 interpretationsResponse([interpretation("INVALID_RECORD_A", "n. 旧", tags: ["考研"])]),
-                vocabularyResponse("INVALID_VOC_C", "matching"),
                 interpretationsResponse([interpretation("INVALID_RECORD_B", "n. 同")]),
-                vocabularyResponse("INVALID_VOC_D", "blocked"),
                 interpretationsResponse([
                     interpretation("INVALID_RECORD_C", "n. 一", tags: ["考研"]),
                     interpretation("INVALID_RECORD_D", "n. 二", tags: ["考研"]),
@@ -92,7 +91,7 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 新版",
             results: [
-                vocabularyResponse("INVALID_VOC", "word"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
                 interpretationsResponse([
                     interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"]),
                 ]),
@@ -108,7 +107,7 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 新版",
             results: [
-                vocabularyResponse(rawVocabularyID, "word"),
+                vocabularyQueryResponse([(id: rawVocabularyID, spelling: "word")]),
                 interpretationsResponse([
                     interpretation(rawRecordID, "n. 旧版", tags: ["考研"]),
                 ]),
@@ -126,7 +125,7 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 相同",
             results: [
-                vocabularyResponse("INVALID_VOC", "word"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
                 interpretationsResponse([
                     interpretation("INVALID_RECORD", "n. 相同", tags: []),
                 ]),
@@ -140,7 +139,7 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
             results: [
-                vocabularyResponse("INVALID_VOC", "word"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
                 interpretationsResponse([
                     interpretation("bad/id", "n. 旧", tags: ["考研"]),
                 ]),
@@ -154,9 +153,12 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, transport, _) = try await makeSnapshot(
             document: "one\nn. 一\nmissingword\nn. 缺失\nthree\nn. 三",
             results: [
-                vocabularyResponse("INVALID_VOC_ONE", "one"), interpretationsResponse([]),
-                jsonResponse([:]),
-                vocabularyResponse("INVALID_VOC_THREE", "three"),
+                // The batch resolution simply has no record for "missingword".
+                vocabularyQueryResponse([
+                    (id: "INVALID_VOC_ONE", spelling: "one"),
+                    (id: "INVALID_VOC_THREE", spelling: "three"),
+                ]),
+                interpretationsResponse([]),
                 interpretationsResponse([
                     interpretation("INVALID_RECORD_THREE", "n. 三"),
                 ]),
@@ -167,8 +169,10 @@ final class TransportAndPlanningTests: XCTestCase {
             snapshot.presentation.rows.map(\.classification),
             [.create, .blocked, .alreadyMatching]
         )
-        XCTAssertEqual(snapshot.presentation.rows[1].reason, "READ_FAILED")
-        XCTAssertEqual(transport.getCount, 5)
+        XCTAssertEqual(snapshot.presentation.rows[1].reason, "VOCABULARY_NOT_FOUND")
+        XCTAssertEqual(snapshot.presentation.rows[1].compactBlockedReason, "未读取到可用词条目标")
+        XCTAssertNil(snapshot.items[1].vocabularyID)
+        XCTAssertEqual(transport.requests.count, 3, "no unresolved entry costs a content read")
         XCTAssertEqual(transport.postCount, 0)
     }
 
@@ -176,7 +180,9 @@ final class TransportAndPlanningTests: XCTestCase {
         let (snapshot, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
             results: [
-                jsonResponse(["data": ["voc": ["id": "INVALID_VOC", "spelling": "word"]]]),
+                jsonResponse([
+                    "data": ["voc_list": [["id": "INVALID_VOC", "spelling": "word"]]],
+                ]),
                 jsonResponse(["data": ["interpretations": []]]),
             ]
         )
@@ -187,12 +193,16 @@ final class TransportAndPlanningTests: XCTestCase {
         let (_, transport, sleeper) = try await makeSnapshot(
             document: "one\nn. 一\ntwo\nn. 二",
             results: [
-                vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
-                vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
+                vocabularyQueryResponse([
+                    (id: "INVALID_VOC_A", spelling: "one"),
+                    (id: "INVALID_VOC_B", spelling: "two"),
+                ]),
+                interpretationsResponse([]),
+                interpretationsResponse([]),
             ]
         )
-        XCTAssertEqual(transport.requests.count, 4)
-        XCTAssertEqual(sleeper.seconds, [1.6, 1.6, 1.6])
+        XCTAssertEqual(transport.requests.count, 3)
+        XCTAssertEqual(sleeper.seconds, [1.6, 1.6])
     }
 
     func testCredentialValidationReusesVocabularyRouteDecoderIncludingDataEnvelope() async throws {
@@ -264,7 +274,7 @@ final class TransportAndPlanningTests: XCTestCase {
             } catch let error as CompanionError {
                 XCTAssertTrue(error.abortsReadPlan)
             }
-            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.requests.count, 1)
             XCTAssertEqual(transport.postCount, 0)
         }
     }

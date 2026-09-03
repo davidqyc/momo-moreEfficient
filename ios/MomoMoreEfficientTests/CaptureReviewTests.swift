@@ -104,7 +104,7 @@ final class CaptureReviewTests: XCTestCase {
 
     func testExplicitTransferEntersEditorButCannotCreatePreviewAuthorization() async {
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
         let model = CompanionViewModel(
@@ -172,7 +172,7 @@ final class CaptureReviewTests: XCTestCase {
 
     func testDeferredCaptureLaunchCannotRestoreCredentialBeforeReviewHandoff() async {
         let tokenStore = CountingTokenStore(token: fakeToken)
-        let transport = FakeHTTPTransport([vocabularyResponse("INVALID_VOC", "word")])
+        let transport = FakeHTTPTransport([vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")])])
         let model = CompanionViewModel(
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
@@ -235,7 +235,7 @@ final class CaptureReviewTests: XCTestCase {
         )
 
         XCTAssertEqual(tokenStore.loadCount, 1)
-        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.readCount, 1)
         XCTAssertEqual(transport.postCount, 0)
         XCTAssertTrue(model.isConnected)
     }

@@ -24,7 +24,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await preview.value
 
         // Every entry was read: nothing restarted from item 1.
-        XCTAssertEqual(transport.getCount, 4)
+        XCTAssertEqual(transport.readCount, 3, "one batch resolution + two content reads")
         XCTAssertEqual(transport.postCount, 0)
         XCTAssertEqual(model.preview?.rows.count, 2)
         XCTAssertNil(model.errorMessage)
@@ -44,7 +44,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await gate.resume()
         await preview.value
 
-        XCTAssertEqual(transport.getCount, 4)
+        XCTAssertEqual(transport.readCount, 3, "one batch resolution + two content reads")
         XCTAssertEqual(model.preview?.rows.count, 2)
         // Returning before it finished means no teardown was ever owed.
         XCTAssertTrue(model.isConnected)
@@ -70,7 +70,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await preview.value
 
         // Exactly one entry's worth of reads, and one assertion taken and released.
-        XCTAssertEqual(transport.getCount, 2)
+        XCTAssertEqual(transport.readCount, 2)
         XCTAssertEqual(assertion.beginCount, 1)
         XCTAssertEqual(assertion.endCount, 1)
     }
@@ -90,7 +90,7 @@ final class PreviewLifecycleTests: XCTestCase {
         await gate.resume()
         await preview.value
 
-        XCTAssertEqual(transport.getCount, 4)
+        XCTAssertEqual(transport.readCount, 3, "one batch resolution + two content reads")
         XCTAssertEqual(model.preview?.rows.count, 2)
         XCTAssertNil(model.errorMessage)
     }
@@ -126,7 +126,7 @@ final class PreviewLifecycleTests: XCTestCase {
         XCTAssertEqual(model.preview?.rows.count, 1)
         XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 0"])
         // Crucially: no second network Preview was needed.
-        XCTAssertEqual(transport.getCount, 2)
+        XCTAssertEqual(transport.readCount, 2)
     }
 
     func testPreviewCompletedWhileAwayIsDiscardedWhenSourceChanged() async {
@@ -252,11 +252,11 @@ final class PreviewLifecycleTests: XCTestCase {
         // Returning to the app must not silently re-run it.
         await model.enterForeground()
         XCTAssertNil(model.preview)
-        XCTAssertEqual(secondTransport.getCount, 0)
+        XCTAssertEqual(secondTransport.readCount, 0)
 
         // Only an explicit Preview does.
         await model.previewCurrentInput()
-        XCTAssertEqual(secondTransport.getCount, 2)
+        XCTAssertEqual(secondTransport.readCount, 2)
         XCTAssertNotNil(model.preview)
         XCTAssertTrue(model.hasExecutablePreview)
     }
@@ -342,7 +342,7 @@ final class PreviewLifecycleTests: XCTestCase {
 
         // The execution-time preflight re-read the entry before its single POST:
         // 2 preflight GETs + 1 POST + 1 readback GET.
-        XCTAssertEqual(executionTransport.getCount, 3)
+        XCTAssertEqual(executionTransport.readCount, 3)
         XCTAssertEqual(executionTransport.postCount, 1)
         XCTAssertEqual(model.history.first?.succeeded, 1)
     }
@@ -397,13 +397,15 @@ final class PreviewLifecycleTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// One batch vocabulary resolution, then one interpretation read per entry.
     private func previewRun(_ spellings: [String]) -> [StubbedResult] {
-        spellings.enumerated().flatMap { index, spelling in
-            [
-                vocabularyResponse("INVALID_VOC_\(index)", spelling),
-                interpretationsResponse([]),
-            ]
-        }
+        [
+            vocabularyQueryResponse(
+                spellings.enumerated().map {
+                    (id: "INVALID_VOC_\($0.offset)", spelling: $0.element)
+                }
+            ),
+        ] + spellings.map { _ in interpretationsResponse([]) }
     }
 
     private func waitForPreviewProgress(

@@ -154,8 +154,15 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
         }
     }
 
-    var postCount: Int { requests.filter { $0.route.method == .post }.count }
+    /// Write-safety accounting counts *mutating* requests only. The batch
+    /// vocabulary query is a read that happens to use HTTP POST, so it must
+    /// never appear here (#164); `httpPOSTCount` still sees the raw verb.
+    var postCount: Int { requests.filter(\.route.isMutating).count }
+    var httpPOSTCount: Int { requests.filter { $0.route.method == .post }.count }
     var getCount: Int { requests.filter { $0.route.method == .get }.count }
+    /// Reads of any kind: GETs plus the read-semantic batch vocabulary query.
+    var readCount: Int { requests.filter { !$0.route.isMutating }.count }
+    var vocabularyQueryCount: Int { requests.filter { $0.route == .vocabularyQuery }.count }
 }
 
 /// Holds one HTTP response until a test explicitly releases it. This makes the
@@ -197,7 +204,8 @@ actor GatedHTTPTransport: HTTPTransport {
     }
 
     var getCount: Int { requests.filter { $0.route.method == .get }.count }
-    var postCount: Int { requests.filter { $0.route.method == .post }.count }
+    var readCount: Int { requests.filter { !$0.route.isMutating }.count }
+    var postCount: Int { requests.filter(\.route.isMutating).count }
 }
 
 final class RecordingSleeper: RequestSleeper, @unchecked Sendable {
@@ -276,6 +284,16 @@ func jsonResponse(_ object: Any, status: Int = 200) -> StubbedResult {
 
 func vocabularyResponse(_ id: String, _ spelling: String) -> StubbedResult {
     jsonResponse(["voc": ["id": id, "spelling": spelling]])
+}
+
+/// One batch vocabulary-query response, in the caller-supplied record order.
+func vocabularyQueryResponse(_ records: [(id: String, spelling: String)]) -> StubbedResult {
+    jsonResponse(["voc_list": records.map { ["id": $0.id, "spelling": $0.spelling] }])
+}
+
+/// The batch query response a preflight over `spellings` normally receives.
+func resolvedQueryResponse(_ spellings: [String]) -> StubbedResult {
+    vocabularyQueryResponse(spellings.map { (id: "VOC_\($0.uppercased())", spelling: $0) })
 }
 
 func interpretation(
@@ -382,7 +400,7 @@ actor PausingPOSTTransport: HTTPTransport {
         credential: OperationCredentialLease
     ) async throws -> TransportResponse {
         requests.append(request)
-        if request.route.method == .post {
+        if request.route.isMutating {
             postWasDispatched = true
             postWaiters.forEach { $0.resume() }
             postWaiters.removeAll()
@@ -408,6 +426,7 @@ actor PausingPOSTTransport: HTTPTransport {
         postContinuation = nil
     }
 
-    var postCount: Int { requests.filter { $0.route.method == .post }.count }
+    var postCount: Int { requests.filter(\.route.isMutating).count }
     var getCount: Int { requests.filter { $0.route.method == .get }.count }
+    var readCount: Int { requests.filter { !$0.route.isMutating }.count }
 }
