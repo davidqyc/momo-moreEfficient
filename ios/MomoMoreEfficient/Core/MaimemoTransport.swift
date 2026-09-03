@@ -145,30 +145,20 @@ final class MaimemoTransport {
         }
     }
 
-    /// Locates the vocabulary array inside the documented `{id, spelling}` list
-    /// response, tolerating the same one-level `data` wrapper the production
-    /// vocabulary/interpretation/phrase reads already accept. Anything else is a
-    /// malformed response; no record is ever synthesised from a shape guess.
+    /// Locates the vocabulary array in the first-party batch-query envelope.
+    ///
+    /// The official `maimemo/memo-api-cli` transport (`src/client.ts`) reads a
+    /// successful body as `{ errors, data, success }` and returns `data`, and its
+    /// vocabulary-query test models the raw body as `{ data: { voc: [...] } }`.
+    /// So the list lives at `data.voc`; the unwrapped `voc` form is the same
+    /// one-level `data` tolerance the production vocabulary, interpretation and
+    /// phrase decoders already apply. No other key or shape is accepted, so an
+    /// unrecognised envelope stays a malformed response and can never let a
+    /// record be synthesised from a guess.
     private static func vocabularyArray(in root: Any) -> [Any]? {
-        if let array = root as? [Any] { return array }
         guard let object = root as? [String: Any] else { return nil }
-        if let unwrapped = object["data"] {
-            if let array = unwrapped as? [Any] { return array }
-            if let nested = unwrapped as? [String: Any] {
-                return namedArray(in: nested)
-            }
-            return nil
-        }
-        return namedArray(in: object)
-    }
-
-    private static let vocabularyListKeys = ["voc_list", "vocabularies", "vocs", "list", "items"]
-
-    private static func namedArray(in object: [String: Any]) -> [Any]? {
-        for key in vocabularyListKeys {
-            if let array = object[key] as? [Any] { return array }
-        }
-        return nil
+        let container = (object["voc"] != nil ? object : object["data"] as? [String: Any])
+        return container?["voc"] as? [Any]
     }
 
     func interpretations(

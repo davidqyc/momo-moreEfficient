@@ -181,7 +181,9 @@ final class TransportAndPlanningTests: XCTestCase {
             document: "word\nn. 新",
             results: [
                 jsonResponse([
-                    "data": ["voc_list": [["id": "INVALID_VOC", "spelling": "word"]]],
+                    "data": ["voc": [["id": "INVALID_VOC", "spelling": "word"]]],
+                    "errors": [],
+                    "success": true,
                 ]),
                 jsonResponse(["data": ["interpretations": []]]),
             ]

@@ -173,13 +173,24 @@ final class VocabularyResolverTests: XCTestCase {
 
         XCTAssertEqual(transport.vocabularyQueryCount, 2)
         XCTAssertEqual(
-            transport.requests.map { request -> Int in
-                let payload = try! JSONSerialization.jsonObject(with: request.body!)
-                return ((payload as! [String: Any])["spellings"] as! [String]).count
-            },
+            transport.requests.map { requestedSpellings(in: $0).count },
             [1_000, 1]
         )
         XCTAssertTrue(resolution.outcomes.allSatisfy { $0.vocabularyID != nil })
+    }
+
+    /// The spellings a recorded request actually asked for. Reading them through
+    /// optionals keeps a stub-shape mistake a readable failure instead of a
+    /// runtime trap that would take the whole test host down with it (#164 R1).
+    private func requestedSpellings(in request: TransportRequest) -> [String] {
+        guard let body = request.body,
+              let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let spellings = payload["spellings"] as? [String]
+        else {
+            XCTFail("a vocabulary-query request must carry a spellings payload")
+            return []
+        }
+        return spellings
     }
 
     func testResolutionScalesByChunkNotByItemCount() async throws {
@@ -292,10 +303,25 @@ final class VocabularyResolverTests: XCTestCase {
     // MARK: - Response envelope
 
     func testMalformedResponseStaysGlobalAndNeverFallsBackToPerItemGETs() async throws {
+        let record = ["id": "VOC_A", "spelling": "apple"]
         let malformed: [Any] = [
             ["unexpected": "shape"],
             [String: String](),
-            ["voc_list": "not an array"],
+            // `voc` present but not a list.
+            ["voc": "not an array"],
+            ["data": ["voc": ["id": "VOC_A", "spelling": "apple"]]],
+            // Envelope present, `voc` missing.
+            ["data": ["errors": [], "success": true]],
+            ["errors": [], "success": true],
+            // Wrapper nested more deeply than the first-party contract.
+            ["data": ["data": ["voc": [record]]]],
+            // Shapes the earlier draft guessed at; no first-party source shows
+            // them, so they must now fail closed rather than bind a target.
+            ["voc_list": [record]],
+            ["vocabularies": [record]],
+            ["data": ["items": [record]]],
+            ["data": [record]],
+            [record],
         ]
         for envelope in malformed {
             let (resolver, transport, _) = try makeResolver([jsonResponse(envelope)])
@@ -318,20 +344,65 @@ final class VocabularyResolverTests: XCTestCase {
         XCTAssertEqual(resolution.outcomes, [.blocked(.notFound), .blocked(.notFound)])
     }
 
-    func testDocumentedEnvelopeVariantsAreAccepted() async throws {
-        let record = ["id": "VOC_A", "spelling": "apple"]
+    /// The exact raw body the official `maimemo/memo-api-cli` vocabulary-query
+    /// integration test models — `wrap({ voc: [...] })` — plus the unwrapped
+    /// `voc` form this project's existing one-level `data` tolerance already
+    /// covers for the single-vocabulary, interpretation and phrase reads.
+    func testFirstPartyRawWrapperShapeIsDecoded() async throws {
+        let voc = [
+            ["id": "VOC_A", "spelling": "apple"],
+            ["id": "VOC_B", "spelling": "banana"],
+        ]
         let envelopes: [Any] = [
-            ["voc_list": [record]],
-            ["vocabularies": [record]],
-            ["data": ["voc_list": [record]]],
-            ["data": [record]],
-            [record],
+            ["data": ["voc": voc], "errors": [], "success": true],
+            ["voc": voc],
         ]
         for envelope in envelopes {
+            let (resolver, transport, _) = try makeResolver([jsonResponse(envelope)])
+            let resolution = try await resolver.resolve(spellings: ["apple", "banana"])
+            XCTAssertEqual(
+                resolution.outcomes,
+                [.resolved(vocabularyID: "VOC_A"), .resolved(vocabularyID: "VOC_B")]
+            )
+            XCTAssertEqual(transport.vocabularyQueryCount, 1)
+            XCTAssertEqual(transport.getCount, 0)
+        }
+    }
+
+    /// The envelope correction must not soften record-level validation: the
+    /// resolver, not the decoder, still owns identity safety.
+    func testFirstPartyWrapperStillFailsClosedOnUnsafeOrAmbiguousIdentity() async throws {
+        let unsafe: [Any] = [
+            // Malformed record inside a well-formed wrapper: whole response bad.
+            ["data": ["voc": [["id": "VOC_A"]]], "errors": [], "success": true],
+            ["data": ["voc": [["id": 7, "spelling": "apple"]]], "errors": [], "success": true],
+        ]
+        for envelope in unsafe {
+            let (resolver, _, _) = try makeResolver([jsonResponse(envelope)])
+            do {
+                _ = try await resolver.resolve(spellings: ["apple"])
+                XCTFail("a malformed record must abort the whole read plan")
+            } catch {
+                XCTAssertEqual(error as? CompanionError, .responseRejected)
+            }
+        }
+
+        // Per-item anomalies stay per-item, inside the first-party wrapper.
+        let cases: [(String, [[String: String]], VocabularyTargetOutcome)] = [
+            ("unsafe id", [["id": "bad/id", "spelling": "apple"]], .blocked(.matchAnomaly)),
+            (
+                "two identities",
+                [["id": "VOC_A", "spelling": "apple"], ["id": "VOC_B", "spelling": "Apple"]],
+                .blocked(.matchAnomaly)
+            ),
+            ("mismatched spelling", [["id": "VOC_A", "spelling": "apricot"]], .blocked(.notFound)),
+        ]
+        for (label, voc, expected) in cases {
+            let envelope: [String: Any] = ["data": ["voc": voc], "errors": [], "success": true]
             let (resolver, _, _) = try makeResolver([jsonResponse(envelope)])
             let resolution = try await resolver.resolve(spellings: ["apple"])
-            XCTAssertEqual(resolution.outcomes, [.resolved(vocabularyID: "VOC_A")])
-            }
+            XCTAssertEqual(resolution.outcomes, [expected], label)
+        }
     }
 }
 

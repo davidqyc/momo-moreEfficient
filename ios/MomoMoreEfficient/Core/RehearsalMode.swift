@@ -167,10 +167,15 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
 
         case .vocabularyQuery:
             let spellings = (try? queryPayload(request.body))?["spellings"] as? [String] ?? []
+            // The first-party raw envelope: `{ data: { voc: [...] }, ... }`.
             return try json([
-                "voc_list": spellings.map {
-                    ["id": vocabularyID(for: $0), "spelling": $0]
-                },
+                "data": [
+                    "voc": spellings.map {
+                        ["id": vocabularyID(for: $0), "spelling": $0]
+                    },
+                ],
+                "errors": [],
+                "success": true,
             ])
 
         case let .interpretations(vocabularyID):

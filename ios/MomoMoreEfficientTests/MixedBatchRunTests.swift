@@ -156,7 +156,7 @@ final class MixedBatchRunTests: XCTestCase {
 
         await model.executeConfirmedWholePlan()?.value
 
-        let requests = factory.transports[1].requests
+        let requests = factory.run(1).requests
         let firstPOST = try XCTUnwrap(requests.firstIndex { $0.route.isMutating })
         // Every one of the ten approved items was re-read before anything was
         // written: one batch vocabulary resolution + 10 interpretations reads.
@@ -204,7 +204,7 @@ final class MixedBatchRunTests: XCTestCase {
 
         await model.executeConfirmedWholePlan()?.value
 
-        let requests = factory.transports[1].requests
+        let requests = factory.run(1).requests
         let posts = requests.filter { $0.route.isMutating }
         XCTAssertEqual(posts.count, 10)
         // Max one POST per item, across both phases: no request ever repeats.
@@ -235,7 +235,7 @@ final class MixedBatchRunTests: XCTestCase {
 
         await model.executeConfirmedWholePlan()?.value
 
-        let requests = factory.transports[1].requests
+        let requests = factory.run(1).requests
         let posts = requests.enumerated().filter { $0.element.route.isMutating }
         XCTAssertEqual(posts.count, 3)
         // Between the last CREATE POST's readback and the UPDATE POST there is a

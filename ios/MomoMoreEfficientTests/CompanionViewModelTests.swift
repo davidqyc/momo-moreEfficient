@@ -484,7 +484,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(model.isShowingEditor)
     }
 
-    func testCompactRowsHideBodiesUntilExpanded() async {
+    func testCompactRowsHideBodiesUntilExpanded() async throws {
         let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
             [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])],
@@ -492,7 +492,7 @@ final class CompanionViewModelTests: XCTestCase {
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新版"
         await model.previewCurrentInput()
-        let row = try! XCTUnwrap(model.preview?.rows.first)
+        let row = try XCTUnwrap(model.preview?.rows.first)
 
         XCTAssertEqual(row.classification.compactLabel, "更新")
         XCTAssertNil(model.details(for: row))
@@ -584,7 +584,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(replacement.isEmpty)
     }
 
-    func testBackgroundPreservesExpandedPresentationButClearsExecutionAuthorization() async {
+    func testBackgroundPreservesExpandedPresentationButClearsExecutionAuthorization() async throws {
         let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
             [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])],
@@ -593,7 +593,7 @@ final class CompanionViewModelTests: XCTestCase {
         model.sourceText = "word\nn. 新版"
         await model.previewCurrentInput()
         let presentation = model.preview
-        let row = try! XCTUnwrap(model.preview?.rows.first)
+        let row = try XCTUnwrap(model.preview?.rows.first)
         model.toggleDetails(for: row)
         model.askToExecute(.update)
 
@@ -644,8 +644,8 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
 
         XCTAssertEqual(factory.transports.count, 2)
-        XCTAssertEqual(factory.transports[1].readCount, 2)
-        XCTAssertEqual(factory.transports[1].postCount, 0)
+        XCTAssertEqual(factory.run(1).readCount, 2)
+        XCTAssertEqual(factory.run(1).postCount, 0)
         XCTAssertFalse(model.isPreviewStale)
         XCTAssertTrue(model.hasExecutablePreview)
         XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 0"])
@@ -806,8 +806,8 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
 
         XCTAssertEqual(factory.transports.count, 3)
-        XCTAssertEqual(factory.transports[2].readCount, 2)
-        XCTAssertEqual(factory.transports[2].postCount, 0)
+        XCTAssertEqual(factory.run(2).readCount, 2)
+        XCTAssertEqual(factory.run(2).postCount, 0)
         XCTAssertEqual(model.preview?.counts, PreviewCounts(
             create: 0,
             update: 1,
@@ -892,8 +892,8 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
 
         XCTAssertEqual(factory.transports.count, 3)
-        XCTAssertEqual(factory.transports[2].readCount, 3)
-        XCTAssertEqual(factory.transports[2].postCount, 0)
+        XCTAssertEqual(factory.run(2).readCount, 3)
+        XCTAssertEqual(factory.run(2).postCount, 0)
         XCTAssertEqual(model.preview?.counts, PreviewCounts(
             create: 2,
             update: 0,
@@ -1013,6 +1013,22 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(model.history.count, 1)
     }
 
+    /// #164 R1. Five tests in this class killed the whole test host during the
+    /// #164 stub migration: `XCTAssertEqual(transports.count, n)` only records a
+    /// failure, so execution fell into `transports[n - 1]` and trapped in the
+    /// Swift runtime. Each trap surfaced to the Owner as a macOS
+    /// "MomoMoreEfficient quit unexpectedly" alert and discarded every remaining
+    /// test in that launch. Reading a run must report instead.
+    func testMissingTransportRunIsReportedInsteadOfTrappingTheTestHost() {
+        let factory = SequencedTransportFactory([[]])
+        _ = factory.make()
+
+        XCTAssertEqual(factory.transports.count, 1)
+        XCTExpectFailure("an absent transport run must fail the test, not the process") {
+            XCTAssertEqual(factory.run(1).requests.count, 0)
+        }
+    }
+
     func testArmedApprovalStillRequiresFreshMatchingPreflight() async {
         let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
@@ -1033,8 +1049,8 @@ final class CompanionViewModelTests: XCTestCase {
         await execution?.value
 
         XCTAssertEqual(factory.transports.count, 2)
-        XCTAssertEqual(factory.transports[1].readCount, 2)
-        XCTAssertEqual(factory.transports[1].postCount, 0)
+        XCTAssertEqual(factory.run(1).readCount, 2)
+        XCTAssertEqual(factory.run(1).postCount, 0)
         XCTAssertEqual(model.errorMessage, CompanionError.stalePreview.description)
         XCTAssertTrue(model.history.isEmpty)
         XCTAssertEqual(historyStore.saveCount, 0)
@@ -1380,6 +1396,30 @@ final class SequencedTransportFactory: @unchecked Sendable {
 
     init(_ runs: [[StubbedResult]]) {
         self.runs = runs
+    }
+
+    /// The spy for run `index`, or an empty spy plus a recorded failure when the
+    /// flow produced fewer runs than the test expected.
+    ///
+    /// `XCTAssertEqual(transports.count, n)` only *records* a failure; execution
+    /// falls straight into the next line. Subscripting there traps in the Swift
+    /// runtime and kills the whole test host, so the developer sees a macOS
+    /// "MomoMoreEfficient quit unexpectedly" alert and loses every remaining
+    /// test in that launch instead of reading one precise failure (#164 R1).
+    func run(
+        _ index: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> FakeHTTPTransport {
+        guard transports.indices.contains(index) else {
+            XCTFail(
+                "expected at least \(index + 1) transport runs, got \(transports.count)",
+                file: file,
+                line: line
+            )
+            return FakeHTTPTransport([])
+        }
+        return transports[index]
     }
 
     func make() -> HTTPTransport {

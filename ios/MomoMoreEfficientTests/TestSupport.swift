@@ -286,9 +286,16 @@ func vocabularyResponse(_ id: String, _ spelling: String) -> StubbedResult {
     jsonResponse(["voc": ["id": id, "spelling": spelling]])
 }
 
-/// One batch vocabulary-query response, in the caller-supplied record order.
+/// One batch vocabulary-query response, in the caller-supplied record order,
+/// in the exact first-party raw envelope the official `maimemo/memo-api-cli`
+/// vocabulary-query test models: `{ data: { voc: [...] }, errors: [], success }`.
+/// Every stubbed preflight in this suite therefore runs against that shape.
 func vocabularyQueryResponse(_ records: [(id: String, spelling: String)]) -> StubbedResult {
-    jsonResponse(["voc_list": records.map { ["id": $0.id, "spelling": $0.spelling] }])
+    jsonResponse([
+        "data": ["voc": records.map { ["id": $0.id, "spelling": $0.spelling] }],
+        "errors": [],
+        "success": true,
+    ])
 }
 
 /// The batch query response a preflight over `spellings` normally receives.
