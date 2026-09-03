@@ -21,7 +21,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertFalse(rejected.isConnected)
         XCTAssertFalse(rejectedStore.hasStoredToken)
         XCTAssertEqual(rejectedStore.saveCount, 0)
-        XCTAssertEqual(rejectedTransport.getCount, 1)
+        XCTAssertEqual(rejectedTransport.readCount, 1)
         XCTAssertEqual(rejectedTransport.postCount, 0)
         XCTAssertNotNil(rejected.tokenErrorMessage)
 
@@ -71,9 +71,9 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertFalse(model.isValidatingCredential)
         XCTAssertTrue(model.isConnected)
         XCTAssertEqual(store.saveCount, 1)
-        let getCount = await transport.getCount
+        let readCount = await transport.readCount
         let postCount = await transport.postCount
-        XCTAssertEqual(getCount, 1)
+        XCTAssertEqual(readCount, 1)
         XCTAssertEqual(postCount, 0)
     }
 
@@ -111,7 +111,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(model.tokenErrorMessage, failureBefore)
         XCTAssertEqual(store.storedTokenForTesting, savedBefore)
         XCTAssertEqual(rejectedTransport.postCount, 0)
-        XCTAssertEqual(restoreTransport.getCount, 1)
+        XCTAssertEqual(restoreTransport.readCount, 1)
         XCTAssertEqual(restoreTransport.postCount, 0)
     }
 
@@ -155,7 +155,7 @@ final class CompanionViewModelTests: XCTestCase {
         await model.enterForeground()
         XCTAssertTrue(model.isConnected)
         XCTAssertEqual(store.saveCount, 0)
-        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.readCount, 1)
         XCTAssertEqual(transport.postCount, 0)
     }
 
@@ -196,7 +196,7 @@ final class CompanionViewModelTests: XCTestCase {
             XCTAssertFalse(model.hasExecutablePreview)
             XCTAssertEqual(model.errorMessage, expectedError.description)
             XCTAssertEqual(model.isConnected, remainsConnected)
-            XCTAssertEqual(transport.getCount, 1)
+            XCTAssertEqual(transport.readCount, 1)
             XCTAssertEqual(transport.postCount, 0)
         }
     }
@@ -209,7 +209,7 @@ final class CompanionViewModelTests: XCTestCase {
         ]
         for (failure, expectedError, remainsConnected) in cases {
             let factory = SequencedTransportFactory([
-                [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+                [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
                 [failure],
             ])
             let model = connectedModel(factory)
@@ -230,9 +230,9 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testAuthenticationRejectionDuringReadbackDisconnectsAndRecordsUnknownWrite() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
                 jsonResponse([:], status: 201),
                 jsonResponse(["error": "auth"], status: 401),
             ],
@@ -279,7 +279,7 @@ final class CompanionViewModelTests: XCTestCase {
             model.tokenErrorMessage,
             "这个 Token 未通过墨墨验证；未保存，请检查后重试。"
         )
-        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.readCount, 1)
         XCTAssertEqual(transport.postCount, 0)
     }
 
@@ -341,7 +341,7 @@ final class CompanionViewModelTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let historyStore = InMemoryHistoryStore()
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
         ])
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
@@ -433,7 +433,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testPreviewLoadingStateIsImmediatelyVisibleAndPreventsDuplicateStart() async {
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
         let gate = GateSleeper()
@@ -457,7 +457,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(model.isShowingEditor)
 
         await model.previewCurrentInput()
-        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.readCount, 1)
 
         model.enterBackground()
         await gate.resume()
@@ -469,7 +469,7 @@ final class CompanionViewModelTests: XCTestCase {
     func testSuccessfulPreviewCollapsesEditorAndBuildsCompactHeader() async {
         let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "sphere")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory, historyStore: historyStore)
         model.sourceText = "sphere\nn. 球体"
@@ -484,15 +484,15 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(model.isShowingEditor)
     }
 
-    func testCompactRowsHideBodiesUntilExpanded() async {
+    func testCompactRowsHideBodiesUntilExpanded() async throws {
         let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新版"
         await model.previewCurrentInput()
-        let row = try! XCTUnwrap(model.preview?.rows.first)
+        let row = try XCTUnwrap(model.preview?.rows.first)
 
         XCTAssertEqual(row.classification.compactLabel, "更新")
         XCTAssertNil(model.details(for: row))
@@ -516,8 +516,8 @@ final class CompanionViewModelTests: XCTestCase {
         let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
             [
-                vocabularyResponse("INVALID_VOC_A", "create"), interpretationsResponse([]),
-                vocabularyResponse("INVALID_VOC_B", "update"), interpretationsResponse([old]),
+                vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "create"), (id: "INVALID_VOC_B", spelling: "update")]), interpretationsResponse([]),
+                interpretationsResponse([old]),
             ],
         ])
         let model = connectedModel(factory)
@@ -534,8 +534,8 @@ final class CompanionViewModelTests: XCTestCase {
     func testSingleGroupPreviewKeepsTheOriginalSeparateActions() async {
         let factory = SequencedTransportFactory([
             [
-                vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
-                vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "one"), (id: "INVALID_VOC_B", spelling: "two")]), interpretationsResponse([]),
+                interpretationsResponse([]),
             ],
         ])
         let model = connectedModel(factory)
@@ -549,7 +549,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testSourceEditClearsStalePreviewPresentation() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -566,7 +566,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testCredentialReplacementClearsStalePreviewPresentation() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -584,16 +584,16 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertTrue(replacement.isEmpty)
     }
 
-    func testBackgroundPreservesExpandedPresentationButClearsExecutionAuthorization() async {
+    func testBackgroundPreservesExpandedPresentationButClearsExecutionAuthorization() async throws {
         let old = interpretation("INVALID_RECORD", "n. 旧版", tags: ["考研"])
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新版"
         await model.previewCurrentInput()
         let presentation = model.preview
-        let row = try! XCTUnwrap(model.preview?.rows.first)
+        let row = try XCTUnwrap(model.preview?.rows.first)
         model.toggleDetails(for: row)
         model.askToExecute(.update)
 
@@ -613,7 +613,7 @@ final class CompanionViewModelTests: XCTestCase {
     func testForegroundCredentialRestoreKeepsPreservedPreviewStaleAndReadOnly() async {
         let store = FakeTokenStore()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory, tokenStore: store)
         model.sourceText = "word\nn. 新建"
@@ -631,8 +631,8 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testSuccessfulRepreviewUsesGETOnlyAndRestoresExecutableActions() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -644,8 +644,8 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
 
         XCTAssertEqual(factory.transports.count, 2)
-        XCTAssertEqual(factory.transports[1].getCount, 2)
-        XCTAssertEqual(factory.transports[1].postCount, 0)
+        XCTAssertEqual(factory.run(1).readCount, 2)
+        XCTAssertEqual(factory.run(1).postCount, 0)
         XCTAssertFalse(model.isPreviewStale)
         XCTAssertTrue(model.hasExecutablePreview)
         XCTAssertEqual(model.executionActions.map(\.title), ["新建 1", "更新 0"])
@@ -653,7 +653,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testBackgroundTimeExpiryCancelsPreviewBeforeItsNextGET() async {
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
         let gate = GateSleeper()
@@ -675,7 +675,7 @@ final class CompanionViewModelTests: XCTestCase {
         await gate.resume()
         await previewTask.value
 
-        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.readCount, 1)
         XCTAssertEqual(transport.postCount, 0)
         XCTAssertNil(model.preview)
         XCTAssertFalse(model.isPreviewing)
@@ -684,7 +684,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testExplicitRemoveDeletesCredentialAndPreview() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let store = FakeTokenStore()
         let model = connectedModel(factory, tokenStore: store)
@@ -707,9 +707,9 @@ final class CompanionViewModelTests: XCTestCase {
     func testCompletedCreateInvalidatesExecutablePreview() async {
         let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
                 jsonResponse([:], status: 201),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
             ],
@@ -744,11 +744,9 @@ final class CompanionViewModelTests: XCTestCase {
         let expectedRemainder = "## UpDate.Exact\n\(updateBody)"
         let oldUpdate = interpretation("INVALID_RECORD_UPDATE", "v. 旧版", tags: ["考研"])
         let fullPreflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_CREATE_A", "Create-First"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_CREATE_A", spelling: "Create-First"), (id: "INVALID_VOC_UPDATE", spelling: "UpDate.Exact"), (id: "INVALID_VOC_CREATE_B", spelling: "create-last")]),
             interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_UPDATE", "UpDate.Exact"),
             interpretationsResponse([oldUpdate]),
-            vocabularyResponse("INVALID_VOC_CREATE_B", "create-last"),
             interpretationsResponse([]),
         ]
         let historyStore = InMemoryHistoryStore()
@@ -765,11 +763,11 @@ final class CompanionViewModelTests: XCTestCase {
                 ]),
             ],
             [
-                vocabularyResponse("INVALID_VOC_UPDATE", "UpDate.Exact"),
+                vocabularyQueryResponse([(id: "INVALID_VOC_UPDATE", spelling: "UpDate.Exact")]),
                 interpretationsResponse([oldUpdate]),
             ],
             [
-                vocabularyResponse("INVALID_VOC_UPDATE", "UpDate.Exact"),
+                vocabularyQueryResponse([(id: "INVALID_VOC_UPDATE", spelling: "UpDate.Exact")]),
                 interpretationsResponse([oldUpdate]),
                 jsonResponse([:]),
                 interpretationsResponse([
@@ -808,8 +806,8 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
 
         XCTAssertEqual(factory.transports.count, 3)
-        XCTAssertEqual(factory.transports[2].getCount, 2)
-        XCTAssertEqual(factory.transports[2].postCount, 0)
+        XCTAssertEqual(factory.run(2).readCount, 2)
+        XCTAssertEqual(factory.run(2).postCount, 0)
         XCTAssertEqual(model.preview?.counts, PreviewCounts(
             create: 0,
             update: 1,
@@ -848,11 +846,9 @@ final class CompanionViewModelTests: XCTestCase {
         ].joined(separator: "\n\n")
         let oldUpdate = interpretation("INVALID_RECORD_UPDATE", "v. 旧目标", tags: ["考研"])
         let fullPreflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_CREATE_A", "Zeta.Create"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_CREATE_A", spelling: "Zeta.Create"), (id: "INVALID_VOC_UPDATE", spelling: "Middle-UPDATE"), (id: "INVALID_VOC_CREATE_B", spelling: "alpha.Create")]),
             interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_UPDATE", "Middle-UPDATE"),
             interpretationsResponse([oldUpdate]),
-            vocabularyResponse("INVALID_VOC_CREATE_B", "alpha.Create"),
             interpretationsResponse([]),
         ]
         let historyStore = InMemoryHistoryStore()
@@ -865,9 +861,8 @@ final class CompanionViewModelTests: XCTestCase {
                 ]),
             ],
             [
-                vocabularyResponse("INVALID_VOC_CREATE_A", "Zeta.Create"),
+                vocabularyQueryResponse([(id: "INVALID_VOC_CREATE_A", spelling: "Zeta.Create"), (id: "INVALID_VOC_CREATE_B", spelling: "alpha.Create")]),
                 interpretationsResponse([]),
-                vocabularyResponse("INVALID_VOC_CREATE_B", "alpha.Create"),
                 interpretationsResponse([]),
             ],
         ])
@@ -897,8 +892,8 @@ final class CompanionViewModelTests: XCTestCase {
         await model.previewCurrentInput()
 
         XCTAssertEqual(factory.transports.count, 3)
-        XCTAssertEqual(factory.transports[2].getCount, 4)
-        XCTAssertEqual(factory.transports[2].postCount, 0)
+        XCTAssertEqual(factory.run(2).readCount, 3)
+        XCTAssertEqual(factory.run(2).postCount, 0)
         XCTAssertEqual(model.preview?.counts, PreviewCounts(
             create: 2,
             update: 0,
@@ -912,9 +907,8 @@ final class CompanionViewModelTests: XCTestCase {
         let source = "create\nn. 新建\nupdate\nn. 更新"
         let oldUpdate = interpretation("INVALID_RECORD_UPDATE", "n. 旧", tags: ["考研"])
         let fullPreflight: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_CREATE", "create"),
+            vocabularyQueryResponse([(id: "INVALID_VOC_CREATE", spelling: "create"), (id: "INVALID_VOC_UPDATE", spelling: "update")]),
             interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_UPDATE", "update"),
             interpretationsResponse([oldUpdate]),
         ]
         let historyStore = InMemoryHistoryStore()
@@ -946,7 +940,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testDirectConfirmedExecutionWithoutArmedIntentSendsZeroPOST() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -963,8 +957,8 @@ final class CompanionViewModelTests: XCTestCase {
         let old = interpretation("INVALID_RECORD", "n. 旧", tags: ["考研"])
         let factory = SequencedTransportFactory([
             [
-                vocabularyResponse("INVALID_VOC_A", "create"), interpretationsResponse([]),
-                vocabularyResponse("INVALID_VOC_B", "update"), interpretationsResponse([old]),
+                vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "create"), (id: "INVALID_VOC_B", spelling: "update")]), interpretationsResponse([]),
+                interpretationsResponse([old]),
             ],
         ])
         let model = connectedModel(factory)
@@ -981,7 +975,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testCancelledConfirmationCannotAuthorizeExecution() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -998,9 +992,9 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testConsumedApprovalCannotBeReplayed() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
                 jsonResponse([:], status: 201),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
             ],
@@ -1019,12 +1013,28 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(model.history.count, 1)
     }
 
+    /// #164 R1. Five tests in this class killed the whole test host during the
+    /// #164 stub migration: `XCTAssertEqual(transports.count, n)` only records a
+    /// failure, so execution fell into `transports[n - 1]` and trapped in the
+    /// Swift runtime. Each trap surfaced to the Owner as a macOS
+    /// "MomoMoreEfficient quit unexpectedly" alert and discarded every remaining
+    /// test in that launch. Reading a run must report instead.
+    func testMissingTransportRunIsReportedInsteadOfTrappingTheTestHost() {
+        let factory = SequencedTransportFactory([[]])
+        _ = factory.make()
+
+        XCTAssertEqual(factory.transports.count, 1)
+        XCTExpectFailure("an absent transport run must fail the test, not the process") {
+            XCTAssertEqual(factory.run(1).requests.count, 0)
+        }
+    }
+
     func testArmedApprovalStillRequiresFreshMatchingPreflight() async {
         let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
                 interpretationsResponse([
                     interpretation("INVALID_RECORD", "n. 现在存在", tags: ["考研"]),
                 ]),
@@ -1039,8 +1049,8 @@ final class CompanionViewModelTests: XCTestCase {
         await execution?.value
 
         XCTAssertEqual(factory.transports.count, 2)
-        XCTAssertEqual(factory.transports[1].getCount, 2)
-        XCTAssertEqual(factory.transports[1].postCount, 0)
+        XCTAssertEqual(factory.run(1).readCount, 2)
+        XCTAssertEqual(factory.run(1).postCount, 0)
         XCTAssertEqual(model.errorMessage, CompanionError.stalePreview.description)
         XCTAssertTrue(model.history.isEmpty)
         XCTAssertEqual(historyStore.saveCount, 0)
@@ -1048,7 +1058,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testInputEditInvalidatesArmedApproval() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -1065,7 +1075,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testCredentialChangeInvalidatesArmedApprovalEvenForSameToken() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -1085,8 +1095,8 @@ final class CompanionViewModelTests: XCTestCase {
         let historyStore = InMemoryHistoryStore()
         let assertion = FakeBackgroundExecutionAssertion()
         let oldPreviewResults: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "one"), (id: "INVALID_VOC_B", spelling: "two")]), interpretationsResponse([]),
+            interpretationsResponse([]),
         ]
         let previewTransport = FakeHTTPTransport(oldPreviewResults)
         let executionTransport = PausingPOSTTransport(oldPreviewResults + [
@@ -1110,9 +1120,9 @@ final class CompanionViewModelTests: XCTestCase {
         await execution?.value
 
         let postCount = await executionTransport.postCount
-        let getCount = await executionTransport.getCount
+        let readCount = await executionTransport.readCount
         XCTAssertEqual(postCount, 1)
-        XCTAssertEqual(getCount, 5)
+        XCTAssertEqual(readCount, 4)
         XCTAssertEqual(model.finalSummary.created, 1)
         XCTAssertEqual(model.finalSummary.failed, 0)
         XCTAssertEqual(model.finalSummary.notAttempted, 1)
@@ -1131,7 +1141,7 @@ final class CompanionViewModelTests: XCTestCase {
         let historyStore = InMemoryHistoryStore()
         let assertion = FakeBackgroundExecutionAssertion()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory, historyStore: historyStore, assertion: assertion)
         model.sourceText = "word\nn. 新建"
@@ -1162,8 +1172,8 @@ final class CompanionViewModelTests: XCTestCase {
         let oldA = interpretation("INVALID_RECORD_A", "n. 旧一", tags: ["考研"])
         let oldB = interpretation("INVALID_RECORD_B", "n. 旧二", tags: ["考研"])
         let previewResults: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([oldA]),
-            vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([oldB]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "one"), (id: "INVALID_VOC_B", spelling: "two")]), interpretationsResponse([oldA]),
+            interpretationsResponse([oldB]),
         ]
         let previewTransport = FakeHTTPTransport(previewResults)
         let executionTransport = PausingPOSTTransport(previewResults + [
@@ -1206,9 +1216,9 @@ final class CompanionViewModelTests: XCTestCase {
         let old = interpretation("INVALID_RECORD", "n. 旧", tags: ["考研"])
         let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([old])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "sphere")]), interpretationsResponse([old])],
             [
-                vocabularyResponse("INVALID_VOC", "sphere"), interpretationsResponse([old]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "sphere")]), interpretationsResponse([old]),
                 jsonResponse([:]),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 球体")]),
             ],
@@ -1235,9 +1245,9 @@ final class CompanionViewModelTests: XCTestCase {
     func testStartingNewDraftClearsAcknowledgementButPreservesHistory() async {
         let historyStore = InMemoryHistoryStore()
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
                 jsonResponse([:], status: 201),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
             ],
@@ -1291,9 +1301,9 @@ final class CompanionViewModelTests: XCTestCase {
         let historyStore = InMemoryHistoryStore()
         historyStore.failSave = true
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
             [
-                vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
                 jsonResponse([:], status: 201),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
             ],
@@ -1317,7 +1327,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testPublicStateAndErrorsNeverExposeFakeToken() async {
         let factory = SequencedTransportFactory([
-            [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])],
+            [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
         ])
         let model = connectedModel(factory)
         model.sourceText = "word\nn. 新建"
@@ -1386,6 +1396,30 @@ final class SequencedTransportFactory: @unchecked Sendable {
 
     init(_ runs: [[StubbedResult]]) {
         self.runs = runs
+    }
+
+    /// The spy for run `index`, or an empty spy plus a recorded failure when the
+    /// flow produced fewer runs than the test expected.
+    ///
+    /// `XCTAssertEqual(transports.count, n)` only *records* a failure; execution
+    /// falls straight into the next line. Subscripting there traps in the Swift
+    /// runtime and kills the whole test host, so the developer sees a macOS
+    /// "MomoMoreEfficient quit unexpectedly" alert and loses every remaining
+    /// test in that launch instead of reading one precise failure (#164 R1).
+    func run(
+        _ index: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> FakeHTTPTransport {
+        guard transports.indices.contains(index) else {
+            XCTFail(
+                "expected at least \(index + 1) transport runs, got \(transports.count)",
+                file: file,
+                line: line
+            )
+            return FakeHTTPTransport([])
+        }
+        return transports[index]
     }
 
     func make() -> HTTPTransport {

@@ -165,6 +165,19 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         case let .vocabulary(spelling):
             return try json(["voc": ["id": vocabularyID(for: spelling), "spelling": spelling]])
 
+        case .vocabularyQuery:
+            let spellings = (try? queryPayload(request.body))?["spellings"] as? [String] ?? []
+            // The first-party raw envelope: `{ data: { voc: [...] }, ... }`.
+            return try json([
+                "data": [
+                    "voc": spellings.map {
+                        ["id": vocabularyID(for: $0), "spelling": $0]
+                    },
+                ],
+                "errors": [],
+                "success": true,
+            ])
+
         case let .interpretations(vocabularyID):
             return try json(["interpretations": records(for: vocabularyID)])
 
@@ -293,6 +306,15 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         nextPhraseNumber += 1
         storedPhrases[vocabularyID, default: []].append(phrase)
         lock.unlock()
+    }
+
+    private func queryPayload(_ body: Data?) throws -> [String: Any] {
+        guard let body,
+              let object = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        else {
+            throw CompanionError.responseRejected
+        }
+        return object
     }
 
     private func interpretationPayload(_ body: Data?) throws -> [String: Any] {

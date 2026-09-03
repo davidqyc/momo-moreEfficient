@@ -131,7 +131,7 @@ final class BindingAndExecutionTests: XCTestCase {
         let (shown, _, _) = try await makeSnapshot(
             document: document,
             results: [
-                vocabularyResponse("INVALID_VOC", "word"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
                 interpretationsResponse([old]),
             ],
             tags: ["MBA"]
@@ -143,7 +143,7 @@ final class BindingAndExecutionTests: XCTestCase {
         XCTAssertEqual(shown.presentation.rows[0].proposedTags, ["MBA"])
 
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old]),
             jsonResponse([:]),
             interpretationsResponse([
                 interpretation("INVALID_RECORD", "n. 保持正文", tags: ["MBA"]),
@@ -156,7 +156,7 @@ final class BindingAndExecutionTests: XCTestCase {
         )
         XCTAssertEqual(summary.succeeded, 1)
         XCTAssertEqual(transport.postCount, 1)
-        let post = try XCTUnwrap(requests.first(where: { $0.route.method == .post }))
+        let post = try XCTUnwrap(requests.first(where: { $0.route.isMutating }))
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: try XCTUnwrap(post.body)) as? [String: Any]
         )
@@ -168,10 +168,10 @@ final class BindingAndExecutionTests: XCTestCase {
         let document = "word\nn. 新建"
         let (shown, _, _) = try await makeSnapshot(
             document: document,
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
             jsonResponse([:], status: 201),
             interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
         ])
@@ -187,7 +187,8 @@ final class BindingAndExecutionTests: XCTestCase {
             summary.results[0].diagnostic?.readbackAttempts.map(\.category),
             [.success]
         )
-        XCTAssertEqual(requests.map(\.route.method), [.get, .get, .post, .get])
+        // batch resolution, content read, the one write, its readback.
+        XCTAssertEqual(requests.map(\.route.isMutating), [false, false, true, false])
         XCTAssertEqual(transport.postCount, 1)
     }
 
@@ -195,10 +196,10 @@ final class BindingAndExecutionTests: XCTestCase {
         let document = "word\nn. 新建"
         let (shown, _, _) = try await makeSnapshot(
             document: document,
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([
                 interpretation("INVALID_RECORD", "n. 现在存在", tags: ["考研"]),
             ]),
@@ -211,7 +212,7 @@ final class BindingAndExecutionTests: XCTestCase {
     func testTamperedOwnerApprovalCannotBypassChangedPlan() async throws {
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新建",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])]
         )
         let transport = FakeHTTPTransport([])
         let lease = try credentialLease()
@@ -240,26 +241,26 @@ final class BindingAndExecutionTests: XCTestCase {
     func testUncertainCreatePOSTUsesGETOnlyRecoveryAndNoSecondPOST() async throws {
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新建",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
             .failure(.transport),
             interpretationsResponse([interpretation("INVALID_RECORD", "n. 新建")]),
         ])
         let (summary, _) = try await execute(snapshot: shown, group: .create, transport: transport)
         XCTAssertEqual(summary.results.map(\.outcome), [.recovered])
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(transport.getCount, 3)
+        XCTAssertEqual(transport.readCount, 3)
     }
 
     func testUncertainCreateWithoutExactStateStops() async throws {
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新建",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
             .failure(.transport), interpretationsResponse([]),
         ])
         let (summary, _) = try await execute(snapshot: shown, group: .create, transport: transport)
@@ -272,10 +273,10 @@ final class BindingAndExecutionTests: XCTestCase {
         let old = interpretation("INVALID_RECORD", "n. 旧", tags: ["考研"])
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old]),
             jsonResponse([:]),
             interpretationsResponse([interpretation("INVALID_RECORD", "n. 新")]),
         ])
@@ -290,10 +291,10 @@ final class BindingAndExecutionTests: XCTestCase {
         let old = interpretation("INVALID_RECORD", "n. 旧", tags: ["考研"])
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old]),
             jsonResponse([:]),
             interpretationsResponse([interpretation("INVALID_OTHER", "n. 新")]),
         ])
@@ -306,10 +307,10 @@ final class BindingAndExecutionTests: XCTestCase {
         let old = interpretation("INVALID_RECORD", "n. 旧", tags: ["考研"])
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old])]
         )
         let transport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([old]),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([old]),
             .failure(.transport),
             interpretationsResponse([interpretation("INVALID_RECORD", "n. 新")]),
         ])
@@ -320,14 +321,14 @@ final class BindingAndExecutionTests: XCTestCase {
         )
         XCTAssertEqual(summary.results.map(\.outcome), [.recovered])
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(requests.suffix(2).map(\.route.method), [.post, .get])
+        XCTAssertEqual(requests.suffix(2).map(\.route.isMutating), [true, false])
     }
 
     func testMatchingUpdateNeverFallsBackToCreate() async throws {
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 相同",
             results: [
-                vocabularyResponse("INVALID_VOC", "word"),
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
                 interpretationsResponse([interpretation("INVALID_RECORD", "n. 相同")]),
             ]
         )
@@ -338,8 +339,8 @@ final class BindingAndExecutionTests: XCTestCase {
     func testRuntimeFailureStopsLaterItems() async throws {
         let document = "one\nn. 一\ntwo\nn. 二"
         let initial: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "one"), (id: "INVALID_VOC_B", spelling: "two")]), interpretationsResponse([]),
+            interpretationsResponse([]),
         ]
         let (shown, _, _) = try await makeSnapshot(document: document, results: initial)
         let transport = FakeHTTPTransport(initial + [
@@ -354,7 +355,7 @@ final class BindingAndExecutionTests: XCTestCase {
     func testCancellationBeforePOSTSendsZeroPOST() async throws {
         let (shown, _, _) = try await makeSnapshot(
             document: "word\nn. 新建",
-            results: [vocabularyResponse("INVALID_VOC", "word"), interpretationsResponse([])]
+            results: [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])]
         )
         let transport = FakeHTTPTransport([])
         let control = ExecutionControl()
@@ -372,8 +373,8 @@ final class BindingAndExecutionTests: XCTestCase {
     func testBackgroundAfterDispatchedPOSTAllowsReadbackButNoLaterWrite() async throws {
         let document = "one\nn. 一\ntwo\nn. 二"
         let initial: [StubbedResult] = [
-            vocabularyResponse("INVALID_VOC_A", "one"), interpretationsResponse([]),
-            vocabularyResponse("INVALID_VOC_B", "two"), interpretationsResponse([]),
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "one"), (id: "INVALID_VOC_B", spelling: "two")]), interpretationsResponse([]),
+            interpretationsResponse([]),
         ]
         let (shown, _, _) = try await makeSnapshot(document: document, results: initial)
         let transport = FakeHTTPTransport(initial + [
@@ -382,7 +383,7 @@ final class BindingAndExecutionTests: XCTestCase {
         ])
         let control = ExecutionControl()
         transport.onSend = { request in
-            if request.route.method == .post { control.requestCancellation() }
+            if request.route.isMutating { control.requestCancellation() }
         }
         let (summary, requests) = try await execute(
             snapshot: shown,
@@ -393,7 +394,7 @@ final class BindingAndExecutionTests: XCTestCase {
         XCTAssertEqual(summary.succeeded, 1)
         XCTAssertTrue(summary.cancelled)
         XCTAssertEqual(transport.postCount, 1)
-        XCTAssertEqual(requests.suffix(2).map(\.route.method), [.post, .get])
+        XCTAssertEqual(requests.suffix(2).map(\.route.isMutating), [true, false])
     }
 
     func testProductionSourcesContainNoUnreviewedPersistenceOrForbiddenRouteAPIs() throws {

@@ -7,6 +7,7 @@ enum HTTPMethod: String, Equatable, Sendable {
 
 enum InterpretationRoute: Equatable, Sendable {
     case vocabulary(spelling: String)
+    case vocabularyQuery
     case interpretations(vocabularyID: String)
     case createInterpretation
     case updateInterpretation(recordID: String)
@@ -17,8 +18,25 @@ enum InterpretationRoute: Equatable, Sendable {
         switch self {
         case .vocabulary, .interpretations, .phrases:
             return .get
-        case .createInterpretation, .updateInterpretation, .createPhrase:
+        case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase:
             return .post
+        }
+    }
+
+    /// Whether this route may change Maimemo state.
+    ///
+    /// The HTTP method alone no longer answers that (#164): the public batch
+    /// vocabulary query resolves existing targets over POST and writes nothing.
+    /// Every write-safety rule — one POST per changed item, no automatic POST
+    /// retry, approval authorization, uncertain-outcome handling — keys off this
+    /// property, never off `method`, so a read-semantic POST can never be
+    /// accounted for or retried as a mutation.
+    var isMutating: Bool {
+        switch self {
+        case .vocabulary, .vocabularyQuery, .interpretations, .phrases:
+            return false
+        case .createInterpretation, .updateInterpretation, .createPhrase:
+            return true
         }
     }
 
@@ -26,6 +44,8 @@ enum InterpretationRoute: Equatable, Sendable {
         switch self {
         case .vocabulary:
             return "/open/api/v1/vocabulary"
+        case .vocabularyQuery:
+            return "/open/api/v1/vocabulary/query"
         case .interpretations:
             return "/open/api/v1/interpretations"
         case .createInterpretation:
@@ -53,7 +73,7 @@ enum InterpretationRoute: Equatable, Sendable {
         case let .phrases(vocabularyID):
             guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
-        case .createInterpretation, .createPhrase:
+        case .vocabularyQuery, .createInterpretation, .createPhrase:
             break
         case let .updateInterpretation(recordID):
             guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }

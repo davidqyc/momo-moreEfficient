@@ -77,10 +77,21 @@ final class BatchParserTests: XCTestCase {
         XCTAssertEqual(roundTripped, entries)
     }
 
-    func testBatchAndInterpretationBoundsFailClosed() {
-        let tooMany = (0...30).map { "## w\($0)\nn. x" }.joined(separator: "\n\n")
-        XCTAssertThrowsError(try BatchParser.parseCanonical(tooMany))
-        XCTAssertThrowsError(try BatchParser.parseCanonical("## word\n" + String(repeating: "释", count: 2_001)))
+    /// #164 removed the artificial 30-item product cap. The real bounds — total
+    /// input bytes, per-interpretation length and duplicate spellings — stay.
+    func testRealInputBoundsFailClosedWithoutAnArtificialItemCap() throws {
+        let beyondOldCap = (0..<200).map { "## w\($0)\nn. x" }.joined(separator: "\n\n")
+        XCTAssertEqual(try BatchParser.parseCanonical(beyondOldCap).count, 200)
+
+        XCTAssertThrowsError(
+            try BatchParser.parseCanonical("## word\n" + String(repeating: "释", count: 2_001))
+        )
+        XCTAssertThrowsError(
+            try BatchParser.parseCanonical("## word\nn. 一\n\n## WORD\nn. 二")
+        )
+        let oversized = (0..<40_000).map { "## w\($0)\nn. 释义" }.joined(separator: "\n\n")
+        XCTAssertGreaterThan(oversized.utf8.count, CompanionConstants.maxInputBytes)
+        XCTAssertThrowsError(try BatchParser.parseCanonical(oversized))
     }
 
     @MainActor
@@ -102,5 +113,50 @@ final class BatchParserTests: XCTestCase {
         XCTAssertFalse(credential.debugDescription.contains(fakeToken))
         XCTAssertFalse(lease.debugDescription.contains(fakeToken))
         XCTAssertEqual(credential.fingerprint.count, 16)
+    }
+
+    // MARK: - Issue #164 — blank lines optional, no artificial item cap
+
+    /// The same unambiguous compact batch, with and without blank separators,
+    /// must produce identical entries.
+    func testCompactBatchParsesIdenticallyWithAndWithoutBlankLines() throws {
+        let records = [
+            "acquisition\nn. 收购\nv. 取得",
+            "liquidity\nn. 流动性",
+            "sphere\nn. 球体\nadj. 球形的",
+        ]
+        let spaced = try BatchParser.parseDailyInput(records.joined(separator: "\n\n"))
+        let dense = try BatchParser.parseDailyInput(records.joined(separator: "\n"))
+
+        XCTAssertEqual(spaced.entries, dense.entries)
+        XCTAssertEqual(dense.entries.map(\.spelling), ["acquisition", "liquidity", "sphere"])
+        XCTAssertEqual(dense.entries[0].interpretation, "n. 收购\nv. 取得")
+        XCTAssertEqual(spaced.canonicalText, dense.canonicalText)
+    }
+
+    func testCanonicalMarkdownParsesIdenticallyWithAndWithoutBlankLines() throws {
+        let records = ["## alpha\nn. 一", "## beta\nn. 二", "## gamma\nn. 三"]
+        XCTAssertEqual(
+            try BatchParser.parseCanonical(records.joined(separator: "\n\n")),
+            try BatchParser.parseCanonical(records.joined(separator: "\n"))
+        )
+    }
+
+    /// Removing the item cap must not make free-form boundaries guessable.
+    func testAmbiguousBoundariesStillRejectRatherThanGuess() {
+        XCTAssertThrowsError(try BatchParser.parseDailyInput("alpha\n一\nbeta\n二"))
+        XCTAssertThrowsError(try BatchParser.parseDailyInput("alpha\nn. 一\nbeta\n二"))
+        XCTAssertThrowsError(try BatchParser.parseDailyInput("n. 一\nn. 二"))
+    }
+
+    func testBatchesWellBeyondThirtyItemsParseInBothLayouts() throws {
+        let records = (0..<400).map { "word\($0)\nn. 释义\($0)" }
+        let spaced = try BatchParser.parseDailyInput(records.joined(separator: "\n\n"))
+        let dense = try BatchParser.parseDailyInput(records.joined(separator: "\n"))
+
+        XCTAssertEqual(spaced.entries.count, 400)
+        XCTAssertEqual(spaced.entries, dense.entries)
+        XCTAssertEqual(spaced.entries.map(\.ordinal), Array(1...400))
+        XCTAssertEqual(spaced.entries.last?.spelling, "word399")
     }
 }

@@ -184,7 +184,7 @@ final class ShareCaptureTests: XCTestCase {
         XCTAssertEqual(store.review?.replacementCount, 0)
         XCTAssertFalse(store.review?.replacedExistingReview ?? true)
         XCTAssertEqual(tokenStore.loadCount, 0)
-        XCTAssertEqual(transport.getCount, 0)
+        XCTAssertEqual(transport.readCount, 0)
         XCTAssertEqual(transport.postCount, 0)
         XCTAssertNil(model.preview)
         XCTAssertNil(model.phrasePreview)
@@ -233,7 +233,7 @@ final class ShareCaptureTests: XCTestCase {
         XCTAssertEqual(store.review?.replacementCount, 1)
         XCTAssertTrue(store.review?.replacedExistingReview ?? false)
         XCTAssertEqual(tokenStore.loadCount, 0)
-        XCTAssertEqual(transport.getCount, 0)
+        XCTAssertEqual(transport.readCount, 0)
         XCTAssertEqual(transport.postCount, 0)
         XCTAssertNil(model.preview)
         XCTAssertNil(model.phrasePreview)
@@ -260,11 +260,11 @@ final class ShareCaptureTests: XCTestCase {
         let inbox = makeInbox()
         try inbox.save(PendingCapture(text: "defer me"))
         let previewTransport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
         let executionTransport = FakeHTTPTransport([
-            vocabularyResponse("INVALID_VOC", "word"),
+            vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
             jsonResponse([:], status: 201),
             interpretationsResponse([interpretation("INVALID_RECORD", "n. value")]),
@@ -336,7 +336,7 @@ final class ShareCaptureTests: XCTestCase {
         XCTAssertEqual(tokenStore.loadCount, 0)
         XCTAssertEqual(tokenStore.saveCount, 0)
         XCTAssertEqual(tokenStore.deleteCount, 0)
-        XCTAssertEqual(transport.getCount, 0)
+        XCTAssertEqual(transport.readCount, 0)
         XCTAssertEqual(transport.postCount, 0)
         XCTAssertFalse(model.isConnected)
         XCTAssertNil(model.preview)
@@ -379,7 +379,7 @@ final class ShareCaptureTests: XCTestCase {
         )
         XCTAssertEqual(resumed, .restoredNormally)
         XCTAssertEqual(tokenStore.loadCount, 1)
-        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(transport.readCount, 1)
         XCTAssertEqual(transport.postCount, 0)
     }
 

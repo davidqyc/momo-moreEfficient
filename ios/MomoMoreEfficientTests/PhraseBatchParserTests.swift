@@ -198,4 +198,81 @@ final class PhraseBatchParserTests: XCTestCase {
             XCTAssertEqual($0 as? CompanionError, .inputRejected, file: file, line: line)
         }
     }
+
+    // MARK: - Issue #164 — blank lines optional, no artificial item cap
+
+    func testNativeRecordsParseIdenticallyWithAndWithoutBlankLines() throws {
+        let records = [
+            "acquisition\nThe acquisition closed\n这次收购完成了",
+            "liquidity\nLiquidity matters\n流动性很重要\nWSJ",
+            "sphere\nThe sphere rolled away\n球体滚走了",
+        ]
+        let spaced = try PhraseBatchParser.parse(records.joined(separator: "\n\n"))
+        let dense = try PhraseBatchParser.parse(records.joined(separator: "\n"))
+
+        XCTAssertEqual(spaced, dense)
+        XCTAssertEqual(dense.map(\.spelling), ["acquisition", "liquidity", "sphere"])
+        XCTAssertEqual(dense.map(\.source), [nil, "WSJ", nil])
+    }
+
+    func testLegacyLabelledRecordsRemainCompatibleWithAndWithoutBlankLines() throws {
+        let records = [
+            "## acquisition\nEN: The acquisition closed\nZH: 这次收购完成了\nSOURCE: WSJ",
+            "## liquidity\nEN: Liquidity matters\nZH: 流动性很重要\nSOURCE: 课堂笔记",
+        ]
+        let spaced = try PhraseBatchParser.parse(records.joined(separator: "\n\n"))
+        let dense = try PhraseBatchParser.parse(records.joined(separator: "\n"))
+
+        XCTAssertEqual(spaced, dense)
+        XCTAssertEqual(dense.map(\.source), ["WSJ", "课堂笔记"])
+    }
+
+    func testPhraseBatchesWellBeyondThirtyItemsParse() throws {
+        let records = (0..<300).map {
+            "word\($0)\nThe word\($0) appeared again\n第\($0)个词又出现了"
+        }
+        let entries = try PhraseBatchParser.parse(records.joined(separator: "\n\n"))
+
+        XCTAssertEqual(entries.count, 300)
+        XCTAssertEqual(entries.map(\.ordinal), Array(1...300))
+        XCTAssertEqual(entries.last?.spelling, "word299")
+        XCTAssertEqual(
+            try PhraseBatchParser.parse(records.joined(separator: "\n")),
+            entries
+        )
+    }
+
+    /// The former recursive search was exponential once the item cap was gone.
+    /// A fully ambiguous document must still reject, in linear work, at a size
+    /// the old engine could never have finished.
+    func testFullyAmbiguousLargeSegmentationRejectsWithoutCombinatorialSearch() {
+        var validations = 0
+        XCTAssertThrowsError(
+            try PhraseBatchParser.uniqueSegmentation(lineCount: 6_000) { _ in
+                validations += 1
+                return true
+            }
+        )
+        XCTAssertLessThanOrEqual(validations, 2 * 6_000)
+    }
+
+    func testUniqueSegmentationOfALargeDocumentStaysLinear() throws {
+        var validations = 0
+        let segments = try PhraseBatchParser.uniqueSegmentation(lineCount: 3_000) { range in
+            validations += 1
+            return range.count == 3 && range.lowerBound % 3 == 0
+        }
+        XCTAssertEqual(segments.count, 1_000)
+        XCTAssertEqual(segments.first, 0..<3)
+        XCTAssertEqual(segments.last, 2_997..<3_000)
+        XCTAssertLessThanOrEqual(validations, 2 * 3_000)
+    }
+
+    func testTotalInputByteBoundStillFailsClosed() {
+        let oversized = (0..<20_000).map {
+            "word\($0)\nThe word\($0) appeared again\n第\($0)个词又出现了"
+        }.joined(separator: "\n\n")
+        XCTAssertGreaterThan(oversized.utf8.count, CompanionConstants.maxInputBytes)
+        XCTAssertThrowsError(try PhraseBatchParser.parse(oversized))
+    }
 }

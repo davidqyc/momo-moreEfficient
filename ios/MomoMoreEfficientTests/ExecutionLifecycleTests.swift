@@ -565,13 +565,15 @@ final class ExecutionLifecycleTests: XCTestCase {
         return lines[index * 2 + 1]
     }
 
+    /// One batch vocabulary resolution, then one interpretation read per entry.
     private func previewRun(_ spellings: [String]) -> [StubbedResult] {
-        spellings.enumerated().flatMap { index, spelling in
-            [
-                vocabularyResponse("INVALID_VOC_\(index)", spelling),
-                interpretationsResponse([]),
-            ]
-        }
+        [
+            vocabularyQueryResponse(
+                spellings.enumerated().map {
+                    (id: "INVALID_VOC_\($0.offset)", spelling: $0.element)
+                }
+            ),
+        ] + spellings.map { _ in interpretationsResponse([]) }
     }
 
     private func waitForStage(

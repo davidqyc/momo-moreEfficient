@@ -91,6 +91,76 @@ final class MaimemoTransport {
         return VocabularyRecord(id: id, spelling: returned)
     }
 
+    /// The public batch vocabulary lookup used by #164's shared target resolver.
+    ///
+    /// HTTP POST with read/query semantics: it resolves existing vocabulary
+    /// targets and writes nothing, so it goes through `read` and is excluded
+    /// from mutating-POST accounting by `InterpretationRoute.isMutating`.
+    ///
+    /// Only response *schema* is judged here. Identity safety — exact spelling
+    /// attribution, uniqueness and a safe identifier — belongs to the resolver,
+    /// so an unsafe identifier stays a distinguishable per-item anomaly instead
+    /// of collapsing into "malformed response".
+    func vocabularyQuery(
+        spellings: [String],
+        control: ExecutionControl? = nil
+    ) async throws -> [VocabularyRecord] {
+        guard !spellings.isEmpty,
+              spellings.count <= CompanionConstants.vocabularyQueryChunkSize
+        else {
+            throw CompanionError.inputRejected
+        }
+        let body = try JSONSerialization.data(
+            withJSONObject: ["spellings": spellings, "ids": []],
+            options: [.sortedKeys]
+        )
+        let response = try await read(
+            route: .vocabularyQuery,
+            body: body,
+            control: control,
+            readback: false
+        )
+        return try decodeVocabularyList(response.body)
+    }
+
+    private func decodeVocabularyList(_ data: Data) throws -> [VocabularyRecord] {
+        guard data.count <= 1_048_576,
+              let root = try? JSONSerialization.jsonObject(with: data)
+        else {
+            throw CompanionError.responseRejected
+        }
+        guard let values = Self.vocabularyArray(in: root),
+              values.count <= CompanionConstants.vocabularyQueryChunkSize
+        else {
+            throw CompanionError.responseRejected
+        }
+        return try values.map { value in
+            guard let record = value as? [String: Any],
+                  let id = record["id"] as? String,
+                  let spelling = record["spelling"] as? String
+            else {
+                throw CompanionError.responseRejected
+            }
+            return VocabularyRecord(id: id, spelling: spelling)
+        }
+    }
+
+    /// Locates the vocabulary array in the first-party batch-query envelope.
+    ///
+    /// The official `maimemo/memo-api-cli` transport (`src/client.ts`) reads a
+    /// successful body as `{ errors, data, success }` and returns `data`, and its
+    /// vocabulary-query test models the raw body as `{ data: { voc: [...] } }`.
+    /// So the list lives at `data.voc`; the unwrapped `voc` form is the same
+    /// one-level `data` tolerance the production vocabulary, interpretation and
+    /// phrase decoders already apply. No other key or shape is accepted, so an
+    /// unrecognised envelope stays a malformed response and can never let a
+    /// record be synthesised from a guess.
+    private static func vocabularyArray(in root: Any) -> [Any]? {
+        guard let object = root as? [String: Any] else { return nil }
+        let container = (object["voc"] != nil ? object : object["data"] as? [String: Any])
+        return container?["voc"] as? [Any]
+    }
+
     func interpretations(
         vocabularyID: String,
         control: ExecutionControl? = nil,
@@ -189,7 +259,10 @@ final class MaimemoTransport {
         control: ExecutionControl
     ) async -> PostDispatchResult {
         do {
-            guard route.method == .post else { return .notDispatched }
+            // Mutation semantics, not the HTTP verb: a read-semantic POST such
+            // as the batch vocabulary query must never reach one-POST-per-item
+            // accounting, approval authorization or write retry policy.
+            guard route.isMutating else { return .notDispatched }
             try await pace()
             guard control.beginPostIfAllowed() else { return .notDispatched }
             let request = try TransportRequest(route: route, body: body)
@@ -210,10 +283,11 @@ final class MaimemoTransport {
 
     private func read(
         route: InterpretationRoute,
+        body: Data? = nil,
         control: ExecutionControl?,
         readback: Bool
     ) async throws -> TransportResponse {
-        guard route.method == .get else { throw CompanionError.responseRejected }
+        guard !route.isMutating else { throw CompanionError.responseRejected }
         if let control {
             let allowed = readback
                 ? control.allowsInFlightReadback()
@@ -227,7 +301,7 @@ final class MaimemoTransport {
                 : control.allowsPreflightRequest()
             guard allowed else { throw CompanionError.cancelled }
         }
-        let request = try TransportRequest(route: route)
+        let request = try TransportRequest(route: route, body: body)
         let response = try await transport.send(request, credential: credential)
         try Self.validateReadStatus(response.status)
         return response

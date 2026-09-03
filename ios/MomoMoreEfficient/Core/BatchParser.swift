@@ -82,9 +82,6 @@ enum BatchParser {
                     throw CompanionError.inputRejected
                 }
                 headings.append((spelling, []))
-                guard headings.count <= CompanionConstants.maxBatchItems else {
-                    throw CompanionError.inputRejected
-                }
                 continue
             }
 

@@ -215,8 +215,14 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
             return "当前例句数量超过安全上限 5 条，无法安全新建"
         case "READ_FAILED":
             return "无法安全读取例句状态"
-        default:
+        case "VOCABULARY_NOT_FOUND":
+            return "未读取到可用词条目标"
+        case "VOCABULARY_MATCH_ANOMALY":
+            return "词条目标匹配异常"
+        case .none:
             return nil
+        default:
+            return "其他无法安全读取"
         }
     }
 }
@@ -327,22 +333,37 @@ struct PhrasePreflightPlanner {
         onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PhrasePreviewSnapshot {
         guard !entries.isEmpty,
-              entries.count <= CompanionConstants.maxBatchItems,
               (try? WriteTagPreference.canonicalized(tags)) == tags
         else {
             throw CompanionError.inputRejected
         }
 
+        // The same shared batch resolver interpretation preflight uses, so both
+        // modes bind write targets through one fail-closed identity contract.
+        let resolution = try await VocabularyTargetResolver(api: api).resolve(
+            spellings: entries.map(\.spelling),
+            control: control
+        )
+
         var planned: [PhrasePreflightItem] = []
-        for entry in entries {
+        for (index, entry) in entries.enumerated() {
             onEntryStarted?(entry.ordinal, entries.count)
-            do {
-                let vocabulary = try await api.vocabulary(
-                    spelling: entry.spelling,
-                    control: control
+            let outcome = resolution.outcomes[index]
+            guard let vocabularyID = outcome.vocabularyID else {
+                planned.append(
+                    PhrasePreflightItem(
+                        entry: entry,
+                        classification: .blocked,
+                        vocabularyID: nil,
+                        sameEnglishBaseline: [],
+                        reason: outcome.blockedReason
+                    )
                 )
+                continue
+            }
+            do {
                 let records = try await api.phrases(
-                    vocabularyID: vocabulary.id,
+                    vocabularyID: vocabularyID,
                     control: control
                 )
                 let active = records.filter { $0.status == CompanionConstants.status }
@@ -352,7 +373,7 @@ struct PhrasePreflightPlanner {
                         PhrasePreflightItem(
                             entry: entry,
                             classification: .alreadyMatching,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             sameEnglishBaseline: sameEnglish,
                             reason: nil
                         )
@@ -362,7 +383,7 @@ struct PhrasePreflightPlanner {
                         PhrasePreflightItem(
                             entry: entry,
                             classification: .blocked,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             sameEnglishBaseline: sameEnglish,
                             reason: "ACTIVE_CAPACITY_EXCEEDED"
                         )
@@ -372,7 +393,7 @@ struct PhrasePreflightPlanner {
                         PhrasePreflightItem(
                             entry: entry,
                             classification: .blocked,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             sameEnglishBaseline: sameEnglish,
                             reason: sameEnglish.count == 1
                                 ? "CONFLICTING_SAME_ENGLISH"
@@ -384,7 +405,7 @@ struct PhrasePreflightPlanner {
                         PhrasePreflightItem(
                             entry: entry,
                             classification: .blocked,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             sameEnglishBaseline: [],
                             reason: "ACTIVE_CAPACITY_REACHED"
                         )
@@ -394,7 +415,7 @@ struct PhrasePreflightPlanner {
                         PhrasePreflightItem(
                             entry: entry,
                             classification: .create,
-                            vocabularyID: vocabulary.id,
+                            vocabularyID: vocabularyID,
                             sameEnglishBaseline: [],
                             reason: nil
                         )
