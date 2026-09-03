@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-03
-sourceMainSha=bf0c914191d4ed7d3bfc5b1ee764d8538c5f63b3
+updatedAt=2026-09-04
+sourceMainSha=e549369e27df55c109650b09ab0e9ae7fc95964b
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -18,13 +18,13 @@ LAST_PRODUCT_MERGE=PR #172
 LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
 
 CURRENT_PRIMARY_ISSUE=#164
-CURRENT_PRIMARY_GATE=MACHINE_MIGRATION_HOLD
-CURRENT_RELEASE_GATE_STATUS=PAUSED_FOR_MACHINE_MIGRATION
-CURRENT_BLOCKER=Owner is switching Macs; no further Builder/canary execution should start on the old machine
-CURRENT_UNIQUE_NEXT=complete Apple Migration Assistant transfer, then on the new Mac verify the migrated private receipts directory before retiring the old Mac repo copy; after that re-establish live workspace truth and resume #164 only if still current
+CURRENT_PRIMARY_GATE=NEW_MAC_WORKSPACE_VERIFICATION
+CURRENT_RELEASE_GATE_STATUS=PAUSED_FOR_NEW_MAC_VERIFICATION
+CURRENT_BLOCKER=Apple Migration Assistant transfer is complete, but the migrated momo workspace identity/freshness and preserved artifacts/private/ directory have not yet been verified on the new Mac
+CURRENT_UNIQUE_NEXT=discover/prove the actual migrated workspace on the new Mac, verify repository identity/freshness plus artifacts/private/ metadata-only preservation, then clear the migration hold and resume #164 only if still current
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
-STUDY_RECORDS_BUILDER_ON_OLD_MACHINE=DO_NOT_START
+STUDY_RECORDS_BUILDER_BEFORE_NEW_MAC_VERIFY=DO_NOT_START
 NEXT_TESTFLIGHT_BLOCKED_BY=#164 Study Records resolution canary + exact-final-main release-candidate closeout + release decision
 ```
 
@@ -131,7 +131,7 @@ LOCAL_ONLY_GIT_STATE_REQUIRING_MIGRATION=none
 
 Legacy local commits not present under current `origin/*` refs were verified as pre-squash source history for already-merged PRs; stale `/private/tmp` worktree registrations contain no live local-only content.
 
-One non-Git private directory remains intentionally local-only:
+One non-Git private directory was intentionally local-only:
 
 ```text
 PRIVATE_MIGRATION_ITEM=artifacts/private/
@@ -142,38 +142,40 @@ PRIVATE_MIGRATION_CLASS=SENSITIVE_OR_PRIVATE_DO_NOT_PUBLISH
 
 It contains historical real-run Maimemo execution receipts plus one TestFlight export-options plist. It is intentionally gitignored and must never be pushed merely for migration.
 
-Owner decision:
+Owner decision and completed migration step:
 
 ```text
 PRIVATE_MIGRATION_DECISION=PRESERVE
 MIGRATION_METHOD=Apple Migration Assistant
+MIGRATION_ASSISTANT_TRANSFER_COMPLETED=yes_owner_confirmed_2026-09-04
 OLD_MAC_REPO_RETIREMENT_ALLOWED_BEFORE_NEW_MAC_VERIFY=no
 ```
 
-Apple Migration Assistant transfers selected user-account files/folders, but project retirement does not rely on expected behavior alone.
+### New-Mac preservation verification gate — CURRENT
 
-### New-Mac preservation verification gate
+Do not assume the old `/Users/<name>/...` path survived unchanged. Apple Migration Assistant can rename a transferred account if a same-name account exists on the new Mac; discover the actual migrated home/workspace first.
 
-Before erasing/retiring the old Mac repository copy, verify on the migrated new Mac:
+Verify the repository-relative directory on the new Mac:
 
 ```text
-/Users/<migrated-user>/Documents/GitHub/momo-moreEfficient/artifacts/private/
+artifacts/private/
 ```
 
 Acceptance:
 
 ```text
-DIRECTORY_PRESENT=yes
+MIGRATED_WORKSPACE_PRESENT=yes
+REPOSITORY_IDENTITY=davidqyc/momo-moreEfficient
+REMOTE_FRESHNESS=resolved against live origin/main
+PRIVATE_DIRECTORY_PRESENT=yes
 EXPECTED_FILE_COUNT=11
 APPROX_TOTAL_SIZE≈68 KB
 PRIVATE_CONTENT_NOT_OPENED_OR_PUBLISHED=yes
 ```
 
-If the path migrated under a different home-directory name, verify the equivalent repository-relative path `artifacts/private/` inside the migrated `momo-moreEfficient` workspace.
+Only after this verification may the old Mac repo copy be considered disposable and #164 execution resume on the new Mac.
 
-Only after that verification may the old Mac repo copy be considered disposable.
-
-## Migration hold / owning evidence
+## Migration / owning evidence
 
 ```text
 INITIAL_PHYSICAL_BLOCKER_COMMENT=5527374168
@@ -181,20 +183,20 @@ STUDY_API_ADJUDICATION_COMMENT=5527731297
 PARKED_OLD_MACHINE_RETURN_BRIDGE_COMMENT=5527775536
 MACHINE_MIGRATION_HOLD_COMMENT=5527985154
 LOCAL_CLOSURE_AUDIT_COMMENT=5528400497
+NEW_MAC_EXTERNAL_INCREMENT_COMMENT=5530880506
 FAILED_PR=173
 ```
 
-The pre-migration Owner instruction supersedes execution on the old Mac. The previously prepared Study-Records Builder Prompt is parked, not a migration artifact to execute mechanically later. On the new Mac, re-read live `main`, Owner preferences and `agent-skills`, then regenerate/revalidate the dispatch if #164 is still current.
+The previously prepared Study-Records Builder Prompt is parked and must not be executed mechanically after migration. On the new Mac, re-read live `main`, Owner preferences and `agent-skills`, then regenerate/revalidate the dispatch if #164 remains current.
 
 ## Resume sequence on the new Mac
 
 ```text
-Apple Migration Assistant transfer
--> verify migrated artifacts/private/ (11 files, ~68 KB)
--> only then permit old-Mac repo retirement/erase
--> establish/verify new Mac workspace and repository identity
--> non-destructively fetch live remote
--> read CHAT_HANDOFF.md + this file + Issue #164 current comments
+Migration Assistant transfer complete   <-- DONE
+-> discover/prove actual migrated momo workspace   <-- CURRENT
+-> verify artifacts/private/ (11 files, ~68 KB) by metadata only
+-> prove repository identity + live origin/main freshness
+-> clear migration hold / permit old-Mac retirement
 -> JIT re-resolve Agent family/model/effort
 -> resume #164 Study Records candidate only if still current
 -> physical read-only self-added canary
@@ -232,7 +234,7 @@ Fresh Chat / new-Mac takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #164 body + comments 5527731297, 5527985154, 5528400497
+-> Issue #164 body + comments 5527731297, 5527985154, 5528400497, 5530880506
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
