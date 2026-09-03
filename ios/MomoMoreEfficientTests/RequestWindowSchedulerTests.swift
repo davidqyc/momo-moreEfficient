@@ -138,7 +138,7 @@ final class RequestWindowSchedulerTests: XCTestCase {
         ]
         let scheduler = RequestWindowScheduler(windows: windows, now: clock.now)
 
-        var dispatchTimes: [Date] = []
+        var dispatchTimes: [ContinuousClock.Instant] = []
         for _ in 0..<80 {
             let wait = scheduler.reserveNextSlot().wait
             clock.advance(by: wait)
@@ -147,7 +147,7 @@ final class RequestWindowSchedulerTests: XCTestCase {
 
         for window in windows {
             for dispatchTime in dispatchTimes {
-                let windowStart = dispatchTime.addingTimeInterval(-window.duration)
+                let windowStart = dispatchTime.advanced(by: .seconds(-window.duration))
                 let countInWindow = dispatchTimes.filter { $0 > windowStart && $0 <= dispatchTime }.count
                 XCTAssertLessThanOrEqual(
                     countInWindow,
@@ -229,5 +229,104 @@ final class RequestWindowSchedulerTests: XCTestCase {
             third.wait, 10, accuracy: 0.0001,
             "a cancelled reservation must not double-count against the window"
         )
+    }
+
+    // MARK: - Monotonic clock authority (#168 repair)
+
+    /// The provider's windows measure real elapsed time, so the ledger must be
+    /// aged by a monotonic clock. The civil/system clock can be moved
+    /// independently of elapsed time (a user edit, an NTP correction, a
+    /// time-zone/DST adjustment), and a forward jump past a window's duration
+    /// must not release a slot: only 1s of real time has passed here, so the
+    /// 10s window still owes 9s no matter what the system clock now reads.
+    ///
+    /// This is exactly what the earlier `Date`-based ledger got wrong. Wired to
+    /// the same device, it would have read `civilNow()`, seen the single
+    /// dispatch entry as 5 hours old, pruned it, and returned a wait of 0 —
+    /// dispatching a second request 1 real second after the first, inside a
+    /// window that only permits one.
+    func testForwardSystemClockJumpDoesNotReleaseAWindowSlotEarly() {
+        let device = JumpingSystemClock()
+        let scheduler = RequestWindowScheduler(
+            windows: [.init(limit: 1, duration: 10)],
+            now: device.monotonicNow
+        )
+        let civilStart = device.civilNow()
+
+        let first = scheduler.reserveNextSlot()
+        XCTAssertEqual(first.wait, 0)
+        scheduler.confirmDispatch(first.ticket)
+
+        // One second of real elapsed time...
+        device.advanceRealTime(by: 1)
+        // ...but the system clock is set five hours forward.
+        device.jumpSystemClock(by: 5 * 60 * 60)
+        XCTAssertGreaterThan(
+            device.civilNow().timeIntervalSince(civilStart), 10,
+            "the scenario must jump civil time clear past the 10s window"
+        )
+
+        let second = scheduler.reserveNextSlot()
+        XCTAssertEqual(
+            second.wait, 9, accuracy: 0.0001,
+            "only 1s of real time elapsed, so the 10s window still owes 9s"
+        )
+    }
+
+    /// The mirror case: a backward civil-clock correction must not stretch a
+    /// window either. Real elapsed time already cleared it, so the next slot
+    /// is free regardless of what the system clock now reads.
+    func testBackwardSystemClockJumpDoesNotExtendAWindow() {
+        let device = JumpingSystemClock()
+        let scheduler = RequestWindowScheduler(
+            windows: [.init(limit: 1, duration: 10)],
+            now: device.monotonicNow
+        )
+
+        let first = scheduler.reserveNextSlot()
+        XCTAssertEqual(first.wait, 0)
+        scheduler.confirmDispatch(first.ticket)
+
+        device.advanceRealTime(by: 10)
+        device.jumpSystemClock(by: -5 * 60 * 60)
+
+        XCTAssertEqual(scheduler.reserveNextSlot().wait, 0, accuracy: 0.0001)
+    }
+}
+
+/// A device whose civil/system clock can be changed independently of real
+/// elapsed time. `monotonicNow` is the `ContinuousClock` reading production
+/// consumes; `civilNow` is what a `Date`-based ledger would have consumed, kept
+/// alongside only so a test can state the jump it is simulating.
+private final class JumpingSystemClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var monotonic = ContinuousClock.now
+    private var civil = Date(timeIntervalSince1970: 1_700_000_000)
+
+    func monotonicNow() -> ContinuousClock.Instant {
+        lock.lock()
+        defer { lock.unlock() }
+        return monotonic
+    }
+
+    func civilNow() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return civil
+    }
+
+    /// Real time passing: both clocks advance together.
+    func advanceRealTime(by seconds: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        monotonic = monotonic.advanced(by: .seconds(seconds))
+        civil = civil.addingTimeInterval(seconds)
+    }
+
+    /// The system clock being set: civil time moves, elapsed time does not.
+    func jumpSystemClock(by seconds: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        civil = civil.addingTimeInterval(seconds)
     }
 }

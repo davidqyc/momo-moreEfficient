@@ -216,20 +216,23 @@ final class RecordingSleeper: RequestSleeper, @unchecked Sendable {
     }
 }
 
-/// A manually-advanced clock for deterministic `RequestWindowScheduler` and
-/// pacing tests. Production pacing always advances real wall time by actually
-/// sleeping between requests, so tests that want to prove window math across
-/// several requests should advance this by exactly the wait each request
+/// A manually-advanced *monotonic* clock for deterministic
+/// `RequestWindowScheduler` and pacing tests. It hands out
+/// `ContinuousClock.Instant` values, the same elapsed-time representation
+/// production uses, so tests exercise the real window math rather than a
+/// civil-time stand-in. Production pacing always advances real elapsed time by
+/// actually sleeping between requests, so tests that want to prove window math
+/// across several requests should advance this by exactly the wait each request
 /// reported, mirroring that real caller behaviour.
 final class TestClock: @unchecked Sendable {
     private let lock = NSLock()
-    private var current: Date
+    private var current: ContinuousClock.Instant
 
-    init(start: Date = Date(timeIntervalSince1970: 1_700_000_000)) {
+    init(start: ContinuousClock.Instant = ContinuousClock.now) {
         current = start
     }
 
-    func now() -> Date {
+    func now() -> ContinuousClock.Instant {
         lock.lock()
         defer { lock.unlock() }
         return current
@@ -238,7 +241,7 @@ final class TestClock: @unchecked Sendable {
     func advance(by seconds: TimeInterval) {
         lock.lock()
         defer { lock.unlock() }
-        current = current.addingTimeInterval(seconds)
+        current = current.advanced(by: .seconds(seconds))
     }
 }
 
