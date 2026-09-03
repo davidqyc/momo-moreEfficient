@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-03
-sourceMainSha=bc03ee03e06bfa23a160e2599bebc9db34635812
+sourceMainSha=c9c91b3e6191c8d3f6c36595121d75f81328c90b
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -17,20 +17,21 @@ LAST_COMPLETED_PRODUCT_ISSUE=#168
 LAST_PRODUCT_MERGE=PR #172
 LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
 
-CURRENT_PRIMARY_GATE=EXACT_FINAL_MAIN_PHYSICAL_IPHONE_VALIDATION
-CURRENT_UNIQUE_NEXT=validate the exact current main build on the physical iPhone for the merged #167 + #168 capture/Preview path; if accepted, make the build-number / TestFlight release decision
+CURRENT_PRIMARY_ISSUE=#164
+CURRENT_PRIMARY_GATE=SELF_ADDED_VOCABULARY_TARGET_RESOLUTION_REPAIR
+CURRENT_RELEASE_GATE_STATUS=BLOCKED
+CURRENT_BLOCKER=an existing real self-added vocabulary item still blocks during authenticated physical-iPhone Preview target resolution on exact current main
+CURRENT_UNIQUE_NEXT=build the smallest batch-first resolver candidate that uses public exact GET only for batch-missed spellings; physically validate the existing self-added item read-only before merge
 
-IMPLEMENTATION_HOLD_FOR_OTHER_FEATURES=true
-NEXT_TESTFLIGHT_BLOCKED_BY=exact-final-main physical validation + later release decision
+IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
+NEXT_TESTFLIGHT_BLOCKED_BY=#164 self-added target-resolution repair + exact-candidate physical read-only canary + final release-candidate closeout + release decision
 ```
 
 ## Current engineering baseline
 
-The capture/Preview foundation required for the next release is now merged on canonical `main`.
+### #167 — batch vocabulary / parser foundation
 
-### #167 — batch vocabulary / parser / crash-test foundation
-
-Merged at:
+Merged on canonical `main` at:
 
 ```text
 25e5cd85ea8f436cc66b41e49d6313547b0a6148
@@ -38,15 +39,17 @@ Merged at:
 
 It established:
 
-- vocabulary lookup uses the public vocabulary-query surface instead of one lookup per item;
-- the query POST is explicitly read-semantic and does not consume mutation authority;
-- the artificial product-wide 30-item cap is removed while existing byte/field/control-character/duplicate safety bounds remain;
-- the first-party vocabulary-query envelope is decoded as `data.voc` / tolerated unwrapped `voc`;
-- recurring Simulator XCTest host traps were identified as test-harness failures, not Release-app crashes.
+- public batch vocabulary query instead of one vocabulary GET per normal item;
+- the vocabulary-query POST is read-semantic, not mutation authority;
+- no artificial fixed total 30-item cap;
+- bounded parser/input safety remains;
+- first-party batch-query envelope decoding is accepted as `data.voc` / tolerated unwrapped `voc`.
 
-### #168 — sequential aggregate-window read scheduler
+### #168 — sequential aggregate-window scheduler
 
-Issue #168 is closed completed through PR #172. Exact accepted Builder head:
+Issue #168 is closed through PR #172.
+
+Accepted Builder head:
 
 ```text
 e7bf2d65e244b9168be6aa01ba656207a23f2be0
@@ -58,65 +61,109 @@ Canonical merge:
 bc03ee03e06bfa23a160e2599bebc9db34635812
 ```
 
-Owner architecture A remains the accepted representation:
-
-```text
-reads remain sequential
-next request starts immediately unless a real provider aggregate window requires waiting
-no read concurrency
-no mutation concurrency
-no private/batch content-read invention
-write safety unchanged
-```
-
 The merged implementation:
 
-- removes the blanket project-owned `1.6s` pacing floor;
-- enforces the documented aggregate windows `20/10s`, `40/60s`, `2000/5h` with a small in-memory sliding-window scheduler;
-- uses `ContinuousClock` elapsed-time semantics rather than civil/system time;
-- reconciles reservations to actual dispatch time and removes aborted/non-dispatched reservations;
-- preserves mandatory post-POST readback under cancellation;
-- keeps 429/non-2xx handling deterministic and does not add an automatic retry engine.
+- removes the historical blanket `1.6s` read pacing floor;
+- enforces `20/10s`, `40/60s`, `2000/5h` aggregate windows;
+- uses `ContinuousClock` elapsed-time semantics;
+- reconciles reservations to actual dispatch and removes aborted reservations;
+- preserves sequential reads/writes, post-POST readback, no mutation retry and deterministic 429/non-2xx handling.
 
-Final Builder evidence at the accepted head:
+Final accepted automated evidence:
 
 ```text
 RequestWindowSchedulerTests=12/12 PASS
 focused affected groups=144 executed / 0 failures
 full MomoMoreEfficientTests=315 executed / 4 skipped / 0 failures
-bounded foreground run=no hang
-real Maimemo network/mutation=NO
 ```
 
-No additional fresh independent Reviewer is required for #168 under the lightweight project review rule; Coordinator exact-diff review and targeted external timing-semantics checks are complete.
+## Physical iPhone evidence — current blocker
 
-## Current release gate
+Exact-main physical preparation was completed on:
 
-Current sequence is now:
+```text
+c9c91b3e6191c8d3f6c36595121d75f81328c90b
+```
+
+The app built, installed and launched on the physical iPhone with the existing signing configuration and no rehearsal mode.
+
+Owner then ran a real authenticated Preview using existing private material and an already-existing self-added vocabulary item. No real mutation was performed.
+
+Observed result:
+
+```text
+PREVIEW_COMPLETED=yes
+SELF_ADDED_VOCABULARY_RESOLUTION=BLOCKED
+REAL_MUTATION_PERFORMED=no
+```
+
+This blocks the self-added-vocabulary acceptance. It does **not** invalidate #168's scheduler.
+
+## #164 — narrow resolver repair authority
+
+Current first-party provider evidence now frozen in Issue #164 establishes two public read-only vocabulary-resolution surfaces:
+
+```text
+GET  /open/api/v1/vocabulary?spelling=...
+POST /open/api/v1/vocabulary/query
+```
+
+The current official Maimemo CLI also keeps these semantics separate:
+
+```text
+single spelling -> exact GET
+multiple spellings -> batch query
+```
+
+Current momo `VocabularyTargetResolver` uses only the batch query and treats a batch miss as `notFound`; the current resolver tests explicitly assert there is no per-item GET fallback.
+
+The real-device result proves that a batch-query miss cannot by itself be treated as proof that the existing self-added vocabulary is unavailable to every public resolution surface.
+
+Current repair representation:
+
+```text
+batch query remains the fast path
+-> only batch-missed normalized spellings attempt the existing public exact GET
+-> exact GET must still return a safe identifier and exact normalized spelling
+-> batch match anomaly remains fail-closed; do not override contradictory/unsafe identity
+-> global auth/rate/server/transport/cancellation failures remain global
+-> no private API
+-> no guessed ID
+-> no read or mutation concurrency
+-> no real mutation
+```
+
+Important uncertainty:
+
+```text
+EXACT_GET_RESOLVES_THIS_REAL_SELF_ADDED_WORD=NOT_YET_PROVEN
+```
+
+Therefore the candidate is not mergeable merely because unit tests pass. It requires a read-only physical canary using the already-existing self-added item. If exact GET also fails, stop and report provider limitation rather than expanding the resolver or guessing identity.
+
+Owning evidence comments:
+
+```text
+PHYSICAL_BLOCKER_COMMENT=5527374168
+EXTERNAL_INCREMENT_COMMENT=5527393448
+```
+
+## Release sequence
+
+Current sequence:
 
 ```text
 #167 merged
 -> #168 merged/closed
--> exact-final-main physical iPhone validation   <-- CURRENT
+-> physical RC found self-added target-resolution blocker
+-> #164 narrow batch-miss exact-GET fallback candidate   <-- CURRENT
+-> exact-candidate physical read-only self-added canary
+-> Coordinator acceptance / merge if proven
+-> exact-final-main release-candidate closeout
 -> build-number / TestFlight release decision
 ```
 
-The physical validation should be narrow and product-facing. It is not another architecture round or a reason to build a GUI automation harness.
-
-Validate the exact current `main` product build, with emphasis on:
-
-- ordinary 8–15 item Preview no longer feeling like a tens-of-seconds artificial wait;
-- Preview content/target correctness remains intact;
-- cancellation/background behavior does not silently corrupt Preview or write safety;
-- no unexpected user-visible regression in the capture -> Preview flow.
-
-Do not perform real mutations merely to validate pacing unless a later explicit validation contract requires them. Existing write safety remains authoritative.
-
-## Backlog ordering
-
-`#164` and `#105` remain open/hold until the exact-final-main physical gate is accepted and the subsequent release decision is made.
-
-Do not start unrelated backlog while this release gate is open. In particular, #161/#154/#153/#152 and later feature work remain deferred unless the Owner explicitly changes sequencing.
+`#105` and unrelated backlog remain HOLD while this release blocker is open.
 
 ## Stable safety boundaries
 
@@ -130,25 +177,22 @@ Do not start unrelated backlog while this release gate is open. In particular, #
 - UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
 - vocabulary-query POST remains read-semantic;
-- personal Maimemo Token stays device-local and must not enter Git/logs/review artifacts;
+- any exact vocabulary GET fallback is also read-only;
+- personal Maimemo Token and private batch material stay device-local and must not enter Git/logs/review artifacts;
 - 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
 ## Agent-family routing
 
-Do not keep a sticky Claude- or Codex-first project default.
-
-For the active lane, Agent-family selection follows current Owner/tool continuity plus live JIT routing. The latest explicit Owner tool switch outranks generic defaults; once the family is resolved, exact model / effort / speed / topology are selected from live `agent-skills` for that round.
+Agent family is not a sticky project preference. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
 
 ## Handoff / maintenance rule
 
-This file owns only **current state + current unique next + live boundaries**. Historical milestones and detailed prompt/Return-Bridge history remain in Issues, PRs and other durable authorities; do not re-expand this file into a chat archive.
-
-Fresh Chat takeover should read:
+This file owns only current state, current unique next and live boundaries. Detailed historical evidence remains in Issues/PRs. Fresh Chat takeover should read:
 
 ```text
 CHAT_HANDOFF.md
 -> this file
--> exact current gate object(s) named here
+-> Issue #164 body + exact current blocker/increment comments named here
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
