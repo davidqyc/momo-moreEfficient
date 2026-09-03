@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件约束 Codex 及其他 coding Agent 在本仓库中的工作方式。
+本文件约束 Claude、Codex 及其他 coding Agent 在本仓库中的工作方式。
 
 ## 1. 事实来源与优先级
 
@@ -58,7 +58,7 @@
 - 同一机制连续两轮主要在加 Gate、digest、validator、Harness 或 proof；
 - Owner 明确质疑 ROI、复杂度或“是否做重了”。
 
-优先按 `docs/AGENT_SKILLS_CONNECTOR.md` 路由到 fresh Claude/Fable/Opus simplification checkpoint，再决定是否让 Codex施工。
+优先按 `docs/AGENT_SKILLS_CONNECTOR.md` 路由到 fresh Claude/Fable/Opus simplification checkpoint，再决定是否继续施工。
 
 ## 4. Issue 与施工粒度
 
@@ -145,27 +145,29 @@ Review ZIP 不是每次改文件的默认交付物。
 
 ## 8. 模型与架构路由
 
-正式 coding Prompt 继续写：
+momo 当前稳定 Builder 偏好是 **Claude-family first**。具体 Claude model / Effort / Speed / Execution 不在本文件硬编码，正式派单前按 `docs/AGENT_SKILLS_CONNECTOR.md` 指向的 live `claude-model-effort-routing` JIT 解析。
+
+普通边界明确的实质 coding，通常形状是：
 
 ```text
-Model: GPT-5.6 Sol
-思考深度: 轻度 | 中 | 高 | 极高 | 最高
-执行模式: 单 Agent | Ultra
-选择原因: <一句话>
+Model: Claude Sonnet 5
+Effort: High
+Speed: Standard
+Execution: Single Agent
+Selection reason: <one sentence>
 ```
 
-但不要把“选择 effort”本身变成项目。
+但上面只是典型形状，不得覆盖实时 Skill 路由。
 
 项目默认：
 
-- 普通实质 Builder：GPT-5.6 Sol / 高 / 单 Agent；
-- 真实写入、凭证、身份、unknown outcome、recovery：极高；
-- 机械状态/merge/docs 小修可降到中或轻度；
-- 最高与 Ultra 默认关闭。
+- 普通实质 Builder：Claude-family；普通边界明确实现通常 Sonnet 5 / High / Standard / Single Agent；
+- 真实写入、凭证、身份、unknown outcome、recovery 等高风险 Builder：优先升级到 Opus 5 / Extra，仍按 live routing 复核；
+- Fable / Opus 用于需要更强架构简化、反例或高影响审阅的场景；
+- Codex 不再作为 momo fresh coding Builder 的静默默认。只有 Owner 明确指定 Codex，或 current task/tool-specific authority 有明确理由时才切换；
+- 不把“选择模型/effort”本身变成项目，Max/Ultracode 默认关闭，除非 live routing 证明正 ROI。
 
-如果问题已经从“实现”变成“这个表示/架构是不是做重了”，不要只提高 Codex effort；按 connector 路由 fresh Claude/Fable/Opus 做简化裁决。
-
-Claude coding/architecture Agent 的正式 Prompt 与 Agent 自生成报告默认全英文；Owner 中文需求由 Coordinator 保真翻译，中文产品文案作为精确任务数据保留。
+Claude coding/architecture Agent 的正式输入 Prompt 使用英文；Owner 中文需求由 Coordinator 保真翻译，中文产品文案作为精确任务数据保留。Owner-facing Coordinator 回复仍按 live Owner collaboration preferences。
 
 ## 9. 当前产品优先级
 
