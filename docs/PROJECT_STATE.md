@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-03
-sourceMainSha=4990060bf193d27e0594a1e672f36b3a6621e975
+sourceMainSha=26ed0f7a908a71ac5c60a67bb21712fad0f83c36
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -18,13 +18,14 @@ LAST_PRODUCT_MERGE=PR #172
 LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
 
 CURRENT_PRIMARY_ISSUE=#164
-CURRENT_PRIMARY_GATE=SELF_ADDED_VOCABULARY_STUDY_RECORDS_RESOLUTION
-CURRENT_RELEASE_GATE_STATUS=BLOCKED
-CURRENT_BLOCKER=the real existing self-added vocabulary item is unresolved by both public vocabulary/query and exact vocabulary GET on physical iPhone
-CURRENT_UNIQUE_NEXT=build one smallest batch-first candidate that uses public Study query_study_records only for true vocabulary-batch misses; physically validate the same existing self-added item read-only before merge
+CURRENT_PRIMARY_GATE=MACHINE_MIGRATION_HOLD
+CURRENT_RELEASE_GATE_STATUS=PAUSED_FOR_MACHINE_MIGRATION
+CURRENT_BLOCKER=Owner is switching Macs; no further Builder/canary execution should start on the old machine
+CURRENT_UNIQUE_NEXT=finish one non-destructive local-repository closure audit on the old Mac; then, on the new Mac, re-establish the workspace from live remote truth and resume #164 from the Study Records identity route
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
-NEXT_TESTFLIGHT_BLOCKED_BY=#164 study-records resolution canary + final release-candidate closeout + release decision
+STUDY_RECORDS_BUILDER_ON_OLD_MACHINE=DO_NOT_START
+NEXT_TESTFLIGHT_BLOCKED_BY=#164 Study Records resolution canary + exact-final-main release-candidate closeout + release decision
 ```
 
 ## Accepted baseline
@@ -52,7 +53,7 @@ Final accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
 
 ## Physical evidence and failed PR #173
 
-Exact-main physical Preview first established:
+Exact-main physical Preview established:
 
 ```text
 PREVIEW_COMPLETED=yes
@@ -60,7 +61,7 @@ SELF_ADDED_VOCABULARY_RESOLUTION=BLOCKED
 REAL_MUTATION_PERFORMED=no
 ```
 
-PR #173 then tested the smallest public exact-GET fallback:
+PR #173 tested the smallest public exact-GET fallback:
 
 ```text
 PR=173
@@ -72,9 +73,9 @@ REAL_MUTATION_PERFORMED=no
 STATUS=CLOSED_UNMERGED
 ```
 
-The repair was technically fail-closed but did not solve the real blocker, so it was not merged. Do not retain the exact-GET fallback speculatively.
+The repair was fail-closed but did not solve the real blocker, so it was not merged. Its exact head is already remote-backed on branch `claude/issue-164-self-added-exact-get-fallback`; do not retain the fallback speculatively in main.
 
-## #164 — current public Study-API route
+## #164 — parked Study-Records route
 
 Fresh first-party evidence frozen in Issue #164 comment `5527731297` establishes an independent public read-only surface:
 
@@ -86,13 +87,13 @@ response identity: StudyRecord.voc_id + StudyRecord.voc_spelling
 
 The official `memo-api-cli` exposes `study records --spelling ...` and sends those spellings directly to `query_study_records`; it does not first resolve them through the vocabulary API.
 
-Important provider constraints:
+Provider constraints:
 
 - Study API is Beta;
 - it depends on synced study data / study-plan presence;
-- therefore it is not accepted merely because deterministic tests pass.
+- deterministic tests alone cannot establish the real Owner self-added-word result.
 
-Frozen next representation:
+Frozen next representation after migration:
 
 ```text
 normal vocabulary batch hit -> unchanged/final
@@ -107,32 +108,53 @@ no read or mutation concurrency
 no real mutation
 ```
 
-Decisive uncertainty:
+Decisive uncertainty remains:
 
 ```text
 STUDY_RECORDS_RESOLVES_THIS_REAL_SELF_ADDED_WORD=NOT_YET_PROVEN
 ```
 
-A candidate must pass a physical read-only Preview using the same existing self-added word before merge. If this public Study surface also misses, stop engineering self-added target resolution and record a provider-surface limitation unless later first-party API capabilities materially change.
+If this public Study surface also misses on the future physical canary, stop engineering self-added target resolution unless later first-party API capabilities materially change.
 
 Owning evidence:
 
 ```text
 INITIAL_PHYSICAL_BLOCKER_COMMENT=5527374168
-FAILED_EXACT_GET_INCREMENT_COMMENT=5527393448
 STUDY_API_ADJUDICATION_COMMENT=5527731297
+PARKED_OLD_MACHINE_RETURN_BRIDGE_COMMENT=5527775536
+MACHINE_MIGRATION_HOLD_COMMENT=5527985154
 FAILED_PR=173
 ```
 
-## Release sequence
+The pre-migration Owner instruction supersedes execution on the old Mac. The previously prepared Study-Records Builder Prompt is parked, not a migration artifact to execute mechanically later. On the new Mac, re-read live `main`, Owner preferences and `agent-skills`, then regenerate/revalidate the dispatch if #164 is still current.
+
+## Pre-migration local closure gate
+
+Before retiring the old Mac, perform one non-destructive audit of `/Users/david/Documents/GitHub/momo-moreEfficient` for:
+
+- tracked working-tree changes;
+- staged changes;
+- non-ignored untracked files;
+- local commits not reachable from any remote;
+- local branches ahead of an existing upstream;
+- stashes;
+- extra worktrees.
+
+Do not use `reset`, `clean`, destructive checkout, history rewrite, or blind `stash`. Do not push private/secret material merely to make the tree clean. Existing remote-backed branches/commits do not need to be merged merely for migration safety.
+
+The old Mac copy may be considered disposable only after this audit proves there is no project-relevant local-only state that still needs safe remoteization or separate migration.
+
+## Resume sequence on the new Mac
 
 ```text
-#167 merged
--> #168 merged/closed
--> physical RC found self-added blocker
--> PR #173 exact-GET candidate failed physical canary / closed unmerged
--> #164 Study Records batch-miss candidate   <-- CURRENT
--> exact-candidate physical read-only canary
+old-Mac local closure audit
+-> stop project execution on old Mac
+-> establish/verify new Mac workspace and repository identity
+-> non-destructively fetch live remote
+-> read CHAT_HANDOFF.md + this file + Issue #164 current comments
+-> JIT re-resolve Agent family/model/effort
+-> resume #164 Study Records candidate only if still current
+-> physical read-only self-added canary
 -> merge only if proven
 -> exact-final-main release-candidate closeout
 -> build-number / TestFlight decision
@@ -152,22 +174,22 @@ FAILED_PR=173
 - UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
 - vocabulary-query POST remains read-semantic;
-- Study Records fallback, if implemented, is read-only;
+- Study Records fallback, if later implemented, is read-only;
 - personal Maimemo Token and private batch material stay device-local and must not enter Git/logs/review artifacts;
 - 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
 ## Agent-family routing
 
-Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
+Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard current task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
 
 ## Handoff rule
 
-Fresh Chat takeover should read:
+Fresh Chat / new-Mac takeover should read:
 
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #164 body + comments 5527731297 and latest current dispatch receipt
+-> Issue #164 body + comments 5527731297 and 5527985154
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
