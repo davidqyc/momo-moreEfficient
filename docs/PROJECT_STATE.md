@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-03
-sourceMainSha=26ed0f7a908a71ac5c60a67bb21712fad0f83c36
+sourceMainSha=bf0c914191d4ed7d3bfc5b1ee764d8538c5f63b3
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -21,7 +21,7 @@ CURRENT_PRIMARY_ISSUE=#164
 CURRENT_PRIMARY_GATE=MACHINE_MIGRATION_HOLD
 CURRENT_RELEASE_GATE_STATUS=PAUSED_FOR_MACHINE_MIGRATION
 CURRENT_BLOCKER=Owner is switching Macs; no further Builder/canary execution should start on the old machine
-CURRENT_UNIQUE_NEXT=finish one non-destructive local-repository closure audit on the old Mac; then, on the new Mac, re-establish the workspace from live remote truth and resume #164 from the Study Records identity route
+CURRENT_UNIQUE_NEXT=complete Migration Assistant transfer, then on the new Mac verify the migrated private receipts directory before retiring the old Mac repo copy; after that re-establish live workspace truth and resume #164 only if still current
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
 STUDY_RECORDS_BUILDER_ON_OLD_MACHINE=DO_NOT_START
@@ -116,39 +116,82 @@ STUDY_RECORDS_RESOLVES_THIS_REAL_SELF_ADDED_WORD=NOT_YET_PROVEN
 
 If this public Study surface also misses on the future physical canary, stop engineering self-added target resolution unless later first-party API capabilities materially change.
 
-Owning evidence:
+## Pre-migration local closure result
+
+Old-Mac non-destructive audit completed successfully for Git-managed state:
+
+```text
+TRACKED_UNCOMMITTED=none
+STAGED_UNCOMMITTED=none
+UNTRACKED_NONIGNORED=none
+BRANCHES_AHEAD_EXISTING_UPSTREAM=none
+STASHES=none
+LOCAL_ONLY_GIT_STATE_REQUIRING_MIGRATION=none
+```
+
+Legacy local commits not present under current `origin/*` refs were verified as pre-squash source history for already-merged PRs; stale `/private/tmp` worktree registrations contain no live local-only content.
+
+One non-Git private directory remains intentionally local-only:
+
+```text
+PRIVATE_MIGRATION_ITEM=artifacts/private/
+PRIVATE_MIGRATION_ITEM_COUNT=11 files
+PRIVATE_MIGRATION_ITEM_SIZE_APPROX=68 KB
+PRIVATE_MIGRATION_CLASS=SENSITIVE_OR_PRIVATE_DO_NOT_PUBLISH
+```
+
+It contains historical real-run Maimemo execution receipts plus one TestFlight export-options plist. It is intentionally gitignored and must never be pushed merely for migration.
+
+Owner decision:
+
+```text
+PRIVATE_MIGRATION_DECISION=PRESERVE
+MIGRATION_METHOD=Apple Migration Assistant
+OLD_MAC_REPO_RETIREMENT_ALLOWED_BEFORE_NEW_MAC_VERIFY=no
+```
+
+Apple Migration Assistant is expected to carry user-account files/folders when the corresponding user data is selected, but project retirement does not rely on expectation alone.
+
+### New-Mac preservation verification gate
+
+Before erasing/retiring the old Mac repository copy, verify on the migrated new Mac:
+
+```text
+/Users/<migrated-user>/Documents/GitHub/momo-moreEfficient/artifacts/private/
+```
+
+Acceptance:
+
+```text
+DIRECTORY_PRESENT=yes
+EXPECTED_FILE_COUNT=11
+APPROX_TOTAL_SIZE≈68 KB
+PRIVATE_CONTENT_NOT_OPENED_OR_PUBLISHED=yes
+```
+
+If the path migrated under a different home-directory name, verify the equivalent repository-relative path `artifacts/private/` inside the migrated `momo-moreEfficient` workspace.
+
+Only after that verification may the old Mac repo copy be considered disposable.
+
+## Migration hold / owning evidence
 
 ```text
 INITIAL_PHYSICAL_BLOCKER_COMMENT=5527374168
 STUDY_API_ADJUDICATION_COMMENT=5527731297
 PARKED_OLD_MACHINE_RETURN_BRIDGE_COMMENT=5527775536
 MACHINE_MIGRATION_HOLD_COMMENT=5527985154
+LOCAL_CLOSURE_AUDIT_COMMENT=5528400497
 FAILED_PR=173
 ```
 
 The pre-migration Owner instruction supersedes execution on the old Mac. The previously prepared Study-Records Builder Prompt is parked, not a migration artifact to execute mechanically later. On the new Mac, re-read live `main`, Owner preferences and `agent-skills`, then regenerate/revalidate the dispatch if #164 is still current.
 
-## Pre-migration local closure gate
-
-Before retiring the old Mac, perform one non-destructive audit of `/Users/david/Documents/GitHub/momo-moreEfficient` for:
-
-- tracked working-tree changes;
-- staged changes;
-- non-ignored untracked files;
-- local commits not reachable from any remote;
-- local branches ahead of an existing upstream;
-- stashes;
-- extra worktrees.
-
-Do not use `reset`, `clean`, destructive checkout, history rewrite, or blind `stash`. Do not push private/secret material merely to make the tree clean. Existing remote-backed branches/commits do not need to be merged merely for migration safety.
-
-The old Mac copy may be considered disposable only after this audit proves there is no project-relevant local-only state that still needs safe remoteization or separate migration.
-
 ## Resume sequence on the new Mac
 
 ```text
-old-Mac local closure audit
--> stop project execution on old Mac
+Migration Assistant transfer
+-> verify migrated artifacts/private/ (11 files, ~68 KB)
+-> only then permit old-Mac repo retirement/erase
 -> establish/verify new Mac workspace and repository identity
 -> non-destructively fetch live remote
 -> read CHAT_HANDOFF.md + this file + Issue #164 current comments
@@ -189,7 +232,7 @@ Fresh Chat / new-Mac takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #164 body + comments 5527731297 and 5527985154
+-> Issue #164 body + comments 5527731297, 5527985154, 5528400497
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
