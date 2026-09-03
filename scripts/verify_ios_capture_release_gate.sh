@@ -122,6 +122,8 @@ xcodebuild \
   -destination "$DESTINATION" \
   -only-testing:MomoMoreEfficientTests/ShareCaptureTests \
   -only-testing:MomoMoreEfficientTests/CaptureReviewTests \
+  -only-testing:MomoMoreEfficientUITests/CapturePendingReviewUITests \
+  -only-testing:MomoMoreEfficientUITests/CaptureShareSheetUITests \
   test
 
 note "Release simulator build including embedded ShareExtension"
@@ -143,4 +145,5 @@ xcodebuild \
   build
 
 note "Capture release automation PASS"
-echo "Residual manual evidence intentionally not automated here: one final physical-iPhone system Share Sheet / Shortcut invocation canary before release."
+echo "System Share Sheet extension-row selection is now automated on Simulator (CaptureShareSheetUITests); no residual manual Share Sheet smoke for the routine regression case."
+echo "The real out-of-process App Intents Testing lane requires the iOS 27.0+ Beta SDK, is deliberately not part of this project's toolchain yet, and is tracked separately in issue #165."
