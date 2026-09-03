@@ -265,9 +265,16 @@ final class MaimemoTransport {
             // as the batch vocabulary query must never reach one-POST-per-item
             // accounting, approval authorization or write retry policy.
             guard route.isMutating else { return .notDispatched }
-            try await pace { control.isCancellationRequested }
+            let ticket = try await pace { control.isCancellationRequested }
+            // Every exit below this point must resolve `ticket`: `confirmDispatch`
+            // right before the real send, or (via this defer) `cancelReservation`
+            // for any path that ends up not dispatching after all.
+            var dispatched = false
+            defer { if !dispatched { scheduler.cancelReservation(ticket) } }
             guard control.beginPostIfAllowed() else { return .notDispatched }
             let request = try TransportRequest(route: route, body: body)
+            dispatched = true
+            scheduler.confirmDispatch(ticket)
             do {
                 let response = try await transport.send(request, credential: credential)
                 return (200..<300).contains(response.status)
@@ -296,10 +303,15 @@ final class MaimemoTransport {
                 : control.allowsPreflightRequest()
             guard allowed else { throw CompanionError.cancelled }
         }
-        try await pace {
+        let ticket = try await pace {
             guard let control else { return false }
             return readback ? !control.allowsInFlightReadback() : !control.allowsPreflightRequest()
         }
+        // Every exit below this point must resolve `ticket`: `confirmDispatch`
+        // right before the real send, or (via this defer) `cancelReservation`
+        // for any path that ends up not dispatching after all.
+        var dispatched = false
+        defer { if !dispatched { scheduler.cancelReservation(ticket) } }
         if let control {
             let allowed = readback
                 ? control.allowsInFlightReadback()
@@ -307,6 +319,8 @@ final class MaimemoTransport {
             guard allowed else { throw CompanionError.cancelled }
         }
         let request = try TransportRequest(route: route, body: body)
+        dispatched = true
+        scheduler.confirmDispatch(ticket)
         let response = try await transport.send(request, credential: credential)
         try Self.validateReadStatus(response.status)
         return response
@@ -347,19 +361,32 @@ final class MaimemoTransport {
     /// `isCancellationRequested` for a not-yet-dispatched POST) — never a
     /// bare cancellation flag, or a mandatory post-POST readback that must
     /// proceed despite cancellation would be wrongly aborted mid-wait.
-    private func pace(shouldAbort: () -> Bool) async throws {
-        var remaining = scheduler.reserveNextSlot()
+    ///
+    /// Returns the scheduler's reservation ticket for the caller to resolve:
+    /// `confirmDispatch(_:)` right before the real send, `cancelReservation(_:)`
+    /// if it turns out not to send after all. A wait aborted here (`shouldAbort`,
+    /// or the sleeper itself throwing) already cancels the reservation before
+    /// rethrowing, so it never reaches the caller with a live ticket to resolve.
+    private func pace(shouldAbort: () -> Bool) async throws -> RequestWindowScheduler.ReservationTicket {
+        let (wait, ticket) = scheduler.reserveNextSlot()
         let isOpeningRequest = !dispatchedRequest
         dispatchedRequest = true
-        guard !isOpeningRequest || remaining > 0 else { return }
-        repeat {
-            if shouldAbort() {
-                throw CompanionError.cancelled
-            }
-            let step = min(remaining, Self.maxPaceCheckInterval)
-            try await sleeper.sleep(seconds: step)
-            remaining -= step
-        } while remaining > 0
+        guard !isOpeningRequest || wait > 0 else { return ticket }
+        var remaining = wait
+        do {
+            repeat {
+                if shouldAbort() {
+                    throw CompanionError.cancelled
+                }
+                let step = min(remaining, Self.maxPaceCheckInterval)
+                try await sleeper.sleep(seconds: step)
+                remaining -= step
+            } while remaining > 0
+        } catch {
+            scheduler.cancelReservation(ticket)
+            throw error
+        }
+        return ticket
     }
 
     private func jsonObject(_ data: Data) throws -> [String: Any] {

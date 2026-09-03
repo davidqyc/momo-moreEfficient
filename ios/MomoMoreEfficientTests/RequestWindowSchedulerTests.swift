@@ -25,7 +25,7 @@ final class RequestWindowSchedulerTests: XCTestCase {
         let clock = TestClock()
         let scheduler = RequestWindowScheduler(now: clock.now)
         for _ in 0..<10 {
-            let wait = scheduler.reserveNextSlot()
+            let wait = scheduler.reserveNextSlot().wait
             XCTAssertEqual(wait, 0)
             clock.advance(by: wait)
         }
@@ -42,7 +42,7 @@ final class RequestWindowSchedulerTests: XCTestCase {
             let scheduler = RequestWindowScheduler(now: clock.now)
             var totalWait: TimeInterval = 0
             for _ in 0..<requestCount {
-                let wait = scheduler.reserveNextSlot()
+                let wait = scheduler.reserveNextSlot().wait
                 totalWait += wait
                 clock.advance(by: wait)
             }
@@ -61,17 +61,17 @@ final class RequestWindowSchedulerTests: XCTestCase {
             now: clock.now
         )
         for _ in 0..<3 {
-            let wait = scheduler.reserveNextSlot()
+            let wait = scheduler.reserveNextSlot().wait
             XCTAssertEqual(wait, 0)
             clock.advance(by: wait)
         }
 
-        let fourthWait = scheduler.reserveNextSlot()
+        let fourthWait = scheduler.reserveNextSlot().wait
         XCTAssertEqual(fourthWait, 10, accuracy: 0.0001)
         clock.advance(by: fourthWait)
 
         // Waiting exactly the reported amount frees the oldest slot again.
-        let fifthWait = scheduler.reserveNextSlot()
+        let fifthWait = scheduler.reserveNextSlot().wait
         XCTAssertEqual(fifthWait, 0, accuracy: 0.0001)
     }
 
@@ -81,11 +81,11 @@ final class RequestWindowSchedulerTests: XCTestCase {
             windows: [.init(limit: 1, duration: 10)],
             now: clock.now
         )
-        let firstWait = scheduler.reserveNextSlot()
+        let firstWait = scheduler.reserveNextSlot().wait
         XCTAssertEqual(firstWait, 0)
 
         clock.advance(by: 4)
-        let secondWait = scheduler.reserveNextSlot()
+        let secondWait = scheduler.reserveNextSlot().wait
         XCTAssertEqual(secondWait, 6, accuracy: 0.0001, "10s window, only 4s elapsed")
     }
 
@@ -104,7 +104,7 @@ final class RequestWindowSchedulerTests: XCTestCase {
         )
         var waits: [TimeInterval] = []
         for _ in 0..<6 {
-            let wait = scheduler.reserveNextSlot()
+            let wait = scheduler.reserveNextSlot().wait
             waits.append(wait)
             clock.advance(by: wait)
         }
@@ -140,7 +140,7 @@ final class RequestWindowSchedulerTests: XCTestCase {
 
         var dispatchTimes: [Date] = []
         for _ in 0..<80 {
-            let wait = scheduler.reserveNextSlot()
+            let wait = scheduler.reserveNextSlot().wait
             clock.advance(by: wait)
             dispatchTimes.append(clock.now())
         }
@@ -167,11 +167,67 @@ final class RequestWindowSchedulerTests: XCTestCase {
             now: clock.now
         )
         for _ in 0..<5 {
-            let wait = scheduler.reserveNextSlot()
+            let wait = scheduler.reserveNextSlot().wait
             XCTAssertEqual(wait, 0)
             clock.advance(by: wait)
         }
-        let sixthWait = scheduler.reserveNextSlot()
+        let sixthWait = scheduler.reserveNextSlot().wait
         XCTAssertEqual(sixthWait, 5 * 60 * 60, accuracy: 0.0001)
+    }
+
+    // MARK: - Actual dispatch reconciliation (#168 repair)
+
+    /// A real sleep can overshoot its predicted wake time (scheduling jitter,
+    /// background suspension, etc). The ledger must reconcile to the ACTUAL
+    /// dispatch time once it is known, or a later request could be judged
+    /// ready too early — less conservative than the real elapsed time demands.
+    func testConfirmDispatchReconcilesToActualTimeNotThePredictedOne() {
+        let clock = TestClock()
+        let scheduler = RequestWindowScheduler(
+            windows: [.init(limit: 1, duration: 10)],
+            now: clock.now
+        )
+        let first = scheduler.reserveNextSlot()
+        XCTAssertEqual(first.wait, 0)
+
+        // The real dispatch happens 3s later than predicted (an oversleep).
+        clock.advance(by: 3)
+        scheduler.confirmDispatch(first.ticket)
+
+        // A ledger that kept the predicted t=0 timestamp would think the
+        // window clears again at t=10 — only 7s away from here (t=3).
+        // Reconciled to the real t=3 dispatch, the next slot is not free
+        // until t=13: a full 10s away from now, not 7s.
+        let second = scheduler.reserveNextSlot()
+        XCTAssertEqual(second.wait, 10, accuracy: 0.0001)
+    }
+
+    /// A wait that is aborted before the request actually dispatches must not
+    /// leave a phantom entry counted against any window.
+    func testCancelledReservationLeavesNoPhantomDispatchedTimestamp() {
+        let clock = TestClock()
+        let scheduler = RequestWindowScheduler(
+            windows: [.init(limit: 1, duration: 10)],
+            now: clock.now
+        )
+        let first = scheduler.reserveNextSlot()
+        XCTAssertEqual(first.wait, 0)
+
+        // A second reservation is forced to wait out the first's window...
+        let second = scheduler.reserveNextSlot()
+        XCTAssertEqual(second.wait, 10, accuracy: 0.0001)
+        // ...but it is aborted mid-wait and never actually dispatches, so it
+        // must not occupy the window's only slot.
+        scheduler.cancelReservation(second.ticket)
+
+        // If the cancelled reservation had survived, its predicted (but
+        // never-reached) t=10 slot would now be the "most recent" entry in
+        // this limit-1 window, forcing a stacked ~20s wait. With it removed,
+        // the window is governed only by the first, real dispatch.
+        let third = scheduler.reserveNextSlot()
+        XCTAssertEqual(
+            third.wait, 10, accuracy: 0.0001,
+            "a cancelled reservation must not double-count against the window"
+        )
     }
 }

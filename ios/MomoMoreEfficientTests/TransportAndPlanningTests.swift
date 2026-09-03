@@ -289,6 +289,63 @@ final class TransportAndPlanningTests: XCTestCase {
         XCTAssertEqual(transport.requests.count, 1, "the cancelled read must never dispatch")
     }
 
+    /// #168 repair: a cancelled wait must not leave a phantom dispatch
+    /// timestamp behind. The scheduler here uses a frozen `TestClock` (the
+    /// sleeper never really delays, so nothing ever advances it), which makes
+    /// the two possible outcomes unambiguous: if the cancelled call's
+    /// reservation survived, this limit-1 window would treat its own
+    /// (later, never-reached) predicted slot as the most recent dispatch and
+    /// force a full extra wait on top of it, doubling what a later caller
+    /// actually has to wait.
+    func testCancelledPacedRequestLeavesNoPhantomReservationForALaterRequest() async throws {
+        let lease = try credentialLease()
+        defer { lease.clear() }
+        let clock = TestClock()
+        // Only one request fits in this window, so the second must wait out
+        // its whole 5-second duration unless cancelled first.
+        let scheduler = RequestWindowScheduler(windows: [.init(limit: 1, duration: 5)], now: clock.now)
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "apple"),
+            vocabularyResponse("INVALID_VOC", "apple"),
+        ])
+        let cancelledControl = ExecutionControl()
+        let sleeper = CancelAfterNSleeper(control: cancelledControl, cancelAfter: 2)
+        let api = MaimemoTransport(
+            transport: transport,
+            credential: lease,
+            sleeper: sleeper,
+            scheduler: scheduler
+        )
+
+        // Call 1: free (opening request, window has room). Occupies the
+        // window's only slot.
+        _ = try await api.vocabulary(spelling: "apple", control: cancelledControl)
+
+        // Call 2: window is full, so it must wait out the 5s duration;
+        // cancelled mid-wait, so it never actually dispatches.
+        do {
+            _ = try await api.vocabulary(spelling: "apple", control: cancelledControl)
+            XCTFail("cancellation raised mid-wait must abort the read")
+        } catch {
+            XCTAssertEqual(error as? CompanionError, .cancelled)
+        }
+        XCTAssertEqual(transport.requests.count, 1, "the cancelled read must never dispatch")
+
+        // Call 3, with a fresh (non-cancelled) control: with the phantom
+        // correctly removed, only call 1's real dispatch remains, so this
+        // call waits out exactly one 5s window (5 one-second chunks) —
+        // not a stacked ~10s from a surviving phantom reservation.
+        let freshControl = ExecutionControl()
+        let sleepCountBeforeThirdCall = sleeper.seconds.count
+        _ = try await api.vocabulary(spelling: "apple", control: freshControl)
+        let thirdCallSleepCount = sleeper.seconds.count - sleepCountBeforeThirdCall
+        XCTAssertEqual(
+            thirdCallSleepCount, 5,
+            "a phantom reservation from the cancelled call would double this to ~10"
+        )
+        XCTAssertEqual(transport.requests.count, 2, "the fresh call must still dispatch once its wait clears")
+    }
+
     func testGlobalReadFailuresAbortInterpretationPlanWithoutFabricatedRows() async throws {
         let entries = try BatchParser.parseDailyInput(
             "one\nn. 一\ntwo\nn. 二\nthree\nn. 三"
