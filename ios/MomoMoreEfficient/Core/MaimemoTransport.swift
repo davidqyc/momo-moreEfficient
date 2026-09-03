@@ -36,16 +36,18 @@ final class MaimemoTransport {
     private let transport: HTTPTransport
     private let credential: OperationCredentialLease
     private let sleeper: RequestSleeper
-    private var dispatchedRequest = false
+    private let scheduler: RequestWindowScheduler
 
     init(
         transport: HTTPTransport,
         credential: OperationCredentialLease,
-        sleeper: RequestSleeper = ProductionRequestSleeper()
+        sleeper: RequestSleeper = ProductionRequestSleeper(),
+        scheduler: RequestWindowScheduler = RequestWindowScheduler()
     ) {
         self.transport = transport
         self.credential = credential
         self.sleeper = sleeper
+        self.scheduler = scheduler
     }
 
     /// Reuse the production-proven vocabulary route and decoder. "apple" is a
@@ -263,7 +265,7 @@ final class MaimemoTransport {
             // as the batch vocabulary query must never reach one-POST-per-item
             // accounting, approval authorization or write retry policy.
             guard route.isMutating else { return .notDispatched }
-            try await pace()
+            try await pace { control.isCancellationRequested }
             guard control.beginPostIfAllowed() else { return .notDispatched }
             let request = try TransportRequest(route: route, body: body)
             do {
@@ -294,7 +296,10 @@ final class MaimemoTransport {
                 : control.allowsPreflightRequest()
             guard allowed else { throw CompanionError.cancelled }
         }
-        try await pace()
+        try await pace {
+            guard let control else { return false }
+            return readback ? !control.allowsInFlightReadback() : !control.allowsPreflightRequest()
+        }
         if let control {
             let allowed = readback
                 ? control.allowsInFlightReadback()
@@ -322,11 +327,39 @@ final class MaimemoTransport {
         }
     }
 
-    private func pace() async throws {
-        if dispatchedRequest {
-            try await sleeper.sleep(seconds: CompanionConstants.pacingSeconds)
-        }
+    /// The largest single wait `pace()` performs before re-checking
+    /// `shouldAbort`. A real aggregate-window wait can run as long as the
+    /// longest configured window (currently Maimemo's 5-hour ceiling);
+    /// chunking keeps a cancellation or background timeout from going
+    /// unnoticed that long.
+    private static let maxPaceCheckInterval: TimeInterval = 1
+
+    /// This transport instance's very first paced call never sleeps when the
+    /// real window has room (`wait == 0`), matching the pre-#168 behavior a
+    /// fresh `MaimemoTransport` always had for its opening request. A real
+    /// window constraint (`wait > 0`) still waits even on that first call —
+    /// only the artificial, unconditional floor is gone.
+    private var dispatchedRequest = false
+
+    /// `shouldAbort` must mirror the exact allowance check the caller already
+    /// makes right after `pace()` returns (`allowsInFlightReadback()` for a
+    /// readback, `allowsPreflightRequest()` for an ordinary read, plain
+    /// `isCancellationRequested` for a not-yet-dispatched POST) — never a
+    /// bare cancellation flag, or a mandatory post-POST readback that must
+    /// proceed despite cancellation would be wrongly aborted mid-wait.
+    private func pace(shouldAbort: () -> Bool) async throws {
+        var remaining = scheduler.reserveNextSlot()
+        let isOpeningRequest = !dispatchedRequest
         dispatchedRequest = true
+        guard !isOpeningRequest || remaining > 0 else { return }
+        repeat {
+            if shouldAbort() {
+                throw CompanionError.cancelled
+            }
+            let step = min(remaining, Self.maxPaceCheckInterval)
+            try await sleeper.sleep(seconds: step)
+            remaining -= step
+        } while remaining > 0
     }
 
     private func jsonObject(_ data: Data) throws -> [String: Any] {

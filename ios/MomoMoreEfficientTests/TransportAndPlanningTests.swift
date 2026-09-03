@@ -204,7 +204,11 @@ final class TransportAndPlanningTests: XCTestCase {
             ]
         )
         XCTAssertEqual(transport.requests.count, 3)
-        XCTAssertEqual(sleeper.seconds, [1.6, 1.6])
+        // #168: no fixed per-request floor. Pacing goes through the shared
+        // window scheduler now (the opening request is still free); the 2
+        // paced requests stay far under the aggregate windows, so each
+        // waits 0 seconds instead of the old fixed floor.
+        XCTAssertEqual(sleeper.seconds, [0, 0])
     }
 
     func testCredentialValidationReusesVocabularyRouteDecoderIncludingDataEnvelope() async throws {
@@ -245,6 +249,44 @@ final class TransportAndPlanningTests: XCTestCase {
                 XCTAssertEqual(error as? CompanionError, .responseRejected)
             }
         }
+    }
+
+    /// #168: a real aggregate-window wait can run up to the longest
+    /// configured window. `pace()` must chunk that wait and re-check
+    /// cancellation between chunks, or a background/cancel signal could go
+    /// unnoticed for the whole wait instead of a single ~1s chunk.
+    func testPaceIsCancellableMidWaitInsteadOfBlockingTheFullWindow() async throws {
+        let lease = try credentialLease()
+        defer { lease.clear() }
+        let control = ExecutionControl()
+        // Only one request fits in this window, so the second must wait out
+        // its whole 5-second duration unless cancelled first.
+        let scheduler = RequestWindowScheduler(windows: [.init(limit: 1, duration: 5)])
+        let transport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC", "apple"),
+            vocabularyResponse("INVALID_VOC", "apple"),
+        ])
+        let sleeper = CancelAfterNSleeper(control: control, cancelAfter: 2)
+        let api = MaimemoTransport(
+            transport: transport,
+            credential: lease,
+            sleeper: sleeper,
+            scheduler: scheduler
+        )
+
+        _ = try await api.vocabulary(spelling: "apple", control: control)
+
+        do {
+            _ = try await api.vocabulary(spelling: "apple", control: control)
+            XCTFail("cancellation raised mid-wait must abort the read")
+        } catch {
+            XCTAssertEqual(error as? CompanionError, .cancelled)
+        }
+
+        // Chunked at <=1s, the forced 5s wait would need 5 sleep calls to
+        // fully elapse; cancellation after the 2nd must stop well short.
+        XCTAssertLessThan(sleeper.seconds.count, 5)
+        XCTAssertEqual(transport.requests.count, 1, "the cancelled read must never dispatch")
     }
 
     func testGlobalReadFailuresAbortInterpretationPlanWithoutFabricatedRows() async throws {

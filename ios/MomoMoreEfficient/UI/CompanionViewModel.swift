@@ -44,6 +44,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private let transportFactory: () -> HTTPTransport
     private let credentialValidationTransportFactory: () -> HTTPTransport
     private let sleeperFactory: () -> RequestSleeper
+    /// Shared across every Preview and execution phase for this view model's
+    /// lifetime, so the real aggregate request-frequency windows (#168) are
+    /// enforced across the whole session rather than reset on each call.
+    private let windowScheduler: RequestWindowScheduler
     private let backgroundAssertionFactory: @MainActor () -> BackgroundExecutionAssertion
     private let dateProvider: () -> Date
     private let preferenceDefaults: UserDefaults
@@ -116,6 +120,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         transportFactory: @escaping () -> HTTPTransport = { URLSessionHTTPTransport() },
         credentialValidationTransportFactory: (() -> HTTPTransport)? = nil,
         sleeperFactory: @escaping () -> RequestSleeper = { ProductionRequestSleeper() },
+        windowScheduler: RequestWindowScheduler = RequestWindowScheduler(),
         backgroundAssertionFactory: @escaping @MainActor () -> BackgroundExecutionAssertion
             = { makeDefaultBackgroundExecutionAssertion() },
         dateProvider: @escaping () -> Date = Date.init,
@@ -127,6 +132,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         self.credentialValidationTransportFactory = credentialValidationTransportFactory
             ?? transportFactory
         self.sleeperFactory = sleeperFactory
+        self.windowScheduler = windowScheduler
         self.backgroundAssertionFactory = backgroundAssertionFactory
         self.dateProvider = dateProvider
         self.preferenceDefaults = preferenceDefaults
@@ -309,7 +315,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
-                sleeper: sleeperFactory()
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
             )
             let progress: @Sendable (Int, Int) -> Void = { [weak self] entry, total in
                 Task { @MainActor [weak self] in
@@ -559,7 +566,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
-                sleeper: sleeperFactory()
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
             )
             let result = await PhraseWriteExecutor(api: api).execute(
                 displayedSnapshot: displayed,
@@ -706,7 +714,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
-                sleeper: sleeperFactory()
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
             )
             let result = await WriteExecutor(api: api).executeBatchPlan(
                 displayedSnapshot: displayed,
@@ -985,7 +994,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
-                sleeper: sleeperFactory()
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
             )
             let result = await WriteExecutor(api: api).execute(
                 group: group,
@@ -1520,7 +1530,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         let api = MaimemoTransport(
             transport: credentialValidationTransportFactory(),
             credential: lease,
-            sleeper: sleeperFactory()
+            sleeper: sleeperFactory(),
+            scheduler: windowScheduler
         )
         try await api.validateCredential()
     }

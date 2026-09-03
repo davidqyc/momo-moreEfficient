@@ -216,35 +216,74 @@ final class RecordingSleeper: RequestSleeper, @unchecked Sendable {
     }
 }
 
-actor GateSleeper: RequestSleeper {
-    private var entered = false
-    private var sleepContinuation: CheckedContinuation<Void, Never>?
-    private var observers: [CheckedContinuation<Void, Never>] = []
+/// A manually-advanced clock for deterministic `RequestWindowScheduler` and
+/// pacing tests. Production pacing always advances real wall time by actually
+/// sleeping between requests, so tests that want to prove window math across
+/// several requests should advance this by exactly the wait each request
+/// reported, mirroring that real caller behaviour.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(start: Date = Date(timeIntervalSince1970: 1_700_000_000)) {
+        current = start
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func advance(by seconds: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        current = current.addingTimeInterval(seconds)
+    }
+}
+
+/// A `RequestSleeper` that never actually delays but records each requested
+/// duration and advances a shared `TestClock` by it, so a scheduler wired to
+/// the same clock sees real elapsed time exactly as an obedient production
+/// caller (pace → real sleep → next call) would produce.
+final class ClockAdvancingSleeper: RequestSleeper, @unchecked Sendable {
+    private(set) var seconds: [Double] = []
+    private let clock: TestClock
+
+    init(clock: TestClock) {
+        self.clock = clock
+    }
 
     func sleep(seconds: Double) async throws {
-        await withCheckedContinuation { continuation in
-            sleepContinuation = continuation
-            entered = true
-            observers.forEach { $0.resume() }
-            observers.removeAll()
+        self.seconds.append(seconds)
+        clock.advance(by: seconds)
+    }
+}
+
+/// Never really delays; requests cancellation on `control` partway through a
+/// chunked `pace()` wait, so a test can prove a long aggregate-window wait is
+/// actually interruptible instead of blocking until it fully elapses.
+final class CancelAfterNSleeper: RequestSleeper, @unchecked Sendable {
+    private(set) var seconds: [Double] = []
+    private let control: ExecutionControl
+    private let cancelAfter: Int
+
+    init(control: ExecutionControl, cancelAfter: Int) {
+        self.control = control
+        self.cancelAfter = cancelAfter
+    }
+
+    func sleep(seconds: Double) async throws {
+        self.seconds.append(seconds)
+        if self.seconds.count == cancelAfter {
+            control.requestCancellation()
         }
-    }
-
-    func waitUntilEntered() async {
-        if entered { return }
-        await withCheckedContinuation { observers.append($0) }
-    }
-
-    func resume() {
-        sleepContinuation?.resume()
-        sleepContinuation = nil
     }
 }
 
 /// Blocks the first paced request until `resume()`, then lets every later request
-/// through. `GateSleeper` holds a single continuation, so it can only gate a
-/// one-entry run; this variant lets a multi-entry Preview be interrupted part-way
-/// and then continue to completion.
+/// through, so a multi-entry Preview can be interrupted part-way and then
+/// continue to completion with a single gate/resume pair.
 actor FirstPauseGateSleeper: RequestSleeper {
     private var entered = false
     private var released = false
