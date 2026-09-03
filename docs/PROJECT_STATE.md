@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-03
-sourceMainSha=9012a3b74f86f7895908c16c29bcd62ba4ce3f79
+sourceMainSha=bc03ee03e06bfa23a160e2599bebc9db34635812
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,135 +13,112 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
 
-CURRENT_PRIMARY_ISSUE=#168
-CURRENT_ARCHITECTURE=A_SEQUENTIAL_AGGREGATE_WINDOW_SCHEDULER
-OWNER_DECISION_COMMENT=5524418123
+LAST_COMPLETED_PRODUCT_ISSUE=#168
+LAST_PRODUCT_MERGE=PR #172
+LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
 
-CURRENT_DISPATCH_AUTHORITY=Issue #168 comment 5525021657
-CURRENT_AGENT=Claude Sonnet 5 / High / Standard / Single Agent
-CURRENT_PROMPT_ARTIFACT=momo_168_Sequential_Read_Window_Speedup_Claude_Prompt_2026-09-03.md
-CURRENT_PROMPT_PREPARED=yes
-CURRENT_PROMPT_DISPATCHED=unknown_until_owner_or_matching_result_evidence
-
-PREVIOUS_CODEX_DISPATCH_COMMENT=5524832107
-PREVIOUS_CODEX_PROMPT_DISPATCHED=no_owner_confirmed
-PREVIOUS_CODEX_PROMPT_SUPERSEDED=yes
-OLD_PREPARED_RETURN_BRIDGE=5524523317
-
-CURRENT_UNIQUE_NEXT=Owner relays the current Claude #168 Prompt if not already sent; then Coordinator waits for the matching Builder result and ingests/reviews it without duplicate dispatch
+CURRENT_PRIMARY_GATE=EXACT_FINAL_MAIN_PHYSICAL_IPHONE_VALIDATION
+CURRENT_UNIQUE_NEXT=validate the exact current main build on the physical iPhone for the merged #167 + #168 capture/Preview path; if accepted, make the build-number / TestFlight release decision
 
 IMPLEMENTATION_HOLD_FOR_OTHER_FEATURES=true
-NEXT_TESTFLIGHT_BLOCKED_BY=#168 + exact-final-main physical validation + later release decision
+NEXT_TESTFLIGHT_BLOCKED_BY=exact-final-main physical validation + later release decision
 ```
 
 ## Current engineering baseline
 
-PR #167 is merged on canonical `main` at:
+The capture/Preview foundation required for the next release is now merged on canonical `main`.
+
+### #167 — batch vocabulary / parser / crash-test foundation
+
+Merged at:
 
 ```text
 25e5cd85ea8f436cc66b41e49d6313547b0a6148
 ```
 
-That merge established the batch vocabulary resolver / parser / crash-test foundation required before #168:
+It established:
 
 - vocabulary lookup uses the public vocabulary-query surface instead of one lookup per item;
 - the query POST is explicitly read-semantic and does not consume mutation authority;
 - the artificial product-wide 30-item cap is removed while existing byte/field/control-character/duplicate safety bounds remain;
 - the first-party vocabulary-query envelope is decoded as `data.voc` / tolerated unwrapped `voc`;
-- the recurring Simulator XCTest host traps were test-harness failures, not Release-app crashes.
+- recurring Simulator XCTest host traps were identified as test-harness failures, not Release-app crashes.
 
-No real Maimemo network or mutation was used for that Builder lane.
+### #168 — sequential aggregate-window read scheduler
 
-## #168 — current product lane
-
-Goal: remove the project-owned blanket `1.6s` delay from normal Preview/preflight reads without weakening write safety.
-
-Fresh first-party evidence already frozen in #168 establishes:
+Issue #168 is closed completed through PR #172. Exact accepted Builder head:
 
 ```text
-Maimemo aggregate windows:
-20 requests / 10 seconds
-40 requests / 60 seconds
-2000 requests / 5 hours
-
-provider minimum 1.6s/request:
-NOT_DOCUMENTED
-
-public batch interpretation/phrase read route:
-NOT_FOUND_IN_CURRENT_FIRST_PARTY_EVIDENCE
+e7bf2d65e244b9168be6aa01ba656207a23f2be0
 ```
 
-Owner selected **A** in Issue #168 comment `5524418123`:
+Canonical merge:
+
+```text
+bc03ee03e06bfa23a160e2599bebc9db34635812
+```
+
+Owner architecture A remains the accepted representation:
 
 ```text
 reads remain sequential
-next read starts immediately after prior response unless a real aggregate window requires waiting
+next request starts immediately unless a real provider aggregate window requires waiting
 no read concurrency
 no mutation concurrency
-no private endpoint / batch content-read invention
-mutating writes remain conservative and serial
-if ordinary 8–15 item Preview becomes materially fast enough, stop; do not chase marginal speed with B
+no private/batch content-read invention
+write safety unchanged
 ```
 
-This decision is accepted and must not be reopened unless new empirical evidence shows A is still materially too slow.
+The merged implementation:
 
-## Current Builder dispatch
+- removes the blanket project-owned `1.6s` pacing floor;
+- enforces the documented aggregate windows `20/10s`, `40/60s`, `2000/5h` with a small in-memory sliding-window scheduler;
+- uses `ContinuousClock` elapsed-time semantics rather than civil/system time;
+- reconciles reservations to actual dispatch time and removes aborted/non-dispatched reservations;
+- preserves mandatory post-POST readback under cancellation;
+- keeps 429/non-2xx handling deterministic and does not add an automatic retry engine.
 
-The original long inline #168 Prompt was never dispatched. A fresh Coordinator reviewed it and replaced it. The first replacement incorrectly defaulted to Codex; the Owner corrected the stable project preference to Claude-family. Current dispatch authority is Issue #168 comment `5525021657`.
-
-Current route:
+Final Builder evidence at the accepted head:
 
 ```text
-TASK_ID=XHN-168-SEQUENTIAL-READ-WINDOW-SCHEDULER-20260903
-TARGET_AGENT=Claude Sonnet 5 / High / Standard / Single Agent
-TARGET_CONVERSATION=NEW_CONVERSATION
-CONVERSATION_TITLE=【XHN】#168 Sequential Read-Window Speedup
-PROMPT_ARTIFACT=momo_168_Sequential_Read_Window_Speedup_Claude_Prompt_2026-09-03.md
-PROMPT_PREPARED=yes
-EXTERNAL_AGENT_DISPATCHED=unknown
-RESULT_RETURNED=no
-DUPLICATE_DISPATCH_ALLOWED=no_by_default
+RequestWindowSchedulerTests=12/12 PASS
+focused affected groups=144 executed / 0 failures
+full MomoMoreEfficientTests=315 executed / 4 skipped / 0 failures
+bounded foreground run=no hang
+real Maimemo network/mutation=NO
 ```
 
-Do not send the superseded Codex Prompt. Do not treat `PROMPT_PREPARED` as proof of dispatch. Advance execution state only from Owner confirmation or a matching returned result.
+No additional fresh independent Reviewer is required for #168 under the lightweight project review rule; Coordinator exact-diff review and targeted external timing-semantics checks are complete.
 
-## Why this implementation stays small
+## Current release gate
 
-The project is intentionally lightweight. `AGENTS.md` requires a simplification checkpoint when a small mechanism's implementation contract grows beyond roughly one screen, and task contracts should stay compact unless the risk genuinely requires more.
-
-The #168 implementation is narrow:
-
-```text
-remove blanket read sleep
-+ add smallest aggregate-window guard
-+ deterministic focused tests
-+ preserve mutation safety
-```
-
-Do not turn it into a generic scheduler/networking framework, broad historical Issue replay, or a long multi-lane governance exercise.
-
-## Stable Builder routing
-
-momo's stable project-specific coding preference is now Claude-family first. Exact Claude model / Effort / Speed are still JIT-resolved through the live agent-skills Claude routing skill.
-
-Do not silently fall back to Codex on a fresh Chat. Codex requires an explicit Owner request or a current task/tool-specific authority with a clear reason to override the project default.
-
-## Release / backlog ordering
-
-Current intended sequence:
+Current sequence is now:
 
 ```text
 #167 merged
--> #168 throughput implementation
--> exact-final-main physical iPhone validation
+-> #168 merged/closed
+-> exact-final-main physical iPhone validation   <-- CURRENT
 -> build-number / TestFlight release decision
 ```
 
-`#164` and `#105` remain open/hold until #168 and final exact-main device gates complete.
+The physical validation should be narrow and product-facing. It is not another architecture round or a reason to build a GUI automation harness.
 
-Do not start unrelated product lanes while #168 is the release blocker. In particular, #161/#154/#153/#152 and later backlog work remain deferred unless the Owner explicitly changes sequencing.
+Validate the exact current `main` product build, with emphasis on:
 
-## Safety boundaries still current
+- ordinary 8–15 item Preview no longer feeling like a tens-of-seconds artificial wait;
+- Preview content/target correctness remains intact;
+- cancellation/background behavior does not silently corrupt Preview or write safety;
+- no unexpected user-visible regression in the capture -> Preview flow.
+
+Do not perform real mutations merely to validate pacing unless a later explicit validation contract requires them. Existing write safety remains authoritative.
+
+## Backlog ordering
+
+`#164` and `#105` remain open/hold until the exact-final-main physical gate is accepted and the subsequent release decision is made.
+
+Do not start unrelated backlog while this release gate is open. In particular, #161/#154/#153/#152 and later feature work remain deferred unless the Owner explicitly changes sequencing.
+
+## Stable safety boundaries
 
 - Preview is not write authorization;
 - explicit approval before mutation;
@@ -154,23 +131,27 @@ Do not start unrelated product lanes while #168 is the release blocker. In parti
 - no automatic delete/rollback/replay;
 - vocabulary-query POST remains read-semantic;
 - personal Maimemo Token stays device-local and must not enter Git/logs/review artifacts;
-- no real Maimemo network/mutation is needed for the #168 Builder implementation;
-- TestFlight/release is outside #168 Builder authority.
+- 429 is a stop/rate-limit signal, not permission to replay a mutation.
+
+## Agent-family routing
+
+Do not keep a sticky Claude- or Codex-first project default.
+
+For the active lane, Agent-family selection follows current Owner/tool continuity plus live JIT routing. The latest explicit Owner tool switch outranks generic defaults; once the family is resolved, exact model / effort / speed / topology are selected from live `agent-skills` for that round.
 
 ## Handoff / maintenance rule
 
-This file owns only **current state + current unique next + live boundaries**. Historical milestones, competitive research and backlog rationale remain in their Issues, decision log, CHANGELOG and other durable project docs; do not re-expand this file into an archive.
+This file owns only **current state + current unique next + live boundaries**. Historical milestones and detailed prompt/Return-Bridge history remain in Issues, PRs and other durable authorities; do not re-expand this file into a chat archive.
 
 Fresh Chat takeover should read:
 
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #168 metadata/body
--> exact comments 5524418123 and 5525021657
+-> exact current gate object(s) named here
 -> live Owner collaboration preferences
--> live fresh-chat preference application policy
+-> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
 ```
 
-Do not fetch all historical Issue comments just to reconstruct the present state.
+Do not fetch full historical Issue comment threads merely to reconstruct current truth.
