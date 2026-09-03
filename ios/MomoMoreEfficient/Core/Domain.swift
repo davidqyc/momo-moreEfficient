@@ -13,7 +13,6 @@ enum CompanionConstants {
     static let maxInputBytes = 262_144
     static let maxInterpretationCharacters = 2_000
     static let maxTokenCharacters = 8_192
-    static let pacingSeconds = 1.6
     static let writePolicy = "EXACTLY ONE POST PER ITEM / NO RETRY / IMMEDIATE READBACK"
 }
 

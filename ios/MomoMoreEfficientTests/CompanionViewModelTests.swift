@@ -436,7 +436,7 @@ final class CompanionViewModelTests: XCTestCase {
             vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
-        let gate = GateSleeper()
+        let gate = FirstPauseGateSleeper()
         let assertion = FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
@@ -656,7 +656,7 @@ final class CompanionViewModelTests: XCTestCase {
             vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
-        let gate = GateSleeper()
+        let gate = FirstPauseGateSleeper()
         let assertion = FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),

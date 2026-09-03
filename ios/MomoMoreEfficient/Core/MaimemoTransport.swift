@@ -36,16 +36,18 @@ final class MaimemoTransport {
     private let transport: HTTPTransport
     private let credential: OperationCredentialLease
     private let sleeper: RequestSleeper
-    private var dispatchedRequest = false
+    private let scheduler: RequestWindowScheduler
 
     init(
         transport: HTTPTransport,
         credential: OperationCredentialLease,
-        sleeper: RequestSleeper = ProductionRequestSleeper()
+        sleeper: RequestSleeper = ProductionRequestSleeper(),
+        scheduler: RequestWindowScheduler = RequestWindowScheduler()
     ) {
         self.transport = transport
         self.credential = credential
         self.sleeper = sleeper
+        self.scheduler = scheduler
     }
 
     /// Reuse the production-proven vocabulary route and decoder. "apple" is a
@@ -263,9 +265,16 @@ final class MaimemoTransport {
             // as the batch vocabulary query must never reach one-POST-per-item
             // accounting, approval authorization or write retry policy.
             guard route.isMutating else { return .notDispatched }
-            try await pace()
+            let ticket = try await pace { control.isCancellationRequested }
+            // Every exit below this point must resolve `ticket`: `confirmDispatch`
+            // right before the real send, or (via this defer) `cancelReservation`
+            // for any path that ends up not dispatching after all.
+            var dispatched = false
+            defer { if !dispatched { scheduler.cancelReservation(ticket) } }
             guard control.beginPostIfAllowed() else { return .notDispatched }
             let request = try TransportRequest(route: route, body: body)
+            dispatched = true
+            scheduler.confirmDispatch(ticket)
             do {
                 let response = try await transport.send(request, credential: credential)
                 return (200..<300).contains(response.status)
@@ -294,7 +303,15 @@ final class MaimemoTransport {
                 : control.allowsPreflightRequest()
             guard allowed else { throw CompanionError.cancelled }
         }
-        try await pace()
+        let ticket = try await pace {
+            guard let control else { return false }
+            return readback ? !control.allowsInFlightReadback() : !control.allowsPreflightRequest()
+        }
+        // Every exit below this point must resolve `ticket`: `confirmDispatch`
+        // right before the real send, or (via this defer) `cancelReservation`
+        // for any path that ends up not dispatching after all.
+        var dispatched = false
+        defer { if !dispatched { scheduler.cancelReservation(ticket) } }
         if let control {
             let allowed = readback
                 ? control.allowsInFlightReadback()
@@ -302,6 +319,8 @@ final class MaimemoTransport {
             guard allowed else { throw CompanionError.cancelled }
         }
         let request = try TransportRequest(route: route, body: body)
+        dispatched = true
+        scheduler.confirmDispatch(ticket)
         let response = try await transport.send(request, credential: credential)
         try Self.validateReadStatus(response.status)
         return response
@@ -322,11 +341,52 @@ final class MaimemoTransport {
         }
     }
 
-    private func pace() async throws {
-        if dispatchedRequest {
-            try await sleeper.sleep(seconds: CompanionConstants.pacingSeconds)
-        }
+    /// The largest single wait `pace()` performs before re-checking
+    /// `shouldAbort`. A real aggregate-window wait can run as long as the
+    /// longest configured window (currently Maimemo's 5-hour ceiling);
+    /// chunking keeps a cancellation or background timeout from going
+    /// unnoticed that long.
+    private static let maxPaceCheckInterval: TimeInterval = 1
+
+    /// This transport instance's very first paced call never sleeps when the
+    /// real window has room (`wait == 0`), matching the pre-#168 behavior a
+    /// fresh `MaimemoTransport` always had for its opening request. A real
+    /// window constraint (`wait > 0`) still waits even on that first call —
+    /// only the artificial, unconditional floor is gone.
+    private var dispatchedRequest = false
+
+    /// `shouldAbort` must mirror the exact allowance check the caller already
+    /// makes right after `pace()` returns (`allowsInFlightReadback()` for a
+    /// readback, `allowsPreflightRequest()` for an ordinary read, plain
+    /// `isCancellationRequested` for a not-yet-dispatched POST) — never a
+    /// bare cancellation flag, or a mandatory post-POST readback that must
+    /// proceed despite cancellation would be wrongly aborted mid-wait.
+    ///
+    /// Returns the scheduler's reservation ticket for the caller to resolve:
+    /// `confirmDispatch(_:)` right before the real send, `cancelReservation(_:)`
+    /// if it turns out not to send after all. A wait aborted here (`shouldAbort`,
+    /// or the sleeper itself throwing) already cancels the reservation before
+    /// rethrowing, so it never reaches the caller with a live ticket to resolve.
+    private func pace(shouldAbort: () -> Bool) async throws -> RequestWindowScheduler.ReservationTicket {
+        let (wait, ticket) = scheduler.reserveNextSlot()
+        let isOpeningRequest = !dispatchedRequest
         dispatchedRequest = true
+        guard !isOpeningRequest || wait > 0 else { return ticket }
+        var remaining = wait
+        do {
+            repeat {
+                if shouldAbort() {
+                    throw CompanionError.cancelled
+                }
+                let step = min(remaining, Self.maxPaceCheckInterval)
+                try await sleeper.sleep(seconds: step)
+                remaining -= step
+            } while remaining > 0
+        } catch {
+            scheduler.cancelReservation(ticket)
+            throw error
+        }
+        return ticket
     }
 
     private func jsonObject(_ data: Data) throws -> [String: Any] {

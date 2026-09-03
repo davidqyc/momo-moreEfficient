@@ -623,8 +623,12 @@ final class PhraseCreateCoreTests: XCTestCase {
             summary.results[0].diagnostic?.readbackAttempts.map(\.category),
             [.targetNotVisible, .success]
         )
+        // #168: pacing goes through the shared aggregate-window scheduler now
+        // (the opening request on a fresh transport is still free); every
+        // request here stays far under the aggregate windows, so each paced
+        // call waits 0 seconds instead of the old fixed floor.
         XCTAssertEqual(sleeper.seconds.count, transport.requests.count - 1)
-        XCTAssertTrue(sleeper.seconds.allSatisfy { $0 == CompanionConstants.pacingSeconds })
+        XCTAssertTrue(sleeper.seconds.allSatisfy { $0 == 0 })
     }
 
     func testUncertainPOSTMissingThenLaterReadbackRecoversWithOnePOST() async throws {

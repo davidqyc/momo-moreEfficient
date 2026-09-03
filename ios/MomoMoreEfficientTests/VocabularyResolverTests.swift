@@ -238,6 +238,11 @@ final class VocabularyResolverTests: XCTestCase {
         XCTAssertTrue(control.beginPostIfAllowed(), "the write allowance is untouched")
     }
 
+    /// #168: pacing goes through the shared aggregate-window scheduler now,
+    /// not a fixed per-request floor. The second chunk request stays far
+    /// under every documented window, so it pays no artificial wait either —
+    /// but it still calls through the sleeper (with 0 seconds), same as the
+    /// old fixed-floor pacing always did for every request after the first.
     func testResolutionIsPacedLikeEveryOtherRequest() async throws {
         let spellings = (0..<1_001).map { "word\($0)" }
         let (resolver, _, sleeper) = try makeResolver([
@@ -247,7 +252,7 @@ final class VocabularyResolverTests: XCTestCase {
 
         _ = try await resolver.resolve(spellings: spellings)
 
-        XCTAssertEqual(sleeper.seconds, [CompanionConstants.pacingSeconds])
+        XCTAssertEqual(sleeper.seconds, [0])
     }
 
     func testCancellationStopsResolutionWithoutFabricatingTargets() async throws {
@@ -458,9 +463,35 @@ final class PreflightThroughputTests: XCTestCase {
             XCTAssertEqual(transport.getCount, count, "one content read per item")
             XCTAssertEqual(transport.requests.count, count + 1, "\(count) items")
             XCTAssertEqual(transport.postCount, 0, "Preview dispatches no mutation")
-            // Pacing policy is unchanged: every request after the first still
-            // waits the existing 1.6s floor.
-            XCTAssertEqual(sleeper.seconds, Array(repeating: 1.6, count: count))
+            // #168: pacing goes through the shared aggregate-window scheduler
+            // now, but the opening request on a fresh transport is still free
+            // (same as the old fixed-floor pacing). This only holds exactly
+            // for counts that stay under the real 20-request/10s window; once
+            // a real wait is chunked, `sleeper.sleep()` is called more than
+            // once per paced request, which is exactly what
+            // RequestWindowSchedulerTests covers, not this request-cost test.
+            if count < 20 {
+                XCTAssertEqual(sleeper.seconds.count, count, "\(count) items")
+            }
+        }
+    }
+
+    /// #168 acceptance fixtures, run through the real Preview pipeline (not
+    /// the isolated scheduler): an 8-item interpretation Preview costs 9
+    /// requests and a 15-item one costs 16 — both previously paid the old
+    /// blanket `1.6s * (requestCount - 1)` floor (~12.8s / ~24.0s per the
+    /// Issue's own #167 measurement). Both now stay under the 20-request/10s
+    /// window, so real Preview traffic pays zero artificial wait.
+    func testRepresentative8And15ItemPreviewsMaterializeTheThroughputFix() async throws {
+        for count in [8, 15] {
+            let (_, transport, sleeper) = try await plan(interpretationDocument(count)) { _ in
+                interpretationsResponse([])
+            }
+            XCTAssertEqual(transport.requests.count, count + 1, "\(count) items")
+            let totalWait = sleeper.seconds.reduce(0, +)
+            let oldFixedFloor = 1.6 * Double(count)
+            XCTAssertEqual(totalWait, 0, "\(count) items")
+            XCTAssertLessThan(totalWait, oldFixedFloor, "\(count) items")
         }
     }
 
