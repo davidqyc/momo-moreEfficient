@@ -18,6 +18,9 @@ struct MomoMoreEfficientApp: App {
                 viewModel: CompanionViewModel.makeDefault(),
                 captureReviewStore: captureReviewStore
             )
+            #if DEBUG
+            .task { await ShareSheetProbe.presentIfRequested() }
+            #endif
         }
     }
 }

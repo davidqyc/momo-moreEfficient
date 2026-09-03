@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 
 /// A DEBUG-only UI-test seam for `MomoMoreEfficientUITests`.
@@ -10,13 +11,12 @@ import Foundation
 /// Share Sheet, the Shortcuts editor, or a second App Group member.
 ///
 /// This can only ever produce the existing pre-Preview review state: it has
-/// no route to Preview, credentials or Maimemo write, and it does not exist
-/// in a Release build.
+/// no route to Preview, credentials or Maimemo write. The entire declaration
+/// is compiled out of Release builds, not just its body.
 enum CaptureUITestSeed {
     static let environmentKey = "MOMO_UITEST_SEED_PENDING_CAPTURE_TEXT"
 
     static func installIfRequested() {
-        #if DEBUG
         guard let text = ProcessInfo.processInfo.environment[environmentKey],
               !text.isEmpty
         else { return }
@@ -25,6 +25,6 @@ enum CaptureUITestSeed {
         try? PendingCaptureInbox.appGroup().save(
             PendingCapture(text: text, capturedAt: Date())
         )
-        #endif
     }
 }
+#endif
