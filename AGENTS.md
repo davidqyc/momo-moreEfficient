@@ -143,31 +143,31 @@ Review ZIP 不是每次改文件的默认交付物。
 
 普通 Builder→Coordinator 同一远端 PR 流程可直接依靠 exact commit/PR diff、测试结果和 GitHub readback，不制造无信息增益的 ZIP 仪式。
 
-## 8. 模型与架构路由
+## 8. 模型与 Agent-family 路由
 
-momo 当前稳定 Builder 偏好是 **Claude-family first**。具体 Claude model / Effort / Speed / Execution 不在本文件硬编码，正式派单前按 `docs/AGENT_SKILLS_CONNECTOR.md` 指向的 live `claude-model-effort-routing` JIT 解析。
+**Agent family 不是 momo 的项目级固定偏好。** 它跟随 Owner 当前额度/可用性与同 lane 连续性。
 
-普通边界明确的实质 coding，通常形状是：
+默认连续性：
 
 ```text
-Model: Claude Sonnet 5
-Effort: High
-Speed: Standard
-Execution: Single Agent
-Selection reason: <one sentence>
+same active project/lane
++ 上一轮正式 external-Agent 使用 family F
++ Owner 没有宣布切换工具
++ 当前任务没有 hard tool/family constraint
+=> 继续 family F
 ```
 
-但上面只是典型形状，不得覆盖实时 Skill 路由。
+Owner 会在需要切 Claude / Codex / 其它工具时直接告诉项目 Coordinator；fresh Chat 不得因为 generic default 静默切 family。
 
-项目默认：
+当前 Agent family 决定后，再按 `docs/AGENT_SKILLS_CONNECTOR.md` 指向的 live family-specific routing JIT 决定具体模型 / Effort / Speed / Execution。不要把上一轮的 Sonnet/Opus/GPT 档位机械继承，也不要把“选模型”做成项目。
 
-- 普通实质 Builder：Claude-family；普通边界明确实现通常 Sonnet 5 / High / Standard / Single Agent；
-- 真实写入、凭证、身份、unknown outcome、recovery 等高风险 Builder：优先升级到 Opus 5 / Extra，仍按 live routing 复核；
-- Fable / Opus 用于需要更强架构简化、反例或高影响审阅的场景；
-- Codex 不再作为 momo fresh coding Builder 的静默默认。只有 Owner 明确指定 Codex，或 current task/tool-specific authority 有明确理由时才切换；
-- 不把“选择模型/effort”本身变成项目，Max/Ultracode 默认关闭，除非 live routing 证明正 ROI。
+例如：
 
-Claude coding/architecture Agent 的正式输入 Prompt 使用英文；Owner 中文需求由 Coordinator 保真翻译，中文产品文案作为精确任务数据保留。Owner-facing Coordinator 回复仍按 live Owner collaboration preferences。
+- 当前 family=Claude 时，普通边界明确 coding 常见形状可为 Sonnet 5 / High / Standard / Single Agent，但必须 JIT 复核；
+- 当前 family=Codex 时，普通边界明确 coding 常见形状可为 GPT-5.6 Sol / 高 / Single Agent，但必须 JIT 复核；
+- 架构简化/高风险审阅需要升级能力时，按当前 family 和 live routing 决定，不从项目名推导。
+
+Claude coding/architecture Agent 的正式输入 Prompt 使用英文；Codex 标题/Prompt 呈现等按 live cross-project presentation/routing contract；Owner-facing Coordinator 回复仍按 live Owner collaboration preferences。
 
 ## 9. 当前产品优先级
 
