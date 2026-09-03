@@ -21,7 +21,7 @@ CURRENT_PRIMARY_ISSUE=#164
 CURRENT_PRIMARY_GATE=MACHINE_MIGRATION_HOLD
 CURRENT_RELEASE_GATE_STATUS=PAUSED_FOR_MACHINE_MIGRATION
 CURRENT_BLOCKER=Owner is switching Macs; no further Builder/canary execution should start on the old machine
-CURRENT_UNIQUE_NEXT=complete Migration Assistant transfer, then on the new Mac verify the migrated private receipts directory before retiring the old Mac repo copy; after that re-establish live workspace truth and resume #164 only if still current
+CURRENT_UNIQUE_NEXT=complete Apple Migration Assistant transfer, then on the new Mac verify the migrated private receipts directory before retiring the old Mac repo copy; after that re-establish live workspace truth and resume #164 only if still current
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
 STUDY_RECORDS_BUILDER_ON_OLD_MACHINE=DO_NOT_START
@@ -150,7 +150,7 @@ MIGRATION_METHOD=Apple Migration Assistant
 OLD_MAC_REPO_RETIREMENT_ALLOWED_BEFORE_NEW_MAC_VERIFY=no
 ```
 
-Apple Migration Assistant is expected to carry user-account files/folders when the corresponding user data is selected, but project retirement does not rely on expectation alone.
+Apple Migration Assistant transfers selected user-account files/folders, but project retirement does not rely on expected behavior alone.
 
 ### New-Mac preservation verification gate
 
@@ -189,7 +189,7 @@ The pre-migration Owner instruction supersedes execution on the old Mac. The pre
 ## Resume sequence on the new Mac
 
 ```text
-Migration Assistant transfer
+Apple Migration Assistant transfer
 -> verify migrated artifacts/private/ (11 files, ~68 KB)
 -> only then permit old-Mac repo retirement/erase
 -> establish/verify new Mac workspace and repository identity
