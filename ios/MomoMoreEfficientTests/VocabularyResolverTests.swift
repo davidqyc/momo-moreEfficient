@@ -60,8 +60,10 @@ final class VocabularyResolverTests: XCTestCase {
     }
 
     func testMissingSpellingBlocksOnlyThatItem() async throws {
-        let (resolver, _, _) = try makeResolver([
+        let (resolver, transport, _) = try makeResolver([
             vocabularyQueryResponse([(id: "VOC_A", spelling: "apple")]),
+            // The batch miss now gets one exact-GET attempt, which proves nothing.
+            unresolvableVocabularyResponse(),
         ])
 
         let resolution = try await resolver.resolve(spellings: ["apple", "ghostword"])
@@ -69,6 +71,11 @@ final class VocabularyResolverTests: XCTestCase {
         XCTAssertEqual(
             resolution.outcomes,
             [.resolved(vocabularyID: "VOC_A"), .blocked(.notFound)]
+        )
+        XCTAssertEqual(transport.getCount, 1, "only the missed spelling is retried")
+        XCTAssertEqual(
+            transport.requests.last?.route,
+            .vocabulary(spelling: "ghostword")
         )
     }
 
@@ -101,6 +108,9 @@ final class VocabularyResolverTests: XCTestCase {
     func testMismatchedReturnedSpellingNeverBindsTheRequestedRow() async throws {
         let (resolver, _, _) = try makeResolver([
             vocabularyQueryResponse([(id: "VOC_OTHER", spelling: "banana")]),
+            // A batch answered only with another word is a true miss, so the
+            // exact GET is attempted — and it must not bind that word either.
+            vocabularyResponse("VOC_OTHER", "banana"),
         ])
 
         let resolution = try await resolver.resolve(spellings: ["apple"])
@@ -342,11 +352,16 @@ final class VocabularyResolverTests: XCTestCase {
     }
 
     func testEmptyResultSetBlocksEveryRequestedSpelling() async throws {
-        let (resolver, _, _) = try makeResolver([vocabularyQueryResponse([])])
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            unresolvableVocabularyResponse(),
+            unresolvableVocabularyResponse(),
+        ])
 
         let resolution = try await resolver.resolve(spellings: ["apple", "banana"])
 
         XCTAssertEqual(resolution.outcomes, [.blocked(.notFound), .blocked(.notFound)])
+        XCTAssertEqual(transport.getCount, 2, "one exact GET per missed spelling")
     }
 
     /// The exact raw body the official `maimemo/memo-api-cli` vocabulary-query
@@ -392,22 +407,307 @@ final class VocabularyResolverTests: XCTestCase {
             }
         }
 
-        // Per-item anomalies stay per-item, inside the first-party wrapper.
-        let cases: [(String, [[String: String]], VocabularyTargetOutcome)] = [
-            ("unsafe id", [["id": "bad/id", "spelling": "apple"]], .blocked(.matchAnomaly)),
+        // Per-item anomalies stay per-item, inside the first-party wrapper. Only
+        // the true miss is allowed a fallback attempt; the anomalies must not
+        // reach one at all, so they are stubbed with no second response.
+        let cases: [(String, [[String: String]], VocabularyTargetOutcome, [StubbedResult])] = [
+            ("unsafe id", [["id": "bad/id", "spelling": "apple"]], .blocked(.matchAnomaly), []),
             (
                 "two identities",
                 [["id": "VOC_A", "spelling": "apple"], ["id": "VOC_B", "spelling": "Apple"]],
-                .blocked(.matchAnomaly)
+                .blocked(.matchAnomaly),
+                []
             ),
-            ("mismatched spelling", [["id": "VOC_A", "spelling": "apricot"]], .blocked(.notFound)),
+            (
+                "mismatched spelling",
+                [["id": "VOC_A", "spelling": "apricot"]],
+                .blocked(.notFound),
+                [unresolvableVocabularyResponse()]
+            ),
         ]
-        for (label, voc, expected) in cases {
+        for (label, voc, expected, fallback) in cases {
             let envelope: [String: Any] = ["data": ["voc": voc], "errors": [], "success": true]
-            let (resolver, _, _) = try makeResolver([jsonResponse(envelope)])
+            let (resolver, transport, _) = try makeResolver([jsonResponse(envelope)] + fallback)
             let resolution = try await resolver.resolve(spellings: ["apple"])
             XCTAssertEqual(resolution.outcomes, [expected], label)
+            XCTAssertEqual(transport.getCount, fallback.count, label)
         }
+    }
+}
+
+/// Issue #164: the batch-miss exact-GET fallback.
+///
+/// An authenticated physical-iPhone Preview on the query-only design blocked a
+/// real, already-existing self-added vocabulary item, so a batch-query miss is
+/// no longer treated as proof that the word is unresolvable. These tests pin
+/// the repair's two halves: the ordinary all-hit batch must not pay for it, and
+/// the fallback must never bind a target it cannot prove. Each one fails under
+/// the old query-only resolver.
+final class VocabularyExactGETFallbackTests: XCTestCase {
+    private func makeResolver(
+        _ results: [StubbedResult]
+    ) throws -> (VocabularyTargetResolver, FakeHTTPTransport) {
+        let transport = FakeHTTPTransport(results)
+        let api = MaimemoTransport(
+            transport: transport,
+            credential: try credentialLease(),
+            sleeper: RecordingSleeper()
+        )
+        return (VocabularyTargetResolver(api: api), transport)
+    }
+
+    /// The self-added word the batch query omits. Nothing in the resolver knows
+    /// or cares that it is self-added; it is simply the spelling the batch has
+    /// no record for.
+    private let selfAdded = "ownwordonly"
+
+    // MARK: - 1 / 8. The fast path must not move
+
+    func testAllHitBatchIssuesNoFallbackGET() async throws {
+        for count in [1, 8, 15, 31] {
+            let spellings = (0..<count).map { "word\($0)" }
+            let (resolver, transport) = try makeResolver([resolvedQueryResponse(spellings)])
+
+            let resolution = try await resolver.resolve(spellings: spellings)
+
+            XCTAssertEqual(
+                resolution.outcomes,
+                spellings.map { .resolved(vocabularyID: "VOC_\($0.uppercased())") },
+                "\(count) items"
+            )
+            XCTAssertEqual(transport.vocabularyQueryCount, 1, "\(count) items")
+            XCTAssertEqual(transport.getCount, 0, "an all-hit batch pays for no fallback")
+            XCTAssertEqual(transport.requests.count, 1, "\(count) items")
+        }
+    }
+
+    /// Request-shape regression guard: only genuine misses add requests, and
+    /// they add exactly one each.
+    func testOnlyActualMissesAddFallbackRequests() async throws {
+        for (count, missCount) in [(8, 1), (15, 2), (15, 0)] {
+            let spellings = (0..<count).map { "word\($0)" }
+            let hits = spellings.dropLast(missCount)
+            let (resolver, transport) = try makeResolver(
+                [resolvedQueryResponse(Array(hits))]
+                    + Array(repeating: unresolvableVocabularyResponse(), count: missCount)
+            )
+
+            _ = try await resolver.resolve(spellings: spellings)
+
+            XCTAssertEqual(transport.vocabularyQueryCount, 1, "\(count)/\(missCount)")
+            XCTAssertEqual(transport.getCount, missCount, "\(count)/\(missCount)")
+            XCTAssertEqual(transport.requests.count, 1 + missCount, "\(count)/\(missCount)")
+        }
+    }
+
+    // MARK: - 2. A batch miss the exact GET can prove
+
+    func testBatchMissResolvesThroughExactlyOneExactGET() async throws {
+        let (resolver, transport) = try makeResolver([
+            vocabularyQueryResponse([
+                (id: "VOC_A", spelling: "apple"),
+                (id: "VOC_B", spelling: "banana"),
+            ]),
+            vocabularyResponse("VOC_SELF", selfAdded),
+        ])
+
+        let resolution = try await resolver.resolve(
+            spellings: ["apple", selfAdded, "banana"]
+        )
+
+        XCTAssertEqual(
+            resolution.outcomes,
+            [
+                .resolved(vocabularyID: "VOC_A"),
+                .resolved(vocabularyID: "VOC_SELF"),
+                .resolved(vocabularyID: "VOC_B"),
+            ],
+            "the missed spelling binds the exact GET's own id; batch hits are untouched"
+        )
+        XCTAssertEqual(transport.getCount, 1)
+        XCTAssertEqual(
+            transport.requests.map(\.route),
+            [.vocabularyQuery, .vocabulary(spelling: selfAdded)],
+            "only the missed spelling is asked for again"
+        )
+        XCTAssertEqual(transport.postCount, 0, "the fallback consumes no write authority")
+    }
+
+    /// The fallback is a GET on the public exact route, so it stays read-only
+    /// and keeps drawing from the one shared aggregate-window ledger (#168).
+    func testFallbackIsAReadOnlyGETOnThePublicExactRoute() async throws {
+        let (resolver, transport) = try makeResolver([
+            vocabularyQueryResponse([]),
+            vocabularyResponse("VOC_SELF", selfAdded),
+        ])
+
+        _ = try await resolver.resolve(spellings: [selfAdded])
+
+        let route = try XCTUnwrap(transport.requests.last?.route)
+        XCTAssertEqual(route.method, .get)
+        XCTAssertFalse(route.isMutating)
+        XCTAssertEqual(route.reviewedPath, "/open/api/v1/vocabulary")
+        XCTAssertNil(transport.requests.last?.body)
+    }
+
+    func testFallbackNeverConsumesTheOnePOSTPerItemAllowance() async throws {
+        let (resolver, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            vocabularyResponse("VOC_SELF", selfAdded),
+        ])
+        let control = ExecutionControl()
+
+        _ = try await resolver.resolve(spellings: [selfAdded], control: control)
+
+        XCTAssertTrue(control.beginPostIfAllowed(), "the write allowance is untouched")
+    }
+
+    // MARK: - 3. Duplicate input rows naming one missed spelling
+
+    func testDuplicateMissedSpellingsShareOneFallbackGETAndOneProvenTarget() async throws {
+        let (resolver, transport) = try makeResolver([
+            vocabularyQueryResponse([]),
+            vocabularyResponse("VOC_SELF", selfAdded),
+        ])
+
+        let resolution = try await resolver.resolve(
+            spellings: [selfAdded, selfAdded.uppercased(), selfAdded]
+        )
+
+        XCTAssertEqual(
+            resolution.outcomes,
+            Array(repeating: .resolved(vocabularyID: "VOC_SELF"), count: 3),
+            "every row naming the same word aligns to the same proven target"
+        )
+        XCTAssertEqual(transport.getCount, 1, "one GET per unique normalized spelling")
+        XCTAssertEqual(transport.requests.count, 2)
+    }
+
+    // MARK: - 4. A contradiction the batch already proved
+
+    func testBatchMatchAnomalyIsNeverRetriedOrOverridden() async throws {
+        let anomalies: [(String, [(id: String, spelling: String)])] = [
+            ("unsafe identifier", [(id: "VOC/../SELF", spelling: "ownword")]),
+            (
+                "two identities for one spelling",
+                [(id: "VOC_1", spelling: "ownword"), (id: "VOC_2", spelling: "OwnWord")]
+            ),
+        ]
+        for (label, records) in anomalies {
+            // No fallback response is stubbed: reaching the GET at all fails.
+            let (resolver, transport) = try makeResolver([vocabularyQueryResponse(records)])
+
+            let resolution = try await resolver.resolve(spellings: ["ownword"])
+
+            XCTAssertEqual(resolution.outcomes, [.blocked(.matchAnomaly)], label)
+            XCTAssertEqual(transport.getCount, 0, label)
+        }
+    }
+
+    // MARK: - 5. A batch response this build cannot decode
+
+    func testMalformedBatchResponseStillAbortsGloballyWithNoSilentFallback() async throws {
+        let malformed: [Any] = [
+            ["unexpected": "shape"],
+            ["data": ["errors": [], "success": true]],
+            ["data": ["voc": [["id": "VOC_A"]]]],
+        ]
+        for envelope in malformed {
+            let (resolver, transport) = try makeResolver([jsonResponse(envelope)])
+            do {
+                _ = try await resolver.resolve(spellings: ["apple", selfAdded])
+                XCTFail("a malformed batch response must abort the whole read plan")
+            } catch {
+                XCTAssertEqual(error as? CompanionError, .responseRejected)
+            }
+            XCTAssertEqual(transport.getCount, 0, "no silent fallback after a broken batch")
+        }
+    }
+
+    // MARK: - 6. A fallback answer that proves nothing
+
+    func testFallbackNeverBindsAnIdentityItCannotProve() async throws {
+        let unprovable: [(String, StubbedResult)] = [
+            ("no record at all", unresolvableVocabularyResponse()),
+            ("another word's record", vocabularyResponse("VOC_OTHER", "someotherword")),
+            ("unsafe identifier", vocabularyResponse("VOC/../SELF", "ownwordonly")),
+            ("record without a spelling", jsonResponse(["voc": ["id": "VOC_SELF"]])),
+            ("record without an id", jsonResponse(["voc": ["spelling": "ownwordonly"]])),
+            ("non-string identifier", jsonResponse(["voc": ["id": 7, "spelling": "ownwordonly"]])),
+        ]
+        for (label, response) in unprovable {
+            let (resolver, transport) = try makeResolver([
+                vocabularyQueryResponse([(id: "VOC_A", spelling: "apple")]),
+                response,
+            ])
+
+            let resolution = try await resolver.resolve(spellings: ["apple", selfAdded])
+
+            XCTAssertEqual(
+                resolution.outcomes,
+                [.resolved(vocabularyID: "VOC_A"), .blocked(.notFound)],
+                label
+            )
+            XCTAssertNil(resolution.outcomes[1].vocabularyID, label)
+            XCTAssertEqual(
+                resolution.outcomes[1].blockedReason,
+                "VOCABULARY_NOT_FOUND",
+                "\(label): the truthful generic outcome, not a guessed provider cause"
+            )
+            XCTAssertEqual(transport.getCount, 1, label)
+        }
+    }
+
+    // MARK: - 7. Global failures during the fallback
+
+    func testAuthRateLimitServerAndTransportFailuresDuringFallbackStayGlobal() async throws {
+        let failures: [(StubbedResult, CompanionError)] = [
+            (jsonResponse([:], status: 401), .authenticationRejected),
+            (jsonResponse([:], status: 429), .rateLimited),
+            (jsonResponse([:], status: 503), .serverFailure),
+            (jsonResponse([:], status: 404), .globalHTTPFailure),
+            (.failure(.transport), .transport),
+            // An envelope this build cannot decode is not a per-spelling fact.
+            (jsonResponse(["errors": ["nope"], "success": false]), .responseRejected),
+        ]
+        for (response, expected) in failures {
+            let (resolver, transport) = try makeResolver([
+                vocabularyQueryResponse([(id: "VOC_A", spelling: "apple")]),
+                response,
+                // A second miss must never be reached once the plan is aborted.
+                vocabularyResponse("VOC_SELF", "anotherownword"),
+            ])
+            do {
+                _ = try await resolver.resolve(
+                    spellings: ["apple", selfAdded, "anotherownword"]
+                )
+                XCTFail("\(expected) during fallback must abort the whole read plan")
+            } catch {
+                XCTAssertEqual(error as? CompanionError, expected)
+            }
+            XCTAssertEqual(transport.getCount, 1, "\(expected) stops the remaining fallbacks")
+        }
+    }
+
+    func testCancellationDuringFallbackStopsWithoutFabricatingATarget() async throws {
+        let (resolver, transport) = try makeResolver([
+            vocabularyQueryResponse([(id: "VOC_A", spelling: "apple")]),
+            vocabularyResponse("VOC_SELF", selfAdded),
+        ])
+        let control = ExecutionControl()
+        // Cancel the moment the batch query is dispatched, so cancellation lands
+        // between the batch and the fallback GET.
+        transport.onSend = { request in
+            if request.route == .vocabularyQuery { control.requestCancellation() }
+        }
+
+        do {
+            _ = try await resolver.resolve(spellings: ["apple", selfAdded], control: control)
+            XCTFail("cancellation must propagate")
+        } catch {
+            XCTAssertEqual(error as? CompanionError, .cancelled)
+        }
+        XCTAssertEqual(transport.getCount, 0, "a cancelled plan sends no fallback GET")
     }
 }
 
@@ -493,6 +793,90 @@ final class PreflightThroughputTests: XCTestCase {
             XCTAssertEqual(totalWait, 0, "\(count) items")
             XCTAssertLessThan(totalWait, oldFixedFloor, "\(count) items")
         }
+    }
+
+    /// #164 repair, end to end through both real preflight pipelines: a spelling
+    /// the batch query misses but the exact GET can prove becomes an ordinary,
+    /// executable row — and both modes get that from the one shared resolver, so
+    /// no mode-specific fallback implementation exists to drift apart.
+    func testBothPreflightModesResolveABatchMissThroughTheOneSharedResolver() async throws {
+        let lease = try credentialLease()
+        defer { lease.clear() }
+
+        // Interpretation: "word1" is missing from the batch answer.
+        let entries = try BatchParser.parseDailyInput(interpretationDocument(3)).entries
+        let interpretationTransport = FakeHTTPTransport([
+            vocabularyQueryResponse([
+                (id: "INVALID_VOC_0", spelling: "word0"),
+                (id: "INVALID_VOC_2", spelling: "word2"),
+            ]),
+            vocabularyResponse("INVALID_VOC_SELF", "word1"),
+            interpretationsResponse([]),
+            interpretationsResponse([]),
+            interpretationsResponse([]),
+        ])
+        let snapshot = try await PreflightPlanner(
+            api: MaimemoTransport(
+                transport: interpretationTransport,
+                credential: lease,
+                sleeper: RecordingSleeper()
+            )
+        ).buildSnapshot(entries: entries, tags: [], credentialFingerprint: lease.fingerprint)
+
+        XCTAssertEqual(
+            snapshot.items.map(\.classification),
+            [.create, .create, .create],
+            "the batch-missed row is no longer blocked"
+        )
+        XCTAssertEqual(
+            snapshot.items.map(\.vocabularyID),
+            ["INVALID_VOC_0", "INVALID_VOC_SELF", "INVALID_VOC_2"]
+        )
+        XCTAssertEqual(
+            interpretationTransport.requests.prefix(2).map(\.route),
+            [.vocabularyQuery, .vocabulary(spelling: "word1")]
+        )
+        XCTAssertEqual(
+            interpretationTransport.requests.dropFirst(2).map(\.route),
+            [
+                .interpretations(vocabularyID: "INVALID_VOC_0"),
+                .interpretations(vocabularyID: "INVALID_VOC_SELF"),
+                .interpretations(vocabularyID: "INVALID_VOC_2"),
+            ],
+            "each row reads content through its own resolved target"
+        )
+        XCTAssertEqual(interpretationTransport.postCount, 0)
+
+        // Phrase: the same repair, through the same resolver, no second stack.
+        let phraseEntries = try PhraseBatchParser.parse(phraseDocument(2))
+        let phraseTransport = FakeHTTPTransport([
+            vocabularyQueryResponse([(id: "INVALID_VOC_0", spelling: "word0")]),
+            vocabularyResponse("INVALID_VOC_SELF", "word1"),
+            emptyPhrases(),
+            emptyPhrases(),
+        ])
+        let phraseSnapshot = try await PhrasePreflightPlanner(
+            api: MaimemoTransport(
+                transport: phraseTransport,
+                credential: lease,
+                sleeper: RecordingSleeper()
+            )
+        ).buildSnapshot(
+            entries: phraseEntries,
+            tags: [],
+            credentialFingerprint: lease.fingerprint
+        )
+
+        XCTAssertEqual(phraseSnapshot.items.map(\.classification), [.create, .create])
+        XCTAssertEqual(
+            phraseSnapshot.items.map(\.vocabularyID),
+            ["INVALID_VOC_0", "INVALID_VOC_SELF"]
+        )
+        XCTAssertEqual(
+            phraseTransport.requests.prefix(2).map(\.route),
+            [.vocabularyQuery, .vocabulary(spelling: "word1")]
+        )
+        XCTAssertEqual(phraseTransport.postCount, 0)
     }
 
     func testPhrasePreflightUsesTheSameSharedResolver() async throws {

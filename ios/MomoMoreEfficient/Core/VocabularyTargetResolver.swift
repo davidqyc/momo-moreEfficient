@@ -51,6 +51,24 @@ struct VocabularyResolution: Equatable, Sendable {
 /// note/mnemonic support reuses this resolver rather than starting a second
 /// target-resolution stack.
 ///
+/// Resolution is batch-first with a bounded single-spelling repair, which is
+/// exactly how the official `maimemo/memo-api-cli` splits the two public
+/// read-only surfaces (batch query for many spellings, exact GET for one):
+///
+/// ```text
+/// POST /vocabulary/query for every unique spelling
+/// -> every safe batch hit is final
+/// -> every batch match anomaly stays blocked
+/// -> only true batch misses attempt GET /vocabulary?spelling=
+/// -> at most one such GET per unique normalized spelling
+/// ```
+///
+/// The fallback exists because a batch-query miss is not proof that the word
+/// is unavailable on every public surface: a real, already-existing self-added
+/// vocabulary item blocked in an authenticated physical Preview on the
+/// query-only design. An all-hit batch — the ordinary Preview — issues no
+/// fallback GET at all, so the #167/#168 request shape is unchanged.
+///
 /// Safety shape — the official resolver's spelling-map pattern, made stricter
 /// where this product's write targets require it:
 ///
@@ -60,6 +78,9 @@ struct VocabularyResolution: Equatable, Sendable {
 ///   to the requested spelling under the project's normalization;
 /// - missing, duplicated, mismatched or unsafe identities fail closed as a
 ///   blocked item, and no ID is ever guessed;
+/// - the fallback may only ever turn a block into a *proven* target; it can
+///   never relax one the batch already contradicted, and never invents a
+///   provider-specific reason for its own failure;
 /// - global transport/auth/rate-limit/server failures still abort the whole
 ///   read plan exactly as the per-item path does.
 ///
@@ -94,6 +115,21 @@ struct VocabularyTargetResolver {
         for chunk in chunks(of: requestOrder) {
             let records = try await api.vocabularyQuery(spellings: chunk, control: control)
             reconcile(records, requested: chunk, into: &byNormalized)
+        }
+
+        // Only a true batch miss may reach the exact GET. A batch hit keeps the
+        // target it already proved, and `.matchAnomaly` is a contradiction the
+        // batch established: a second read must never be allowed to overwrite it
+        // with a more convenient answer. Deduplication above means at most one
+        // fallback request per unique normalized spelling, however many input
+        // rows named it. A malformed batch response never gets here at all —
+        // it threw above, and the whole plan aborted with it.
+        for spelling in requestOrder
+        where byNormalized[normalize(spelling)] == .blocked(.notFound) {
+            byNormalized[normalize(spelling)] = try await exactMatch(
+                for: spelling,
+                control: control
+            )
         }
 
         return VocabularyResolution(
@@ -134,6 +170,59 @@ struct VocabularyTargetResolver {
         }
         for normalized in requestedSet where byNormalized[normalized] == nil {
             byNormalized[normalized] = .blocked(.notFound)
+        }
+    }
+
+    /// One public exact `GET /vocabulary?spelling=`, for one spelling the batch
+    /// query returned no record for.
+    ///
+    /// The transport's existing production validation is the entire acceptance
+    /// test: it yields a record only when the response carries a safe
+    /// identifier *and* a spelling that normalizes to the one requested. So this
+    /// path cannot zip a position, synthesize an id, or bind another word's
+    /// record — anything it fails to prove leaves the batch's own `.notFound`
+    /// verdict standing, which is the same generic fail-closed outcome the
+    /// caller would have shown without the fallback. No new provider-specific
+    /// cause is invented, because this build genuinely cannot distinguish "the
+    /// provider has no such record" from "the record it sent cannot be safely
+    /// attributed": both are `itemResponseRejected`, so both keep the existing
+    /// generic `VOCABULARY_NOT_FOUND` presentation rather than a guessed reason.
+    private func exactMatch(
+        for spelling: String,
+        control: ExecutionControl?
+    ) async throws -> VocabularyTargetOutcome {
+        do {
+            let record = try await api.vocabulary(spelling: spelling, control: control)
+            return .resolved(vocabularyID: record.id)
+        } catch let error as CompanionError where Self.isSpellingScoped(error) {
+            return .blocked(.notFound)
+        }
+    }
+
+    /// Whether a failed exact-GET probe is a fact about this one spelling
+    /// rather than about the read plan.
+    ///
+    /// This is deliberately the same split the per-item vocabulary GET already
+    /// used in production before the batch query replaced it (#167): an
+    /// item-local rejection blocked that one row, and every `abortsReadPlan`
+    /// error stopped the plan. Reusing it verbatim means the fallback adds no
+    /// new failure semantics to a route this project has already shipped, and it
+    /// keeps every session-wide failure global — a rejected Token, an exhausted
+    /// rate-limit window, a server outage, a dead connection, an HTTP refusal,
+    /// an envelope this build cannot decode, or cancellation all invalidate
+    /// every remaining read, so none of them may be downgraded into a guessed
+    /// per-item target.
+    private static func isSpellingScoped(_ error: CompanionError) -> Bool {
+        switch error {
+        case .itemResponseRejected:
+            // A 200 whose record is absent, malformed, mismatched or unsafe —
+            // the shape this route has always answered an unknown spelling with.
+            return true
+        case .inputRejected:
+            // This spelling cannot even form a legal request URL.
+            return true
+        default:
+            return false
         }
     }
 

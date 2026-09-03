@@ -328,6 +328,12 @@ func vocabularyResponse(_ id: String, _ spelling: String) -> StubbedResult {
     jsonResponse(["voc": ["id": id, "spelling": spelling]])
 }
 
+/// The exact vocabulary GET (#164 batch-miss fallback) answering that it can
+/// prove nothing about this spelling. An empty object is the shape the
+/// production decoder already classifies as an item-local rejection, so the
+/// requested spelling stays blocked and the rest of the plan survives.
+func unresolvableVocabularyResponse() -> StubbedResult { jsonResponse([String: Any]()) }
+
 /// One batch vocabulary-query response, in the caller-supplied record order,
 /// in the exact first-party raw envelope the official `maimemo/memo-api-cli`
 /// vocabulary-query test models: `{ data: { voc: [...] }, errors: [], success }`.
