@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-08-26
-sourceMainSha=dff23b410e20f60cbbd3cfa65596543baec55fb9
+updatedAt=2026-09-03
+sourceMainSha=25e5cd85ea8f436cc66b41e49d6313547b0a6148
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -12,138 +12,146 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
-CURRENT_PRIMARY_ISSUE=#105
-CURRENT_UNIQUE_NEXT=merge PR #162 -> Coordinator syncs davidqyc/jiripple-public-site 抓词 facts -> fresh Claude architecture/product-complexity review -> separate TestFlight release decision
-OPEN_PRODUCT_PR=#162 claude/issue-105-zhuaci-copy (Draft, capture terminology + state-sync copy pass)
-ACTIVE_WIP=#105 release-closeout copy pass (PR #162)
-IMPLEMENTATION_HOLD=true
+
+CURRENT_PRIMARY_ISSUE=#168
+CURRENT_ARCHITECTURE=A_SEQUENTIAL_AGGREGATE_WINDOW_SCHEDULER
+OWNER_DECISION_COMMENT=5524418123
+CURRENT_PROMPT_REVIEW_GATE=Issue #168 comment 5524641284
+OLD_PREPARED_RETURN_BRIDGE=5524523317
+OLD_PROMPT_DISPATCHED=no_owner_confirmed
+
+CURRENT_UNIQUE_NEXT=fresh Coordinator reviews the prepared #168 Builder dispatch against live Owner preferences + live agent-skills; release only a corrected/validated prompt, then wait for the Builder result
+
+IMPLEMENTATION_HOLD_FOR_OTHER_FEATURES=true
+NEXT_TESTFLIGHT_BLOCKED_BY=#168 + exact-final-main physical validation + later release decision
 ```
 
-`IMPLEMENTATION_HOLD=true` covers #161/#154 and all other new product implementation: neither starts until #105 fully closes (PR #162 merged, public-site synced, fresh Claude review done, TestFlight decision made). It does not block this PR's own copy-only work.
+## Current engineering baseline
 
-#105 is the current capture release-closeout lane. App Group/signing setup is complete, the automated capture release gate (#160) is PASS, and both physical-iPhone runtime canaries (Shortcut/App Intent and Share Extension) are PASS. **Share is the recommended normal reading-capture route; Shortcut/App Intent is the supported faster preconfigured alternative.** The final Chinese product term is **抓词**. Share Extension visual polish is deferred to a later combined visual batch and is not a release gate. Current public TestFlight remains `1.0 (3)` and does not contain 抓词.
+PR #167 is merged on canonical `main` at:
 
-## What is already proven
+```text
+25e5cd85ea8f436cc66b41e49d6313547b0a6148
+```
 
-- interpretation batch CREATE/UPDATE and phrase CREATE keep the Preview → approval → fresh preflight → max-one-POST/no-retry → authenticated readback safety floor;
-- personal Maimemo API Token remains device-local in `WhenUnlockedThisDeviceOnly` Keychain for the iOS app;
-- public TestFlight build `1.0 (3)` is live via `https://testflight.apple.com/join/DtVKeTSE`; this is TestFlight, not an App Store release;
-- #139 is COMPLETE via PR #142 / merge `143aeaf1f1c250c46213879f4362a4ed23da9202`: phrase CREATE still sends at most one POST, then may use at most three paced authenticated GET-only readbacks; local History records privacy-safe POST/readback diagnostics and distinguishes dispatched-but-unconfirmed results from ordinary failure;
-- #142 received Coordinator review plus a fresh independent Claude safety review that returned `PASS / SAFE TO MERGE`; the reviewer independently ran the complete XCTest/Release/adversarial verification set;
-- stale Preview refresh now shows real `正在重新预览…` / per-item progress rather than appearing hung;
-- #120 and #124 are complete: iOS Shortcut/App Intent and Share Extension capture both terminate at an editable pre-Preview boundary without Maimemo Token/API/write activity;
-- #160 (merged `4cf44a7d9bfa22541c749b7b6d65ee042cf86410`) automates the capture release gate: exact Bundle ID/entitlement/App Group contract, `ShareCaptureTests` + `CaptureReviewTests` (25 passed / 0 failed), Release simulator build and generic-device compile all PASS in CI;
-- both physical-iPhone runtime canaries are PASS (2026-08-25): Shortcut/App Intent foregrounds the app automatically into the editable pre-Preview state; Share Extension saves to the App Group inbox and the pending capture appears correctly once the main app is opened; both preserved the synthetic payload text exactly and neither reached Preview/write. Recommended normal route: **Share**; Shortcut/App Intent remains a supported faster preconfigured alternative;
-- the Owner froze the Chinese user-facing product term as **抓词**, retiring the temporary `捕获检查` / `capture review` engineering wording from user-facing surfaces (internal `CaptureReview*` implementation identifiers may remain);
-- #125 browser-extension research remains `NEEDS-MAIMEMO-CLARIFICATION`; #104/#5 built-in dictionary/content lookup remains parked until first-party contracts support it;
-- Tencent SCF production is live for `/xiaoheiniao/`, machine-readable discovery surfaces and existing ReliableReader routes; repository/admin paths remain non-public;
-- public copy authority remains the Owner-edited README plus `docs/PUBLIC_COPY_STYLE.md`; unreleased source-main capability must never be described as present in TestFlight build `1.0 (3)`.
+That merge established the batch vocabulary resolver / parser / crash-test foundation required before #168:
 
-## GitHub / AI keyword optimization state
+- vocabulary lookup uses the public vocabulary-query surface instead of one lookup per item;
+- the query POST is explicitly read-semantic and does not consume mutation authority;
+- the artificial product-wide 30-item cap is removed while existing byte/field/control-character/duplicate safety bounds remain;
+- the first-party vocabulary-query envelope is decoded as `data.voc` / tolerated unwrapped `voc`;
+- the recurring Simulator XCTest host traps were test-harness failures, not Release-app crashes.
 
-This work is **AI keyword optimization / GitHub discovery**, not App Store ASO.
+No real Maimemo network or mutation was used for that Builder lane.
 
-- #147 controlled metadata round 1 is complete and Coordinator-reviewed PASS;
-- current About description is:
-  `小黑鸟伴侣｜独立非官方的墨墨背单词第三方开源工具 / Maimemo companion & iPhone tool：基于开放 API 安全批量导入/录入释义和例句，支持 ChatGPT / Codex 学习工作流。`;
-- Homepage remains `https://www.jiripple.com/xiaoheiniao/`;
-- current Topics are exactly: `batch-import`, `chatgpt`, `ios`, `maimemo`, `maimemo-api`, `openai-codex`, `vocabulary-import`, `vocabulary-learning`;
-- the controlled change materially improved cold-start GitHub repository matching: queries around `墨墨 工具`, `墨墨 批量导入`, `墨墨 API`, `墨墨 第三方`, `墨墨 ChatGPT`, `Maimemo tool`, `Maimemo API` and `Maimemo ChatGPT` moved from absent/zero-result states into the first result page, while brand/entity controls remained strong;
-- exact repository rank is stochastic; #147 is now `FREEZE_METADATA_AND_REPEAT_COLD_START_CHECKPOINTS`, not permission for more keyword stuffing;
-- `墨墨 自动化`, `墨墨 插件`, `Maimemo automation` and `Maimemo batch import` remaining absent is not a reason to overstate product behavior or unreleased surfaces;
-- #144 owns durable audience-language discovery. Xiaohongshu evidence, public prior art and real users should decide which words survive; bridge implementation/runtime evidence does not become product semantic authority by itself;
-- `docs/ai-search-benchmark.md` separates GitHub repository matching from answer-engine retrieval → citation/source selection → answer absorption → factual accuracy;
-- bare `jiripple.com` redirect/canonical entry remains separately tracked in `davidqyc/jiripple-public-site#11` and must not be changed as a side effect of normal content work.
+## #168 — current product lane
 
-## Competitive evidence and product backlog
+Goal: remove the project-owned blanket `1.6s` delay from normal Preview/preflight reads without weakening write safety.
 
-#149 is the umbrella competitive-feature harvest. The repeated signal is not “more raw API power”; it is low-friction capture, interoperability, preserved context, safe batch operations and useful learning-data reuse.
+Fresh first-party evidence already frozen in #168 establishes:
 
-### Strong public demand signals observed
+```text
+Maimemo aggregate windows:
+20 requests / 10 seconds
+40 requests / 60 seconds
+2000 requests / 5 hours
 
-- `busiyiworld/maimemo-export`: roughly 950 stars / 196 forks — very strong demand for export, portability and cross-tool use; its Root/database/copyright-wordbook path is **not** a model for this project;
-- `viazure/EudicSyncToMaiMemo`: roughly 57 stars / 8 forks — mature multi-platform Release, scheduled sync, logging/notification and OpenAPI migration evidence;
-- `chriscurrycc/bob-plugin-maimemo-notebook`: roughly 53 stars / 6 forks — strong evidence for “query/capture a word while preserving the sentence + translation/context”;
-- official `maimemo/memo-skills`: roughly 38 stars — first-party evidence that Maimemo × Agent/AI workflows such as today/progress/forgotten words and creating note/interpretation/phrase are real ecosystem surfaces;
-- `eMUQI/eudic-maimemo-sync`: roughly 13 stars / 2 forks plus tutorial/Docker distribution — repeated evidence for external-source → Maimemo sync;
-- official `maimemo/memo-api-cli`: broad official API surface, OIDC and npm distribution; low GitHub-star count does not negate first-party ecosystem importance.
+provider minimum 1.6s/request:
+NOT_DOCUMENTED
 
-### Focused candidate issues created from that evidence
+public batch interpretation/phrase read route:
+NOT_FOUND_IN_CURRENT_FIRST_PARTY_EVIDENCE
+```
 
-- #152 — **Universal Inbox / 墨墨 × 一切**: source-agnostic adapters produce candidate content into one local inbox; adapters never gain write authorization. Phase A targets text/JSON/CSV/TSV/Markdown/TXT/iOS Share/AI-output schemas before live external connectors. The public adapter/schema surface is also intended to create genuine OSS reuse/fork value.
-- #153 — **助记 / Note import with respect/content review**: demand is proven by official API/Skills and AI-sync prior art, but content review is part of the feature. Use a deterministic high-risk pass + extensible semantic review hook + mandatory per-item human Preview. Sexist/sexualizing/objectifying/stereotype-based mnemonics from generated candidates cannot be batch-approved; user-imported text is never silently rewritten. Content review never replaces write authorization.
-- #154 — **context-preserving capture**: preserve selected word + surrounding sentence/translation/source where the source surface can provide them safely; keep only minimal local context and route through normal Preview/approval. This is the natural next refinement of the existing capture feature.
-- #155 — **read-only Today / forgotten / vague / progress → AI handoff**: use first-party study read surfaces and the existing Recipe direction; do not mutate study state merely because official CLI exposes write commands.
-- #156 — **user-owned data export/backup/interoperability**: export only contractually supported user-owned content (custom interpretations/phrases/notes/user notepads and selected read-only learning data) to JSON/CSV/Markdown/TXT; no Root/database extraction and no export of Maimemo copyrighted built-in wordbook databases. Round-trip with #152 where practical.
-- #157 — **notepad picker/create + safe batch add**: replace `np-...` developer UX with user-facing list/select/create and new-vs-existing Preview. If the API requires whole-notepad replacement, treat it as a higher-risk conflict-aware write rather than a blind append.
-- #150 — **README/distribution conversion**: the next GitHub growth pass should emphasize privacy-safe visual demo, compact differentiation from raw CLI/scripts and durable GitHub Release records for promoted public TestFlight builds rather than adding more prose/keywords.
-- #158 — **Codex for Open Source readiness**: accumulate genuine adoption, reusable OSS surfaces and maintenance evidence; do not invent a star threshold or manufacture activity.
+Owner selected **A** in Issue #168 comment `5524418123`:
 
-## Product ordering — not yet authorized for implementation
+```text
+reads remain sequential
+next read starts immediately after prior response unless a real aggregate window requires waiting
+no read concurrency
+no mutation concurrency
+no private endpoint / batch content-read invention
+mutating writes remain conservative and serial
+if ordinary 8–15 item Preview becomes materially fast enough, stop; do not chase marginal speed with B
+```
 
-Unless the Owner changes direction, the current planning preference is:
+This decision is accepted and must not be reopened unless new empirical evidence shows A is still materially too slow.
 
-1. finish the existing capture release gate (merge PR #162, then Coordinator syncs `jiripple-public-site`, then the fresh Claude review, then the separate TestFlight release decision);
-2. **#161 — batch read-only checking of user-owned interpretations/examples — is the next product feature after #105 closeout**;
-3. #154 context-preserving capture remains backlog and no longer directly precedes #161;
-4. #153 mnemonic/Note import with the respect/content-review gate;
-5. #155 read-only Today/forgotten/vague → AI;
-6. #157 notepad picker/create and safe batch membership;
-7. progressively extract #152 Universal Inbox / adapter contract as multiple real sources converge on it;
-8. #156 export/backup/interoperability as the larger reusable OSS/data-portability surface;
-9. #150 README demo/release conversion and #158 OSS-readiness evidence proceed as appropriate without fake stars/reviews/backlinks.
+## Prepared Prompt state — important rollover gate
 
-This order is a planning snapshot only; the next Owner command may supersede it. The Owner's latest sequencing decision (#161 next, #154 backlog) supersedes the older #154-first planning snapshot.
+The old Coordinator prepared a #168 Builder dispatch and wrote Return Bridge `5524523317`, but the Owner explicitly confirmed the Prompt was **not sent**.
 
-## Codex for Open Source / stop-loss position
+Current exact gate is Issue #168 comment `5524641284`:
 
-Current evidence does **not** support stopping the project merely because Maimemo is niche.
+```text
+PROMPT_PREPARED=yes
+EXTERNAL_AGENT_DISPATCHED=no_owner_confirmed
+AGENT_RUN_COMPLETED=no
+RESULT_RETURNED=no
+CURRENT_GATE=FRESH_COORDINATOR_PROMPT_REVIEW_BEFORE_RELEASE
+```
 
-- the ecosystem contains ~50-star utility/workflow projects and one ~950-star portability/export project;
-- official Maimemo CLI + Agent Skills show ecosystem importance beyond stars;
-- the strongest eventual application story is not “an iPhone helper for one vocabulary app”, but a truthful safety-first interoperability layer connecting Maimemo, user-owned learning data, iOS capture and reusable AI/agent workflows;
-- that story must become real in the product before it is used in an application;
-- current weakness is external adoption proof: genuine external users/testers, Issues, stars/forks/PRs, reusable adapter/schema/Recipe use, public release records and external tutorials/references are still early;
-- #158 owns the evidence trigger. Re-read OpenAI's live program rules only when real usage + ecosystem reuse + sustained maintainer workload are all demonstrable;
-- if broader distribution over time produces almost no external use/reuse despite good discoverability and a stronger product, that would be actual stop-loss evidence.
+A fresh Coordinator must not infer a running Builder from the old Return Bridge and must not simply copy the old inline Prompt. It must re-derive the dispatch from current authority, current Owner preferences and live agent-skills.
 
-## Release gate — reading capture
+## Why the old prepared Prompt needs fresh review
 
-No new capture architecture is needed. Sequence and current status:
+The project itself is intentionally lightweight. `AGENTS.md` requires a simplification checkpoint when a small mechanism's implementation contract grows beyond roughly one screen, and task contracts should stay compact unless the risk genuinely requires more.
 
-1. ~~register/verify App Group `group.com.jiripple.xiaoheiniao.capture` for app + Share Extension and refresh provisioning~~ — **DONE**;
-2. ~~compare Shortcut vs Share on physical iPhone for actual daily friction~~ — **DONE**; both physical canaries PASS;
-3. ~~choose the materially better normal route~~ — **DONE**: Share is the recommended normal route, Shortcut/App Intent remains a supported faster preconfigured alternative;
-4. replace temporary `捕获检查` / `capture review` wording consistently across UI + README/README.en + FAQ with the frozen `抓词` terminology — repository-side copy pass in PR #162, **pending merge**;
-5. Coordinator synchronizes `davidqyc/jiripple-public-site` to the same current 抓词 facts (comparison complete, Share = normal route, still not in TestFlight `1.0 (3)`) — **required before the release gate can be read as closed**, still pending;
-6. run one fresh Claude architecture/product-complexity review before the next TestFlight release decision; Claude prompts must follow central `claude-external-retrieval-discipline` and must not block completion on WebFetch/WebSearch/browser `Fetching`;
-7. only then make a separate TestFlight release decision.
+The #168 implementation is narrow:
 
-Share Extension visual polish is deferred to a later combined visual batch and is explicitly not part of this gate.
+```text
+remove blanket read sleep
++ add smallest aggregate-window guard
++ deterministic focused tests
++ preserve mutation safety
+```
+
+Do not turn it into a generic scheduler/networking framework, broad historical Issue replay, or a long multi-lane governance exercise.
+
+## Release / backlog ordering
+
+Current intended sequence:
+
+```text
+#167 merged
+-> #168 throughput implementation
+-> exact-final-main physical iPhone validation
+-> build-number / TestFlight release decision
+```
+
+`#164` and `#105` remain open/hold until #168 and final exact-main device gates complete.
+
+Do not start unrelated product lanes while #168 is the release blocker. In particular, #161/#154/#153/#152 and later backlog work remain deferred unless the Owner explicitly changes sequencing.
 
 ## Safety boundaries still current
 
 - Preview is not write authorization;
-- changed items max one POST and no automatic POST retry;
-- once a POST send has been attempted, HTTP rejection or transport failure remains dispatched for no-retry safety; recovery is GET-only;
-- phrase CREATE uses only the bounded readback recovery accepted in #139/#142; do not mechanically copy that retry policy to other content types without evidence;
-- UPDATE targets only explicit authenticated-user records; ambiguity blocks;
+- explicit approval before mutation;
+- fresh authenticated preflight when stale state could change the write target;
+- each changed item gets at most one mutating POST;
+- no automatic mutating-POST retry;
+- authenticated readback after dispatched mutation;
+- uncertain mutation recovery is GET-only;
+- UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
-- personal Tokens and private learning data must not enter Git, public logs, review artifacts or public examples;
-- diagnostics stay local/privacy-safe and do not become telemetry;
-- Shortcut/App Intent/Share capture remain pre-Preview input surfaces only; Share Extension/App Group never gains access to Maimemo Token;
-- source adapters in #152 may produce candidates only and can never bypass the safety core;
-- mnemonic content review in #153 is separate from and cannot substitute for write authorization;
-- user-data export in #156 must stay within public API/data-ownership/legal boundaries;
-- browser work remains blocked on first-party contract evidence;
-- public pages must not claim source-main capabilities are already present in TestFlight build `1.0 (3)` unless released;
-- live remote and current Issue/PR authority outrank this snapshot.
+- vocabulary-query POST remains read-semantic;
+- personal Maimemo Token stays device-local and must not enter Git/logs/review artifacts;
+- no real Maimemo network/mutation is needed for the #168 Builder implementation;
+- TestFlight/release is outside #168 Builder authority.
 
-## Remote closeout note
+## Handoff / maintenance rule
 
-- PR #162 (`claude/issue-105-zhuaci-copy`) is the open Draft PR for this #105 copy/state-sync closeout; the current tree contains no residue from any prior accidental Coordinator-tooling commit (history preserved, not rewritten);
-- newly created #149, #150, #152–#158 are backlog/planning authority only, not implementation status.
+This file owns only **current state + current unique next + live boundaries**. Historical milestones, competitive research and backlog rationale remain in their Issues, decision log, CHANGELOG and other durable project docs; do not re-expand this file into an archive.
 
-## Maintenance rule
+Fresh Chat takeover should read:
 
-Keep this file to current state, one next step and live boundaries only. Update at real milestones, not micro-steps.
+```text
+CHAT_HANDOFF.md
+-> this file
+-> Issue #168 metadata/body
+-> exact comments 5524418123 and 5524641284
+-> live Owner collaboration preferences
+-> latest explicit Owner instruction
+```
+
+Do not fetch all historical Issue comments just to reconstruct the present state.
