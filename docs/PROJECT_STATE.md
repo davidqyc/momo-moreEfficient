@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-03
-sourceMainSha=c9c91b3e6191c8d3f6c36595121d75f81328c90b
+sourceMainSha=4990060bf193d27e0594a1e672f36b3a6621e975
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -18,78 +18,41 @@ LAST_PRODUCT_MERGE=PR #172
 LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
 
 CURRENT_PRIMARY_ISSUE=#164
-CURRENT_PRIMARY_GATE=SELF_ADDED_VOCABULARY_TARGET_RESOLUTION_REPAIR
+CURRENT_PRIMARY_GATE=SELF_ADDED_VOCABULARY_STUDY_RECORDS_RESOLUTION
 CURRENT_RELEASE_GATE_STATUS=BLOCKED
-CURRENT_BLOCKER=an existing real self-added vocabulary item still blocks during authenticated physical-iPhone Preview target resolution on exact current main
-CURRENT_UNIQUE_NEXT=build the smallest batch-first resolver candidate that uses public exact GET only for batch-missed spellings; physically validate the existing self-added item read-only before merge
+CURRENT_BLOCKER=the real existing self-added vocabulary item is unresolved by both public vocabulary/query and exact vocabulary GET on physical iPhone
+CURRENT_UNIQUE_NEXT=build one smallest batch-first candidate that uses public Study query_study_records only for true vocabulary-batch misses; physically validate the same existing self-added item read-only before merge
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
-NEXT_TESTFLIGHT_BLOCKED_BY=#164 self-added target-resolution repair + exact-candidate physical read-only canary + final release-candidate closeout + release decision
+NEXT_TESTFLIGHT_BLOCKED_BY=#164 study-records resolution canary + final release-candidate closeout + release decision
 ```
 
-## Current engineering baseline
+## Accepted baseline
 
-### #167 — batch vocabulary / parser foundation
+### #167 — batch vocabulary / parser
 
-Merged on canonical `main` at:
+Merged at `25e5cd85ea8f436cc66b41e49d6313547b0a6148`.
 
-```text
-25e5cd85ea8f436cc66b41e49d6313547b0a6148
-```
+- normal vocabulary resolution uses the public batch query;
+- query POST is read-semantic;
+- no artificial fixed 30-item cap;
+- bounded parser/input safety remains.
 
-It established:
+### #168 — aggregate-window scheduler
 
-- public batch vocabulary query instead of one vocabulary GET per normal item;
-- the vocabulary-query POST is read-semantic, not mutation authority;
-- no artificial fixed total 30-item cap;
-- bounded parser/input safety remains;
-- first-party batch-query envelope decoding is accepted as `data.voc` / tolerated unwrapped `voc`.
+Merged through PR #172 at `bc03ee03e06bfa23a160e2599bebc9db34635812`.
 
-### #168 — sequential aggregate-window scheduler
+- no blanket 1.6s read floor;
+- `20/10s`, `40/60s`, `2000/5h` enforced;
+- `ContinuousClock` elapsed-time semantics;
+- actual-dispatch reconciliation and aborted-reservation removal;
+- sequential reads/writes, no mutation retry, mandatory post-POST readback preserved.
 
-Issue #168 is closed through PR #172.
+Final accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
 
-Accepted Builder head:
+## Physical evidence and failed PR #173
 
-```text
-e7bf2d65e244b9168be6aa01ba656207a23f2be0
-```
-
-Canonical merge:
-
-```text
-bc03ee03e06bfa23a160e2599bebc9db34635812
-```
-
-The merged implementation:
-
-- removes the historical blanket `1.6s` read pacing floor;
-- enforces `20/10s`, `40/60s`, `2000/5h` aggregate windows;
-- uses `ContinuousClock` elapsed-time semantics;
-- reconciles reservations to actual dispatch and removes aborted reservations;
-- preserves sequential reads/writes, post-POST readback, no mutation retry and deterministic 429/non-2xx handling.
-
-Final accepted automated evidence:
-
-```text
-RequestWindowSchedulerTests=12/12 PASS
-focused affected groups=144 executed / 0 failures
-full MomoMoreEfficientTests=315 executed / 4 skipped / 0 failures
-```
-
-## Physical iPhone evidence — current blocker
-
-Exact-main physical preparation was completed on:
-
-```text
-c9c91b3e6191c8d3f6c36595121d75f81328c90b
-```
-
-The app built, installed and launched on the physical iPhone with the existing signing configuration and no rehearsal mode.
-
-Owner then ran a real authenticated Preview using existing private material and an already-existing self-added vocabulary item. No real mutation was performed.
-
-Observed result:
+Exact-main physical Preview first established:
 
 ```text
 PREVIEW_COMPLETED=yes
@@ -97,70 +60,82 @@ SELF_ADDED_VOCABULARY_RESOLUTION=BLOCKED
 REAL_MUTATION_PERFORMED=no
 ```
 
-This blocks the self-added-vocabulary acceptance. It does **not** invalidate #168's scheduler.
-
-## #164 — narrow resolver repair authority
-
-Current first-party provider evidence now frozen in Issue #164 establishes two public read-only vocabulary-resolution surfaces:
+PR #173 then tested the smallest public exact-GET fallback:
 
 ```text
-GET  /open/api/v1/vocabulary?spelling=...
-POST /open/api/v1/vocabulary/query
+PR=173
+HEAD=6c24e1bc6897b4c2d0d8a9964b44fadbe253d8ae
+FOCUSED_TESTS=43/0
+FULL_SUITE=327 executed / 4 skipped / 0 failures
+PHYSICAL_SELF_ADDED_CANARY=BLOCK
+REAL_MUTATION_PERFORMED=no
+STATUS=CLOSED_UNMERGED
 ```
 
-The current official Maimemo CLI also keeps these semantics separate:
+The repair was technically fail-closed but did not solve the real blocker, so it was not merged. Do not retain the exact-GET fallback speculatively.
+
+## #164 — current public Study-API route
+
+Fresh first-party evidence frozen in Issue #164 comment `5527731297` establishes an independent public read-only surface:
 
 ```text
-single spelling -> exact GET
-multiple spellings -> batch query
+POST /open/api/v1/study/query_study_records
+request: spellings[] (max 1000)
+response identity: StudyRecord.voc_id + StudyRecord.voc_spelling
 ```
 
-Current momo `VocabularyTargetResolver` uses only the batch query and treats a batch miss as `notFound`; the current resolver tests explicitly assert there is no per-item GET fallback.
+The official `memo-api-cli` exposes `study records --spelling ...` and sends those spellings directly to `query_study_records`; it does not first resolve them through the vocabulary API.
 
-The real-device result proves that a batch-query miss cannot by itself be treated as proof that the existing self-added vocabulary is unavailable to every public resolution surface.
+Important provider constraints:
 
-Current repair representation:
+- Study API is Beta;
+- it depends on synced study data / study-plan presence;
+- therefore it is not accepted merely because deterministic tests pass.
+
+Frozen next representation:
 
 ```text
-batch query remains the fast path
--> only batch-missed normalized spellings attempt the existing public exact GET
--> exact GET must still return a safe identifier and exact normalized spelling
--> batch match anomaly remains fail-closed; do not override contradictory/unsafe identity
--> global auth/rate/server/transport/cancellation failures remain global
--> no private API
--> no guessed ID
--> no read or mutation concurrency
--> no real mutation
+normal vocabulary batch hit -> unchanged/final
+batch match anomaly -> blocked/final
+true vocabulary batch misses -> one bounded Study Records spelling query for the missed set
+Study Record bind -> exact normalized voc_spelling + unique safe voc_id only
+Study API miss / unsafe / duplicate -> remain blocked
+no exact-GET stacking
+no guessed id
+no private API
+no read or mutation concurrency
+no real mutation
 ```
 
-Important uncertainty:
+Decisive uncertainty:
 
 ```text
-EXACT_GET_RESOLVES_THIS_REAL_SELF_ADDED_WORD=NOT_YET_PROVEN
+STUDY_RECORDS_RESOLVES_THIS_REAL_SELF_ADDED_WORD=NOT_YET_PROVEN
 ```
 
-Therefore the candidate is not mergeable merely because unit tests pass. It requires a read-only physical canary using the already-existing self-added item. If exact GET also fails, stop and report provider limitation rather than expanding the resolver or guessing identity.
+A candidate must pass a physical read-only Preview using the same existing self-added word before merge. If this public Study surface also misses, stop engineering self-added target resolution and record a provider-surface limitation unless later first-party API capabilities materially change.
 
-Owning evidence comments:
+Owning evidence:
 
 ```text
-PHYSICAL_BLOCKER_COMMENT=5527374168
-EXTERNAL_INCREMENT_COMMENT=5527393448
+INITIAL_PHYSICAL_BLOCKER_COMMENT=5527374168
+FAILED_EXACT_GET_INCREMENT_COMMENT=5527393448
+STUDY_API_ADJUDICATION_COMMENT=5527731297
+FAILED_PR=173
 ```
 
 ## Release sequence
 
-Current sequence:
-
 ```text
 #167 merged
 -> #168 merged/closed
--> physical RC found self-added target-resolution blocker
--> #164 narrow batch-miss exact-GET fallback candidate   <-- CURRENT
--> exact-candidate physical read-only self-added canary
--> Coordinator acceptance / merge if proven
+-> physical RC found self-added blocker
+-> PR #173 exact-GET candidate failed physical canary / closed unmerged
+-> #164 Study Records batch-miss candidate   <-- CURRENT
+-> exact-candidate physical read-only canary
+-> merge only if proven
 -> exact-final-main release-candidate closeout
--> build-number / TestFlight release decision
+-> build-number / TestFlight decision
 ```
 
 `#105` and unrelated backlog remain HOLD while this release blocker is open.
@@ -177,25 +152,25 @@ Current sequence:
 - UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
 - vocabulary-query POST remains read-semantic;
-- any exact vocabulary GET fallback is also read-only;
+- Study Records fallback, if implemented, is read-only;
 - personal Maimemo Token and private batch material stay device-local and must not enter Git/logs/review artifacts;
 - 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
 ## Agent-family routing
 
-Agent family is not a sticky project preference. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
+Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
 
-## Handoff / maintenance rule
+## Handoff rule
 
-This file owns only current state, current unique next and live boundaries. Detailed historical evidence remains in Issues/PRs. Fresh Chat takeover should read:
+Fresh Chat takeover should read:
 
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #164 body + exact current blocker/increment comments named here
+-> Issue #164 body + comments 5527731297 and latest current dispatch receipt
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
 ```
 
-Do not fetch full historical Issue comment threads merely to reconstruct current truth.
+Do not fetch full historical Issue threads merely to reconstruct current truth.
