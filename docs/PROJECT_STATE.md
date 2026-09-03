@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-03
-sourceMainSha=25e5cd85ea8f436cc66b41e49d6313547b0a6148
+sourceMainSha=9012a3b74f86f7895908c16c29bcd62ba4ce3f79
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -16,11 +16,19 @@ CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
 CURRENT_PRIMARY_ISSUE=#168
 CURRENT_ARCHITECTURE=A_SEQUENTIAL_AGGREGATE_WINDOW_SCHEDULER
 OWNER_DECISION_COMMENT=5524418123
-CURRENT_PROMPT_REVIEW_GATE=Issue #168 comment 5524641284
-OLD_PREPARED_RETURN_BRIDGE=5524523317
-OLD_PROMPT_DISPATCHED=no_owner_confirmed
 
-CURRENT_UNIQUE_NEXT=fresh Coordinator reviews the prepared #168 Builder dispatch against live Owner preferences + live agent-skills; release only a corrected/validated prompt, then wait for the Builder result
+CURRENT_DISPATCH_AUTHORITY=Issue #168 comment 5525021657
+CURRENT_AGENT=Claude Sonnet 5 / High / Standard / Single Agent
+CURRENT_PROMPT_ARTIFACT=momo_168_Sequential_Read_Window_Speedup_Claude_Prompt_2026-09-03.md
+CURRENT_PROMPT_PREPARED=yes
+CURRENT_PROMPT_DISPATCHED=unknown_until_owner_or_matching_result_evidence
+
+PREVIOUS_CODEX_DISPATCH_COMMENT=5524832107
+PREVIOUS_CODEX_PROMPT_DISPATCHED=no_owner_confirmed
+PREVIOUS_CODEX_PROMPT_SUPERSEDED=yes
+OLD_PREPARED_RETURN_BRIDGE=5524523317
+
+CURRENT_UNIQUE_NEXT=Owner relays the current Claude #168 Prompt if not already sent; then Coordinator waits for the matching Builder result and ingests/reviews it without duplicate dispatch
 
 IMPLEMENTATION_HOLD_FOR_OTHER_FEATURES=true
 NEXT_TESTFLIGHT_BLOCKED_BY=#168 + exact-final-main physical validation + later release decision
@@ -77,25 +85,29 @@ if ordinary 8–15 item Preview becomes materially fast enough, stop; do not cha
 
 This decision is accepted and must not be reopened unless new empirical evidence shows A is still materially too slow.
 
-## Prepared Prompt state — important rollover gate
+## Current Builder dispatch
 
-The old Coordinator prepared a #168 Builder dispatch and wrote Return Bridge `5524523317`, but the Owner explicitly confirmed the Prompt was **not sent**.
+The original long inline #168 Prompt was never dispatched. A fresh Coordinator reviewed it and replaced it. The first replacement incorrectly defaulted to Codex; the Owner corrected the stable project preference to Claude-family. Current dispatch authority is Issue #168 comment `5525021657`.
 
-Current exact gate is Issue #168 comment `5524641284`:
+Current route:
 
 ```text
+TASK_ID=XHN-168-SEQUENTIAL-READ-WINDOW-SCHEDULER-20260903
+TARGET_AGENT=Claude Sonnet 5 / High / Standard / Single Agent
+TARGET_CONVERSATION=NEW_CONVERSATION
+CONVERSATION_TITLE=【XHN】#168 Sequential Read-Window Speedup
+PROMPT_ARTIFACT=momo_168_Sequential_Read_Window_Speedup_Claude_Prompt_2026-09-03.md
 PROMPT_PREPARED=yes
-EXTERNAL_AGENT_DISPATCHED=no_owner_confirmed
-AGENT_RUN_COMPLETED=no
+EXTERNAL_AGENT_DISPATCHED=unknown
 RESULT_RETURNED=no
-CURRENT_GATE=FRESH_COORDINATOR_PROMPT_REVIEW_BEFORE_RELEASE
+DUPLICATE_DISPATCH_ALLOWED=no_by_default
 ```
 
-A fresh Coordinator must not infer a running Builder from the old Return Bridge and must not simply copy the old inline Prompt. It must re-derive the dispatch from current authority, current Owner preferences and live agent-skills.
+Do not send the superseded Codex Prompt. Do not treat `PROMPT_PREPARED` as proof of dispatch. Advance execution state only from Owner confirmation or a matching returned result.
 
-## Why the old prepared Prompt needs fresh review
+## Why this implementation stays small
 
-The project itself is intentionally lightweight. `AGENTS.md` requires a simplification checkpoint when a small mechanism's implementation contract grows beyond roughly one screen, and task contracts should stay compact unless the risk genuinely requires more.
+The project is intentionally lightweight. `AGENTS.md` requires a simplification checkpoint when a small mechanism's implementation contract grows beyond roughly one screen, and task contracts should stay compact unless the risk genuinely requires more.
 
 The #168 implementation is narrow:
 
@@ -107,6 +119,12 @@ remove blanket read sleep
 ```
 
 Do not turn it into a generic scheduler/networking framework, broad historical Issue replay, or a long multi-lane governance exercise.
+
+## Stable Builder routing
+
+momo's stable project-specific coding preference is now Claude-family first. Exact Claude model / Effort / Speed are still JIT-resolved through the live agent-skills Claude routing skill.
+
+Do not silently fall back to Codex on a fresh Chat. Codex requires an explicit Owner request or a current task/tool-specific authority with a clear reason to override the project default.
 
 ## Release / backlog ordering
 
@@ -149,8 +167,9 @@ Fresh Chat takeover should read:
 CHAT_HANDOFF.md
 -> this file
 -> Issue #168 metadata/body
--> exact comments 5524418123 and 5524641284
+-> exact comments 5524418123 and 5525021657
 -> live Owner collaboration preferences
+-> live fresh-chat preference application policy
 -> latest explicit Owner instruction
 ```
 
