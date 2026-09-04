@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-04
-sourceMainSha=7ca843e458aa688282da6adadd2ada60982c3a14
+sourceMainSha=9e6efcb159e379ea9be855baa5ac8bd3bcf78b6e
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -79,7 +79,7 @@ The repair was fail-closed but did not solve the real blocker, so it was not mer
 
 ## #164 — current Study-Records route
 
-First-party evidence frozen in Issue #164 establishes an independent public read-only surface:
+Current first-party public surface:
 
 ```text
 POST /open/api/v1/study/query_study_records
@@ -89,20 +89,38 @@ response identity: StudyRecord.voc_id + StudyRecord.voc_spelling
 
 The official `memo-api-cli` exposes `study records --spelling ...` and sends those spellings directly to `query_study_records`; it does not first resolve them through the vocabulary API.
 
-Current provider constraints:
+Provider constraints:
 
 - Study API is Beta;
 - it depends on synced study data / study-plan presence;
-- deterministic tests alone cannot establish the real Owner self-added-word result;
-- official CLI request shape uses explicit `voc_ids`, `spellings`, `as_count`, and `limit`; `as_count=false` is the record-returning mode.
+- deterministic tests alone cannot establish the real Owner self-added-word result.
+
+Fresh 2026-09-04 provider source check further sharpens the exact request contract. The official CLI's current `QueryStudyRecordsRequest` type requires all four fields:
+
+```text
+voc_ids: string[]
+spellings: string[]
+as_count: boolean
+limit: number
+```
+
+and the official command handler always emits all four. Provider docs state `as_count=true` returns an empty `records` list, while `as_count=false` returns records. Therefore the candidate must not rely on omitted/default fields for identity resolution.
+
+Frozen request shape for each <=1000 true-miss chunk:
+
+```text
+voc_ids=[]
+spellings=<deduplicated true misses>
+as_count=false
+limit=1000
+```
 
 Frozen representation:
 
 ```text
 normal vocabulary batch hit -> unchanged/final
 batch match anomaly -> blocked/final
-true vocabulary batch misses -> one bounded Study Records spelling query for the missed set
-Study request -> voc_ids=[] + spellings=<misses> + as_count=false + bounded limit
+true vocabulary batch misses -> one bounded Study Records query per <=1000 miss chunk
 Study Record bind -> exact normalized voc_spelling + unique safe voc_id only
 Study API miss / unsafe / duplicate -> remain blocked
 no exact-GET stacking
@@ -189,7 +207,7 @@ The migrated checkout is currently the remote-backed closed-PR #173 branch at `6
 
 ## Agent-family routing
 
-Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
+Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard current task/tool constraint requires one. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
 
 ## Handoff rule
 
