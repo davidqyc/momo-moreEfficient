@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-04
-sourceMainSha=e16e892bbd984d1213bc5815a98a572a1bb49e8a
+sourceMainSha=5abfe6fbea342f209c5920a162f8c5710cc66748
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,20 +13,23 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
 
-LAST_COMPLETED_PRODUCT_ISSUE=#164
-CURRENT_PRIMARY_ISSUE=#105
-CURRENT_PRIMARY_GATE=PHYSICAL_SHARE_EXTENSION_TO_MAIN_PICKUP_REPAIR
-CURRENT_RELEASE_GATE_STATUS=BLOCKED_ON_CAPTURE_SHARE_JOIN
-CURRENT_BLOCKER=exact-main physical RC passes build/sign/install/normal launch and direct-seeded pending-review pickup, but CaptureShareSheetUITests fails after real Share Sheet -> extension -> Save: the main app does not surface captureReviewStatus after Home + activate
-CURRENT_UNIQUE_NEXT=one bounded diagnostic/repair that first proves extension Save completion/dismissal, then only if that succeeds isolates main foreground pickup; use existing XCUIAutomation and synthetic payloads, no new capture architecture
+LAST_COMPLETED_PRODUCT_ISSUE=#105
+LAST_MERGED_PR=#175
+LAST_MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
+LAST_MERGE_SCOPE=UI-test-only physical Share-join gate correction; no production code/config change
 
-IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
+CURRENT_PRIMARY_ISSUE=none
+CURRENT_PRIMARY_GATE=BUILD_NUMBER_TESTFLIGHT_RELEASE_DECISION
+CURRENT_RELEASE_GATE_STATUS=PHYSICAL_RC_PASS_READY_FOR_RELEASE_DECISION
+CURRENT_BLOCKER=none
+CURRENT_UNIQUE_NEXT=make the build-number / TestFlight release decision from live release authority; do not reopen #164 or #105 unless new evidence materially changes the accepted behavior
+
+IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true_until_release_decision
 MACHINE_MIGRATION_HOLD=CLEARED
 NEW_MAC_WORKSPACE_READY=yes
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
 NO_FOURTH_RESOLVER_SURFACE=true
 SELF_ADDED_UNRESOLVABLE_POLICY=FAIL_CLOSED_WITH_未读取到可用词条目标
-NEXT_TESTFLIGHT_BLOCKED_BY=#105 Share Extension join repair + exact-final-main physical RC rerun + release decision
 ```
 
 ## Accepted shipping baseline
@@ -65,95 +68,110 @@ POST /open/api/v1/study/query_study_records -> no safe target after bounded sync
 
 PR #173 and PR #174 were both closed unmerged. No fourth resolver, private endpoint, or guessed id is allowed. Items without a safe public target remain fail-closed with `未读取到可用词条目标`.
 
-## Exact-final-main physical RC — current failure
+### #105 — capture workflow completed
 
-Exact RC execution:
+Issue #105 is closed completed after the final physical release gate.
+
+The first exact-main RC on `e16e892bbd984d1213bc5815a98a572a1bb49e8a` established:
 
 ```text
-LIVE_MAIN_SHA=e16e892bbd984d1213bc5815a98a572a1bb49e8a
-RC_EXECUTION_HEAD=e16e892bbd984d1213bc5815a98a572a1bb49e8a
-PRODUCT_EQUIVALENCE_FROM_C9C91B3=PASS
-PRODUCT_EQUIVALENCE_CHANGED_PATHS=docs/PROJECT_STATE.md only
-EXACT_MAIN_BUILD_SIGN=PASS
+BUILD_SIGN=PASS
 PHYSICAL_INSTALL=PASS
 NORMAL_LAUNCH=PASS
 VERSION_BUILD=1.0 (3)
-CAPTURE_SHARE_SHEET_UI_TEST=FAIL
 CAPTURE_PENDING_REVIEW_UI_TEST=PASS
+CAPTURE_SHARE_SHEET_UI_TEST=initially FAIL
 FINAL_DEVICE_NORMAL_EXACT_MAIN=PASS
 REAL_MAIMEMO_MUTATION_PERFORMED=no
 IPHONE_MIRRORING_USED=no
-TESTFLIGHT_UPLOADED=no
 ```
 
-Load-bearing physical failure:
+The initial Share Sheet failure was then proven to be a **test-substrate mismatch**, not a product capture defect.
+
+Physical diagnosis on PR #175 established:
 
 ```text
-real system Share Sheet
--> accessibility-selectable 小黑鸟伴侣 row
--> real Share Extension UI
--> 保存 tap
--> Home
--> main app activate
--> captureReviewStatus missing after 10s
+SIGNED_MAIN_APP_GROUP=PASS
+SIGNED_EXTENSION_APP_GROUP=PASS
+EXTENSION_SAVE_COMPLETION_PROVEN=PASS
+ROOT_CAUSE_CLASS=TEST_SUBSTRATE_MISMATCH
+ROOT_CAUSE=XCUIDevice.shared.press(.home) was inert on the physical iPhone, so the app never left runningForeground and the scenePhase-driven pickup was never asked to run
 ```
 
-This is a release blocker. It is not yet assigned to a final root cause.
-
-### What is already separated by evidence
-
-`CapturePendingReviewUITests` passed physically using a synthetic capture seeded into the real App Group inbox before the initial active transition. From that seed onward it exercises production:
+The repair changed exactly one UI-test file:
 
 ```text
-PendingCaptureInbox.consume
--> CaptureReviewForegroundGate.activate
--> CaptureReviewStore
--> ContentView capture-review UI
+ios/MomoMoreEfficientUITests/CaptureShareSheetUITests.swift
 ```
 
-So the main-side consume/render path works under direct seed.
+It now:
 
-Current `ShareViewController.saveCapture()` performs:
+- waits for the real Share Extension to complete/dismiss before testing host pickup;
+- uses SpringBoard activation to create the required physical-device background transition instead of assuming the Home-button primitive worked;
+- explicitly waits for the app to leave foreground;
+- reactivates the app and asserts foreground state;
+- verifies the exact synthetic payload reaches `抓词 · 尚未预览`.
+
+No product code, App Group configuration, signing configuration, lifecycle implementation, credential handling, or Maimemo behavior changed.
+
+Accepted PR #175 evidence:
 
 ```text
-PendingCaptureInbox.appGroup().save(...)
--> only on success: extensionContext.completeRequest(...)
--> on error: keep extension UI visible and show an error
+PR=175
+HEAD=0763f9184bd28871010b379306cdb213ef8350e0
+MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
+MERGE_METHOD=squash
+TARGETED_CAPTURE_UNIT_TESTS=24/0
+SIMULATOR_UI=3/0
+PHYSICAL_UI=3/0
+CAPTURE_SHARE_SHEET_PHYSICAL=PASS
+CAPTURE_PENDING_REVIEW_PHYSICAL=PASS
+PRODUCT_CODE_CHANGED=no
+PRODUCT_CONFIG_CHANGED=no
+UI_TEST_ONLY_CHANGED=yes
+REAL_MAIMEMO_MUTATION_PERFORMED=no
+IPHONE_MIRRORING_USED=no
 ```
 
-The current `CaptureShareSheetUITests` taps Save and immediately presses Home; it does not first assert that the Share Extension actually completed/dismissed. Therefore the present failure does not yet prove whether the defect is extension persistence/signing/runtime App Group access or later host-app pickup/lifecycle sequencing.
+Because PR #175 changes only the UI-test target, the installed physical product candidate and merged-main production source/config are equivalent. Another private vocabulary canary or another product reinstall is not required merely because the merge commit contains the corrected test source.
 
-## Fresh external decision increment — #105 Share join blocker
-
-Owning Issue comment: `5539035466`.
-
-Fresh Apple first-party facts:
-
-- App Groups provide a shared container for an app extension and host app;
-- `XCUIApplication.activate()` is synchronous; on successful return the app is ready for events / running foreground;
-- `NSExtensionContext.completeRequest(...)` eventually dismisses the extension view controller.
-
-Decision impact:
+Owning evidence:
 
 ```text
-DO NOT explain the failure as ordinary shared-container propagation delay
-DO NOT explain it as activate() returning before foreground readiness
-FIRST split extension Save completion from main pickup
+INITIAL_CAPTURE_RC_BLOCKER_COMMENT=5539035466
+PR175_EXTERNAL_INCREMENT_COMMENT=5539653860
+PR175_FINAL_ADJUDICATION_COMMENT=5539690037
 ```
 
-Current bounded diagnostic representation:
+Fresh Apple decision fact used for adjudication:
+
+- `XCUIApplication.activate()` is synchronous and returns when the app is ready to handle events;
+- `XCUIApplication.state` is system-monitored and successful `activate()` / `launch()` guarantees `runningForeground`.
+
+This makes the corrected state-based lifecycle assertions load-bearing evidence instead of an unchecked button-press assumption.
+
+## Release gate status
+
+The capture-enabled production tree has now passed the proportional exact-final physical release candidate evidence required by the project:
 
 ```text
-A. verify signed runtime App Group entitlement/profile identity for main + embedded Share Extension
-B. real Share Sheet -> extension -> Save
-C. wait for extension completion/dismissal before Home
-D1. if extension remains/error -> diagnose extension save/App Group runtime boundary
-D2. if extension dismisses -> then Home + activate and diagnose host pickup/lifecycle
+PRODUCT_BUILD_SIGN=PASS
+PHYSICAL_INSTALL_LAUNCH=PASS
+NORMAL_MODE=PASS
+SHARE_EXTENSION_REAL_SAVE=PASS
+APP_GROUP_RUNTIME_IDENTITY=PASS
+MAIN_PENDING_CAPTURE_PICKUP=PASS
+REAL_SYSTEM_SHARE_SHEET_ROUTE=PASS
+NO_REAL_MAIMEMO_MUTATION_DURING_RC=PASS
 ```
 
-Use only synthetic payloads and the existing XCUIAutomation target. No coordinates, private Owner content, Maimemo token use, Maimemo mutation, backend, polling framework, second entry mechanism, or iPhone Mirroring.
+The final merge after the physical pass is UI-test-only; production source/config remained unchanged. Therefore the next decision is release mechanics, not another product-debugging or Owner-smoke loop.
 
-If simply waiting for extension completion makes the physical test pass, treat it as test sequencing and keep production code unchanged. If a production defect is proven, make the smallest evidence-backed fix and targeted tests.
+## Non-blocking tooling note
+
+`MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. PR #175 deliberately did not change this because it is a test-signing convenience, not the capture product defect.
+
+Treat this as non-blocking tooling debt. Do not create a new engineering lane unless it causes recurring real friction or blocks the release workflow.
 
 ## Machine migration — closed
 
@@ -168,7 +186,7 @@ PRIVATE_CONTENT_OPENED=no
 PRIVATE_CONTENT_PUBLISHED=no
 PRIVATE_DIRECTORY_GITIGNORED=yes
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
-NEW_MAC_WORKSPACE_READY_FOR_164=yes
+NEW_MAC_WORKSPACE_READY=yes
 ```
 
 `artifacts/private/` remains local/private and must never be pushed for review or migration.
@@ -179,14 +197,15 @@ NEW_MAC_WORKSPACE_READY_FOR_164=yes
 #167 merged
 -> #168 merged/closed
 -> #164 provider-resolution lane closed / Issue completed
--> exact-final-main RC build/install/launch PASS
--> exact-main Share Sheet physical gate FAIL   <-- CURRENT BLOCKER
--> bounded #105 Share-join diagnostic/repair
--> exact-final-main physical RC rerun
--> build-number / TestFlight decision
+-> exact-main build/install/launch PASS
+-> initial Share Sheet physical gate false-blocked on inert XCUIDevice Home primitive
+-> PR #175 isolated test-substrate mismatch
+-> corrected Share Sheet physical gate PASS 3/3
+-> PR #175 merged / #105 closed
+-> build-number / TestFlight release decision   <-- CURRENT
 ```
 
-Unrelated backlog remains HOLD until this release blocker is closed.
+Unrelated backlog remains HOLD until the release decision is made.
 
 ## Stable safety boundaries
 
@@ -214,7 +233,8 @@ Fresh Chat takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #105 body + comment 5539035466 + latest physical RC blocker evidence
+-> Issue #105 final comment 5539690037
+-> PR #175 merged state
 -> Issue #164 closed status
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
