@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-04
-sourceMainSha=5abfe6fbea342f209c5920a162f8c5710cc66748
+sourceMainSha=df3f64479493e110df09e1f6e4f4e067e3ba84ee
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -11,20 +11,20 @@ sourceMainShaIsSnapshotOnly=true
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
+CURRENT_PRODUCT_VERSION=1.0 (4) uploaded to App Store Connect; Apple processing pending
 
 LAST_COMPLETED_PRODUCT_ISSUE=#105
-LAST_MERGED_PR=#175
-LAST_MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
-LAST_MERGE_SCOPE=UI-test-only physical Share-join gate correction; no production code/config change
+LAST_MERGED_PR=#176
+LAST_MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
+LAST_MERGE_SCOPE=mechanical TestFlight build-number bump 3 -> 4 for app + ShareExtension only
 
-CURRENT_PRIMARY_ISSUE=none
-CURRENT_PRIMARY_GATE=BUILD_NUMBER_TESTFLIGHT_RELEASE_DECISION
-CURRENT_RELEASE_GATE_STATUS=PHYSICAL_RC_PASS_READY_FOR_RELEASE_DECISION
-CURRENT_BLOCKER=none
-CURRENT_UNIQUE_NEXT=make the build-number / TestFlight release decision from live release authority; do not reopen #164 or #105 unless new evidence materially changes the accepted behavior
+CURRENT_PRIMARY_ISSUE=#71
+CURRENT_PRIMARY_GATE=TESTFLIGHT_BUILD_1_0_4_PROCESSING_AND_FIRST_COHORT
+CURRENT_RELEASE_GATE_STATUS=UPLOAD_ACCEPTED_PROCESSING_PENDING
+CURRENT_BLOCKER=none; Apple delivery accepted exact build 1.0 (4), App Store Connect visibility not yet independently read back
+CURRENT_UNIQUE_NEXT=do not re-upload build 4; wait for Apple processing/visibility, then continue #71 first-small-cohort evidence without expanding tester/public-link/App-Review scope unless separately authorized
 
-IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true_until_release_decision
+IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true_until_build4_processing_or_owner_changes_route
 MACHINE_MIGRATION_HOLD=CLEARED
 NEW_MAC_WORKSPACE_READY=yes
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
@@ -72,87 +72,7 @@ PR #173 and PR #174 were both closed unmerged. No fourth resolver, private endpo
 
 Issue #105 is closed completed after the final physical release gate.
 
-The first exact-main RC on `e16e892bbd984d1213bc5815a98a572a1bb49e8a` established:
-
-```text
-BUILD_SIGN=PASS
-PHYSICAL_INSTALL=PASS
-NORMAL_LAUNCH=PASS
-VERSION_BUILD=1.0 (3)
-CAPTURE_PENDING_REVIEW_UI_TEST=PASS
-CAPTURE_SHARE_SHEET_UI_TEST=initially FAIL
-FINAL_DEVICE_NORMAL_EXACT_MAIN=PASS
-REAL_MAIMEMO_MUTATION_PERFORMED=no
-IPHONE_MIRRORING_USED=no
-```
-
-The initial Share Sheet failure was then proven to be a **test-substrate mismatch**, not a product capture defect.
-
-Physical diagnosis on PR #175 established:
-
-```text
-SIGNED_MAIN_APP_GROUP=PASS
-SIGNED_EXTENSION_APP_GROUP=PASS
-EXTENSION_SAVE_COMPLETION_PROVEN=PASS
-ROOT_CAUSE_CLASS=TEST_SUBSTRATE_MISMATCH
-ROOT_CAUSE=XCUIDevice.shared.press(.home) was inert on the physical iPhone, so the app never left runningForeground and the scenePhase-driven pickup was never asked to run
-```
-
-The repair changed exactly one UI-test file:
-
-```text
-ios/MomoMoreEfficientUITests/CaptureShareSheetUITests.swift
-```
-
-It now:
-
-- waits for the real Share Extension to complete/dismiss before testing host pickup;
-- uses SpringBoard activation to create the required physical-device background transition instead of assuming the Home-button primitive worked;
-- explicitly waits for the app to leave foreground;
-- reactivates the app and asserts foreground state;
-- verifies the exact synthetic payload reaches `抓词 · 尚未预览`.
-
-No product code, App Group configuration, signing configuration, lifecycle implementation, credential handling, or Maimemo behavior changed.
-
-Accepted PR #175 evidence:
-
-```text
-PR=175
-HEAD=0763f9184bd28871010b379306cdb213ef8350e0
-MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
-MERGE_METHOD=squash
-TARGETED_CAPTURE_UNIT_TESTS=24/0
-SIMULATOR_UI=3/0
-PHYSICAL_UI=3/0
-CAPTURE_SHARE_SHEET_PHYSICAL=PASS
-CAPTURE_PENDING_REVIEW_PHYSICAL=PASS
-PRODUCT_CODE_CHANGED=no
-PRODUCT_CONFIG_CHANGED=no
-UI_TEST_ONLY_CHANGED=yes
-REAL_MAIMEMO_MUTATION_PERFORMED=no
-IPHONE_MIRRORING_USED=no
-```
-
-Because PR #175 changes only the UI-test target, the installed physical product candidate and merged-main production source/config are equivalent. Another private vocabulary canary or another product reinstall is not required merely because the merge commit contains the corrected test source.
-
-Owning evidence:
-
-```text
-INITIAL_CAPTURE_RC_BLOCKER_COMMENT=5539035466
-PR175_EXTERNAL_INCREMENT_COMMENT=5539653860
-PR175_FINAL_ADJUDICATION_COMMENT=5539690037
-```
-
-Fresh Apple decision fact used for adjudication:
-
-- `XCUIApplication.activate()` is synchronous and returns when the app is ready to handle events;
-- `XCUIApplication.state` is system-monitored and successful `activate()` / `launch()` guarantees `runningForeground`.
-
-This makes the corrected state-based lifecycle assertions load-bearing evidence instead of an unchecked button-press assumption.
-
-## Release gate status
-
-The capture-enabled production tree has now passed the proportional exact-final physical release candidate evidence required by the project:
+The accepted capture RC ultimately established:
 
 ```text
 PRODUCT_BUILD_SIGN=PASS
@@ -165,13 +85,61 @@ REAL_SYSTEM_SHARE_SHEET_ROUTE=PASS
 NO_REAL_MAIMEMO_MUTATION_DURING_RC=PASS
 ```
 
-The final merge after the physical pass is UI-test-only; production source/config remained unchanged. Therefore the next decision is release mechanics, not another product-debugging or Owner-smoke loop.
+PR #175 corrected only the physical UI-test substrate (`XCUIDevice.shared.press(.home)` was inert on the physical iPhone); no product code/config/lifecycle behavior changed.
+
+Accepted PR #175 evidence:
+
+```text
+PR=175
+HEAD=0763f9184bd28871010b379306cdb213ef8350e0
+MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
+TARGETED_CAPTURE_UNIT_TESTS=24/0
+SIMULATOR_UI=3/0
+PHYSICAL_UI=3/0
+CAPTURE_SHARE_SHEET_PHYSICAL=PASS
+CAPTURE_PENDING_REVIEW_PHYSICAL=PASS
+PRODUCT_CODE_CHANGED=no
+PRODUCT_CONFIG_CHANGED=no
+```
+
+### TestFlight 1.0 (4) release upload
+
+Owner authorized build 4 and TestFlight upload.
+
+PR #176 changed exactly one repository file and only the app/ShareExtension build number:
+
+```text
+PR=176
+HEAD=5158473776421e1e61d110d65ee78c7d8b8a9c60
+MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
+MARKETING_VERSION=1.0
+CURRENT_PROJECT_VERSION=4
+MAIN_BUNDLE_ID=com.jiripple.xiaoheiniao
+EXTENSION_BUNDLE_ID=com.jiripple.xiaoheiniao.ShareExtension
+DISTRIBUTION_TEAM=W26LH686PD
+```
+
+The exact merged-main archive passed identity validation and was uploaded exactly once after Xcode account re-authentication:
+
+```text
+ARCHIVE=PASS
+ARCHIVE_IDENTITY=PASS
+CLOUD_MANAGED_SIGNING_USED=yes
+UPLOAD_DISPATCHED=yes
+UPLOAD_ACCEPTED=yes
+APPLE_DELIVERY_RECEIPT=d7e3f368-ed80-49e4-b1fc-d093d50d7031
+APPLE_DELIVERY_BYTES=1871341
+APPLE_PROCESSING_STATUS=Uploaded package is processing
+TESTER_GROUP_CHANGED=no
+BETA_APP_REVIEW_SUBMITTED=no
+APP_STORE_REVIEW_SUBMITTED=no
+```
+
+Apple's delivery payload recorded `cfBundleShortVersionString=1.0` and `cfBundleVersion=4`; Xcode did not renumber the build. App Store Connect/TestFlight UI visibility was not independently read back because no already-authenticated first-party UI/API surface was available in the Agent session. This is not a retry signal. Do not re-upload build 4.
 
 ## Non-blocking tooling note
 
-`MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. PR #175 deliberately did not change this because it is a test-signing convenience, not the capture product defect.
-
-Treat this as non-blocking tooling debt. Do not create a new engineering lane unless it causes recurring real friction or blocks the release workflow.
+`MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. Treat this as non-blocking tooling debt unless it causes recurring real friction.
 
 ## Machine migration — closed
 
@@ -197,15 +165,16 @@ NEW_MAC_WORKSPACE_READY=yes
 #167 merged
 -> #168 merged/closed
 -> #164 provider-resolution lane closed / Issue completed
--> exact-main build/install/launch PASS
--> initial Share Sheet physical gate false-blocked on inert XCUIDevice Home primitive
--> PR #175 isolated test-substrate mismatch
--> corrected Share Sheet physical gate PASS 3/3
+-> capture exact-main physical RC PASS
 -> PR #175 merged / #105 closed
--> build-number / TestFlight release decision   <-- CURRENT
+-> PR #176 build 3 -> 4 merged
+-> exact merged-main archive PASS
+-> TestFlight 1.0 (4) upload ACCEPTED
+-> Apple processing / build visibility
+-> #71 first-small-cohort evidence   <-- CURRENT
 ```
 
-Unrelated backlog remains HOLD until the release decision is made.
+Planning may continue in parallel, but unrelated implementation remains on hold until build 4 processing is visible or the Owner explicitly changes the route.
 
 ## Stable safety boundaries
 
@@ -233,8 +202,9 @@ Fresh Chat takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #105 final comment 5539690037
--> PR #175 merged state
+-> Issue #71 latest release comment
+-> PR #176 merged state
+-> Issue #105 final capture evidence
 -> Issue #164 closed status
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
