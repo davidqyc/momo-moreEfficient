@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-04
-sourceMainSha=87c5b2c2b027d057bb92919cdf4b6a988697bdb5
+sourceMainSha=e16e892bbd984d1213bc5815a98a572a1bb49e8a
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -13,15 +13,12 @@ DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 CURRENT_PRODUCT_VERSION=1.0 (3) external TestFlight beta
 
-LAST_COMPLETED_PRODUCT_ISSUE=#168
-LAST_PRODUCT_MERGE=PR #172
-LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
-
-CURRENT_PRIMARY_ISSUE=#164
-CURRENT_PRIMARY_GATE=EXACT_FINAL_MAIN_RELEASE_CANDIDATE_CLOSEOUT
-CURRENT_RELEASE_GATE_STATUS=READY_FOR_EXACT_FINAL_MAIN_RC
-CURRENT_BLOCKER=none in the resolver lane; the real self-added target remains unresolvable through the tested first-party public identity surfaces and is now an accepted provider capability/data-visibility limit
-CURRENT_UNIQUE_NEXT=perform the exact-current-main release-candidate closeout with no further resolver engineering; use provider-native physical-device automation wherever proportionate, then make the build-number/TestFlight decision
+LAST_COMPLETED_PRODUCT_ISSUE=#164
+CURRENT_PRIMARY_ISSUE=#105
+CURRENT_PRIMARY_GATE=PHYSICAL_SHARE_EXTENSION_TO_MAIN_PICKUP_REPAIR
+CURRENT_RELEASE_GATE_STATUS=BLOCKED_ON_CAPTURE_SHARE_JOIN
+CURRENT_BLOCKER=exact-main physical RC passes build/sign/install/normal launch and direct-seeded pending-review pickup, but CaptureShareSheetUITests fails after real Share Sheet -> extension -> Save: the main app does not surface captureReviewStatus after Home + activate
+CURRENT_UNIQUE_NEXT=one bounded diagnostic/repair that first proves extension Save completion/dismissal, then only if that succeeds isolates main foreground pickup; use existing XCUIAutomation and synthetic payloads, no new capture architecture
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
 MACHINE_MIGRATION_HOLD=CLEARED
@@ -29,7 +26,7 @@ NEW_MAC_WORKSPACE_READY=yes
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
 NO_FOURTH_RESOLVER_SURFACE=true
 SELF_ADDED_UNRESOLVABLE_POLICY=FAIL_CLOSED_WITH_未读取到可用词条目标
-NEXT_TESTFLIGHT_BLOCKED_BY=exact-final-main release-candidate closeout + release decision
+NEXT_TESTFLIGHT_BLOCKED_BY=#105 Share Extension join repair + exact-final-main physical RC rerun + release decision
 ```
 
 ## Accepted shipping baseline
@@ -38,142 +35,129 @@ NEXT_TESTFLIGHT_BLOCKED_BY=exact-final-main release-candidate closeout + release
 
 Merged at `25e5cd85ea8f436cc66b41e49d6313547b0a6148`.
 
-- normal vocabulary resolution uses the public batch query;
+- public batch vocabulary query is the normal resolver;
 - query POST is read-semantic;
-- no artificial fixed 30-item cap;
-- interpretation and phrase formats accept unambiguous batches with or without blank lines;
-- bounded parser/input safety remains.
+- no artificial fixed 30-item total cap;
+- interpretation and phrase inputs accept unambiguous batches with or without blank lines;
+- bounded input/content safety remains.
 
 ### #168 — aggregate-window scheduler
 
 Merged through PR #172 at `bc03ee03e06bfa23a160e2599bebc9db34635812`.
 
 - no blanket 1.6s read floor;
-- `20/10s`, `40/60s`, `2000/5h` enforced;
-- `ContinuousClock` elapsed-time semantics;
-- actual-dispatch reconciliation and aborted-reservation removal;
-- sequential reads/writes, no mutation retry, mandatory post-POST readback preserved.
+- `20/10s`, `40/60s`, `2000/5h` enforced with `ContinuousClock` semantics;
+- sequential reads/writes, no mutating retry, mandatory post-POST readback preserved.
 
-Final accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
+Accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
 
-## #164 resolver adjudication — capability lane closed
+### #164 — completed with provider visibility limit
 
-### Exact main / PR #173
+Issue #164 is closed completed.
 
-Physical exact-main Preview established:
+Real physical evidence exhausted the bounded first-party public target-resolution surfaces for the Owner's self-added item:
 
 ```text
-PHYSICAL_MAIN_SHA=c9c91b3e6191c8d3f6c36595121d75f81328c90b
-PREVIEW_COMPLETED=yes
-SELF_ADDED_VOCABULARY_RESOLUTION=BLOCKED
-REAL_MUTATION_PERFORMED=no
+POST /open/api/v1/vocabulary/query          -> no safe target
+GET  /open/api/v1/vocabulary?spelling=...   -> no safe target
+POST /open/api/v1/study/query_study_records -> no safe target after bounded sync settling
 ```
 
-PR #173 tested batch-miss exact vocabulary GET:
+PR #173 and PR #174 were both closed unmerged. No fourth resolver, private endpoint, or guessed id is allowed. Items without a safe public target remain fail-closed with `未读取到可用词条目标`.
+
+## Exact-final-main physical RC — current failure
+
+Exact RC execution:
 
 ```text
-PR=173
-HEAD=6c24e1bc6897b4c2d0d8a9964b44fadbe253d8ae
-FULL_SUITE=327 executed / 4 skipped / 0 failures
-PHYSICAL_SELF_ADDED_CANARY=BLOCK
-STATUS=CLOSED_UNMERGED
-```
-
-The fallback was safe but did not resolve the real item.
-
-### PR #174 — Study Records candidate
-
-```text
-PR=174
-HEAD=f9b90833324f0fa9dc07d9d565ff94c70e773332
-BASE=f97c8c175e47fa4dc29b0f8b9c73bfd01b1211d8
-FOCUSED_TESTS=46/0
-AFFECTED_TESTS=98/0
-FULL_SUITE=330/0
-STATUS=CLOSED_UNMERGED
-```
-
-Candidate representation was batch-first and queried public Study Records only for true vocabulary-batch misses, binding only a unique safe exact-spelling `voc_id`.
-
-Immediate physical canary on the exact PR head:
-
-```text
-PREVIEW_COMPLETED=yes
-ORDINARY_ROWS=resolved / unchanged (`一致`)
-SELF_ADDED_TARGET_RESULT=BLOCKED
-SELF_ADDED_BLOCK_REASON=未读取到可用词条目标
-GLOBAL_PREVIEW_FAILURE=no
-REAL_MAIMEMO_MUTATION_BY_XIAOHEINIAO=no
-```
-
-The Owner then added the same item inside Maimemo. Because first-party Maimemo documentation allows learning-data propagation delay, one bounded post-sync retry was authorized.
-
-Final bounded post-sync retry:
-
-```text
-MAIMEMO_FOREGROUND_SETTLE=~7.5 minutes
-EXACT_PR174_APP_REACTIVATED_WITHOUT_REINSTALL=yes
-PHYSICAL_SELF_ADDED_CANARY=BLOCK_POST_SYNC
-SELF_ADDED_TARGET_RESULT=blocked
-VISIBLE_REASON=未读取到可用词条目标
+LIVE_MAIN_SHA=e16e892bbd984d1213bc5815a98a572a1bb49e8a
+RC_EXECUTION_HEAD=e16e892bbd984d1213bc5815a98a572a1bb49e8a
+PRODUCT_EQUIVALENCE_FROM_C9C91B3=PASS
+PRODUCT_EQUIVALENCE_CHANGED_PATHS=docs/PROJECT_STATE.md only
+EXACT_MAIN_BUILD_SIGN=PASS
+PHYSICAL_INSTALL=PASS
+NORMAL_LAUNCH=PASS
+VERSION_BUILD=1.0 (3)
+CAPTURE_SHARE_SHEET_UI_TEST=FAIL
+CAPTURE_PENDING_REVIEW_UI_TEST=PASS
+FINAL_DEVICE_NORMAL_EXACT_MAIN=PASS
 REAL_MAIMEMO_MUTATION_PERFORMED=no
 IPHONE_MIRRORING_USED=no
+TESTFLIGHT_UPLOADED=no
 ```
 
-Owning evidence:
+Load-bearing physical failure:
 
 ```text
-PR174_IMMEDIATE_PHYSICAL_COMMENT=5537194917
-STUDY_SYNC_DELAY_EXTERNAL_INCREMENT_COMMENT=5537199729
-FINAL_RESOLVER_ADJUDICATION_COMMENT=5538213629
-PR174_PHYSICAL_COMMENT=5538210122
+real system Share Sheet
+-> accessibility-selectable 小黑鸟伴侣 row
+-> real Share Extension UI
+-> 保存 tap
+-> Home
+-> main app activate
+-> captureReviewStatus missing after 10s
 ```
 
-### Final resolver conclusion
+This is a release blocker. It is not yet assigned to a final root cause.
 
-The tested first-party public identity surfaces are exhausted for this real item:
+### What is already separated by evidence
+
+`CapturePendingReviewUITests` passed physically using a synthetic capture seeded into the real App Group inbox before the initial active transition. From that seed onward it exercises production:
 
 ```text
-POST /open/api/v1/vocabulary/query          -> miss / no safe target
-GET  /open/api/v1/vocabulary?spelling=...   -> no safe target
-POST /open/api/v1/study/query_study_records -> still no safe target after bounded sync settling
+PendingCaptureInbox.consume
+-> CaptureReviewForegroundGate.activate
+-> CaptureReviewStore
+-> ContentView capture-review UI
 ```
 
-Therefore:
+So the main-side consume/render path works under direct seed.
+
+Current `ShareViewController.saveCapture()` performs:
 
 ```text
-SELF_ADDED_TARGET_RESOLUTION_ENGINEERING=STOPPED
-PR_173=CLOSED_UNMERGED
-PR_174=CLOSED_UNMERGED
-FOURTH_RESOLVER_SURFACE=FORBIDDEN
-PRIVATE_API=FORBIDDEN
-GUESSED_ID=FORBIDDEN
-CURRENT_PRODUCT_BEHAVIOR=fail closed for items with no safe public target
-REOPEN_CONDITION=later first-party API capability materially changes
+PendingCaptureInbox.appGroup().save(...)
+-> only on success: extensionContext.completeRequest(...)
+-> on error: keep extension UI visible and show an error
 ```
 
-This is a provider capability/data-visibility limit, not an unresolved local resolver bug.
+The current `CaptureShareSheetUITests` taps Save and immediately presses Home; it does not first assert that the Share Extension actually completed/dismissed. Therefore the present failure does not yet prove whether the defect is extension persistence/signing/runtime App Group access or later host-app pickup/lifecycle sequencing.
 
-## Exact-final-main RC equivalence evidence
+## Fresh external decision increment — #105 Share join blocker
 
-The prior physical exact-main Preview was run on `c9c91b3e6191c8d3f6c36595121d75f81328c90b` after #168 merged.
+Owning Issue comment: `5539035466`.
 
-A live GitHub compare from that physical-main SHA through `87c5b2c2b027d057bb92919cdf4b6a988697bdb5` shows:
+Fresh Apple first-party facts:
+
+- App Groups provide a shared container for an app extension and host app;
+- `XCUIApplication.activate()` is synchronous; on successful return the app is ready for events / running foreground;
+- `NSExtensionContext.completeRequest(...)` eventually dismisses the extension view controller.
+
+Decision impact:
 
 ```text
-COMMITS_AHEAD=9
-CHANGED_FILES=docs/PROJECT_STATE.md only
-IOS_PRODUCT_CODE_CHANGED=no
-TEST_CODE_CHANGED=no
-XCODE_PROJECT_CHANGED=no
+DO NOT explain the failure as ordinary shared-container propagation delay
+DO NOT explain it as activate() returning before foreground readiness
+FIRST split extension Save completion from main pickup
 ```
 
-Thus all intervening merged changes before this state update were governance-only. This evidence may reduce redundant Owner smoke in the final RC, but it does not authorize skipping any still-load-bearing physical release check.
+Current bounded diagnostic representation:
+
+```text
+A. verify signed runtime App Group entitlement/profile identity for main + embedded Share Extension
+B. real Share Sheet -> extension -> Save
+C. wait for extension completion/dismissal before Home
+D1. if extension remains/error -> diagnose extension save/App Group runtime boundary
+D2. if extension dismisses -> then Home + activate and diagnose host pickup/lifecycle
+```
+
+Use only synthetic payloads and the existing XCUIAutomation target. No coordinates, private Owner content, Maimemo token use, Maimemo mutation, backend, polling framework, second entry mechanism, or iPhone Mirroring.
+
+If simply waiting for extension completion makes the physical test pass, treat it as test sequencing and keep production code unchanged. If a production defect is proven, make the smallest evidence-backed fix and targeted tests.
 
 ## Machine migration — closed
 
 ```text
-ACTUAL_HOME=/Users/david
 WORKSPACE_ROOT=/Users/david/Documents/GitHub/momo-moreEfficient
 REPOSITORY_IDENTITY=davidqyc/momo-moreEfficient
 MIGRATED_PRIVATE_DIRECTORY_PRESENT=yes
@@ -183,32 +167,26 @@ MIGRATED_PRIVATE_DU_SIZE=68K
 PRIVATE_CONTENT_OPENED=no
 PRIVATE_CONTENT_PUBLISHED=no
 PRIVATE_DIRECTORY_GITIGNORED=yes
-TRACKED_UNCOMMITTED=none
-STAGED_UNCOMMITTED=none
-UNTRACKED_NONIGNORED=none
-STASHES=none
-BRANCH_AHEAD_EXISTING_UPSTREAM=no
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
 NEW_MAC_WORKSPACE_READY_FOR_164=yes
 ```
 
-`artifacts/private/` remains local/private and must never be pushed merely for migration or review.
+`artifacts/private/` remains local/private and must never be pushed for review or migration.
 
 ## Release sequence
 
 ```text
 #167 merged
 -> #168 merged/closed
--> exact-main physical Preview exposed self-added blocker
--> PR #173 exact-GET candidate failed / closed unmerged
--> PR #174 Study Records candidate passed tests but failed immediate physical canary
--> one bounded post-sync retry also BLOCKED
--> self-added resolver capability lane closed
--> exact-final-main release-candidate closeout   <-- CURRENT
+-> #164 provider-resolution lane closed / Issue completed
+-> exact-final-main RC build/install/launch PASS
+-> exact-main Share Sheet physical gate FAIL   <-- CURRENT BLOCKER
+-> bounded #105 Share-join diagnostic/repair
+-> exact-final-main physical RC rerun
 -> build-number / TestFlight decision
 ```
 
-`#105` and unrelated backlog remain HOLD until the final release closeout is complete.
+Unrelated backlog remains HOLD until this release blocker is closed.
 
 ## Stable safety boundaries
 
@@ -236,8 +214,8 @@ Fresh Chat takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #164 body + latest final resolver adjudication comment 5538213629
--> PR #174 closed-unmerged state
+-> Issue #105 body + comment 5539035466 + latest physical RC blocker evidence
+-> Issue #164 closed status
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
