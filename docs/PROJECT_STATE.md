@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-04
-sourceMainSha=f97c8c175e47fa4dc29b0f8b9c73bfd01b1211d8
+sourceMainSha=87c5b2c2b027d057bb92919cdf4b6a988697bdb5
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -18,20 +18,21 @@ LAST_PRODUCT_MERGE=PR #172
 LAST_PRODUCT_MERGE_SHA=bc03ee03e06bfa23a160e2599bebc9db34635812
 
 CURRENT_PRIMARY_ISSUE=#164
-CURRENT_PRIMARY_GATE=PR174_POST_SYNC_PHYSICAL_CANARY
-CURRENT_RELEASE_GATE_STATUS=BLOCKED_ON_ONE_BOUNDED_POST_SYNC_RETRY
-CURRENT_BLOCKER=exact PR #174 physically completes Preview and ordinary rows remain healthy, but the real self-added target still blocks with `未读取到可用词条目标`; the Owner then added that same target in Maimemo and an immediate same-minute retry still blocked, while official Maimemo documentation says learning-data propagation can be delayed
-CURRENT_UNIQUE_NEXT=perform exactly one post-sync read-only retry on exact PR #174 with no code changes; if the same target still blocks after normal Maimemo sync/init, stop this capability lane and close PR #174 unmerged unless later first-party API capability materially changes
+CURRENT_PRIMARY_GATE=EXACT_FINAL_MAIN_RELEASE_CANDIDATE_CLOSEOUT
+CURRENT_RELEASE_GATE_STATUS=READY_FOR_EXACT_FINAL_MAIN_RC
+CURRENT_BLOCKER=none in the resolver lane; the real self-added target remains unresolvable through the tested first-party public identity surfaces and is now an accepted provider capability/data-visibility limit
+CURRENT_UNIQUE_NEXT=perform the exact-current-main release-candidate closeout with no further resolver engineering; use provider-native physical-device automation wherever proportionate, then make the build-number/TestFlight decision
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true
 MACHINE_MIGRATION_HOLD=CLEARED
 NEW_MAC_WORKSPACE_READY=yes
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
 NO_FOURTH_RESOLVER_SURFACE=true
-NEXT_TESTFLIGHT_BLOCKED_BY=#164 final capability adjudication + exact-final-main release-candidate closeout + release decision
+SELF_ADDED_UNRESOLVABLE_POLICY=FAIL_CLOSED_WITH_未读取到可用词条目标
+NEXT_TESTFLIGHT_BLOCKED_BY=exact-final-main release-candidate closeout + release decision
 ```
 
-## Accepted baseline
+## Accepted shipping baseline
 
 ### #167 — batch vocabulary / parser
 
@@ -55,19 +56,20 @@ Merged through PR #172 at `bc03ee03e06bfa23a160e2599bebc9db34635812`.
 
 Final accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
 
-## #164 resolver evidence
+## #164 resolver adjudication — capability lane closed
 
-### Exact-main / PR #173
+### Exact main / PR #173
 
-Exact-main physical Preview established:
+Physical exact-main Preview established:
 
 ```text
+PHYSICAL_MAIN_SHA=c9c91b3e6191c8d3f6c36595121d75f81328c90b
 PREVIEW_COMPLETED=yes
 SELF_ADDED_VOCABULARY_RESOLUTION=BLOCKED
 REAL_MUTATION_PERFORMED=no
 ```
 
-PR #173 tested a batch-miss exact-vocabulary-GET fallback:
+PR #173 tested batch-miss exact vocabulary GET:
 
 ```text
 PR=173
@@ -77,51 +79,23 @@ PHYSICAL_SELF_ADDED_CANARY=BLOCK
 STATUS=CLOSED_UNMERGED
 ```
 
-The fallback was fail-closed but did not solve the real target and was not merged.
+The fallback was safe but did not resolve the real item.
 
 ### PR #174 — Study Records candidate
-
-Current Draft candidate:
 
 ```text
 PR=174
 HEAD=f9b90833324f0fa9dc07d9d565ff94c70e773332
 BASE=f97c8c175e47fa4dc29b0f8b9c73bfd01b1211d8
-BRANCH=claude/issue-164-study-records-fallback
 FOCUSED_TESTS=46/0
 AFFECTED_TESTS=98/0
 FULL_SUITE=330/0
-STATUS=DRAFT_UNMERGED
+STATUS=CLOSED_UNMERGED
 ```
 
-Frozen representation:
+Candidate representation was batch-first and queried public Study Records only for true vocabulary-batch misses, binding only a unique safe exact-spelling `voc_id`.
 
-```text
-normal vocabulary batch hit -> unchanged/final
-batch match anomaly -> blocked/final
-true vocabulary batch misses -> one bounded Study Records query per <=1000 miss chunk
-Study Record bind -> exact normalized voc_spelling + unique safe voc_id only
-Study API miss / unsafe / duplicate -> remain blocked
-no exact-GET stacking
-no guessed id
-no private API
-no read or mutation concurrency
-```
-
-Frozen request body for each miss chunk:
-
-```text
-voc_ids=[]
-spellings=<deduplicated true misses>
-as_count=false
-limit=1000
-```
-
-The Study POST is read-semantic and uses the existing shared scheduler.
-
-## PR #174 physical evidence — current
-
-On the exact PR #174 head, normal-mode physical iPhone Preview completed without a global error:
+Immediate physical canary on the exact PR head:
 
 ```text
 PREVIEW_COMPLETED=yes
@@ -130,50 +104,73 @@ SELF_ADDED_TARGET_RESULT=BLOCKED
 SELF_ADDED_BLOCK_REASON=未读取到可用词条目标
 GLOBAL_PREVIEW_FAILURE=no
 REAL_MAIMEMO_MUTATION_BY_XIAOHEINIAO=no
+```
+
+The Owner then added the same item inside Maimemo. Because first-party Maimemo documentation allows learning-data propagation delay, one bounded post-sync retry was authorized.
+
+Final bounded post-sync retry:
+
+```text
+MAIMEMO_FOREGROUND_SETTLE=~7.5 minutes
+EXACT_PR174_APP_REACTIVATED_WITHOUT_REINSTALL=yes
+PHYSICAL_SELF_ADDED_CANARY=BLOCK_POST_SYNC
+SELF_ADDED_TARGET_RESULT=blocked
+VISIBLE_REASON=未读取到可用词条目标
+REAL_MAIMEMO_MUTATION_PERFORMED=no
 IPHONE_MIRRORING_USED=no
 ```
 
-The Owner then searched the same target in the Maimemo app, added it to the Owner's current selected/learning set, and immediately repeated Preview. The target still blocked with the same per-item reason while ordinary rows remained healthy.
-
-This immediate post-add miss is not yet treated as permanent provider incapability because a fresh first-party Maimemo FAQ states that learning-data synchronization can have propagation delay and depends on `学习数据自动同步`; it advises checking again later when data has not updated.
-
-Important scope of that evidence:
-
-- it proves Maimemo learning-data propagation is not guaranteed immediate;
-- it does **not** prove OpenAPI `query_study_records` will eventually expose the target;
-- therefore only one bounded post-sync retry is justified;
-- no code change, new fallback, private endpoint, ID guessing, or repeated canary loop is justified.
-
-Owning Issue evidence:
+Owning evidence:
 
 ```text
 PR174_IMMEDIATE_PHYSICAL_COMMENT=5537194917
 STUDY_SYNC_DELAY_EXTERNAL_INCREMENT_COMMENT=5537199729
+FINAL_RESOLVER_ADJUDICATION_COMMENT=5538213629
+PR174_PHYSICAL_COMMENT=5538210122
 ```
 
-## Final post-sync decision rule
+### Final resolver conclusion
+
+The tested first-party public identity surfaces are exhausted for this real item:
 
 ```text
-normal Maimemo app foreground/init/sync settling
--> exact PR #174 read-only Preview retry
-
-if target resolves:
-  physical canary PASS
-  -> Coordinator exact-diff adjudication
-  -> merge only if candidate remains acceptable
-
-if target still shows `未读取到可用词条目标`:
-  PHYSICAL_SELF_ADDED_CANARY=BLOCK_POST_SYNC
-  -> stop self-added target-resolution engineering
-  -> close PR #174 unmerged
-  -> no fourth resolver surface
+POST /open/api/v1/vocabulary/query          -> miss / no safe target
+GET  /open/api/v1/vocabulary?spelling=...   -> no safe target
+POST /open/api/v1/study/query_study_records -> still no safe target after bounded sync settling
 ```
 
-If automatic-sync state itself is proven disabled, that is a provider-data precondition rather than evidence for a new resolver. Resolve only the minimum sync precondition necessary for the single bounded retry.
+Therefore:
+
+```text
+SELF_ADDED_TARGET_RESOLUTION_ENGINEERING=STOPPED
+PR_173=CLOSED_UNMERGED
+PR_174=CLOSED_UNMERGED
+FOURTH_RESOLVER_SURFACE=FORBIDDEN
+PRIVATE_API=FORBIDDEN
+GUESSED_ID=FORBIDDEN
+CURRENT_PRODUCT_BEHAVIOR=fail closed for items with no safe public target
+REOPEN_CONDITION=later first-party API capability materially changes
+```
+
+This is a provider capability/data-visibility limit, not an unresolved local resolver bug.
+
+## Exact-final-main RC equivalence evidence
+
+The prior physical exact-main Preview was run on `c9c91b3e6191c8d3f6c36595121d75f81328c90b` after #168 merged.
+
+A live GitHub compare from that physical-main SHA through `87c5b2c2b027d057bb92919cdf4b6a988697bdb5` shows:
+
+```text
+COMMITS_AHEAD=9
+CHANGED_FILES=docs/PROJECT_STATE.md only
+IOS_PRODUCT_CODE_CHANGED=no
+TEST_CODE_CHANGED=no
+XCODE_PROJECT_CHANGED=no
+```
+
+Thus all intervening merged changes before this state update were governance-only. This evidence may reduce redundant Owner smoke in the final RC, but it does not authorize skipping any still-load-bearing physical release check.
 
 ## Machine migration — closed
-
-New-Mac takeover passed:
 
 ```text
 ACTUAL_HOME=/Users/david
@@ -202,20 +199,16 @@ NEW_MAC_WORKSPACE_READY_FOR_164=yes
 ```text
 #167 merged
 -> #168 merged/closed
--> exact-main physical RC exposed self-added blocker
+-> exact-main physical Preview exposed self-added blocker
 -> PR #173 exact-GET candidate failed / closed unmerged
--> machine migration closed
--> PR #174 Study Records candidate built/tested
--> immediate physical canary blocked per-item
--> one bounded post-sync physical retry   <-- CURRENT
--> PASS: adjudicate/merge candidate
-   OR
-   BLOCK: close candidate and stop resolver lane
--> exact-final-main release-candidate closeout
+-> PR #174 Study Records candidate passed tests but failed immediate physical canary
+-> one bounded post-sync retry also BLOCKED
+-> self-added resolver capability lane closed
+-> exact-final-main release-candidate closeout   <-- CURRENT
 -> build-number / TestFlight decision
 ```
 
-`#105` and unrelated backlog remain HOLD while this release blocker is open.
+`#105` and unrelated backlog remain HOLD until the final release closeout is complete.
 
 ## Stable safety boundaries
 
@@ -228,13 +221,13 @@ NEW_MAC_WORKSPACE_READY_FOR_164=yes
 - uncertain mutation recovery is GET-only;
 - UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
-- vocabulary-query and Study query POSTs are read-semantic;
+- vocabulary-query POST is read-semantic;
 - personal Maimemo Token and private batch material stay device-local and must not enter Git/logs/review artifacts;
 - 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
 ## Agent-family routing
 
-Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard task/tool constraint requires another family. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
+Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard current task/tool constraint requires another family. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
 
 ## Handoff rule
 
@@ -243,8 +236,8 @@ Fresh Chat takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #164 body + comments 5537194917 and 5537199729
--> PR #174 current head/status
+-> Issue #164 body + latest final resolver adjudication comment 5538213629
+-> PR #174 closed-unmerged state
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
