@@ -21,7 +21,10 @@ import XCTest
 /// Share Sheet actually shows, not the extension's own in-extension title
 /// `保存到小黑鸟伴侣`.
 final class CaptureShareSheetUITests: XCTestCase {
-    private static let syntheticPayload = "XHN-UI-SHARE-PROBE-20260903"
+    // Dated so a run cannot be satisfied by a capture an earlier run left
+    // unconsumed in the real App Group inbox: the exact-payload assertion
+    // below must only ever be able to pass on this run's own save.
+    private static let syntheticPayload = "XHN-UI-SHARE-PROBE-20260904"
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -61,13 +64,48 @@ final class CaptureShareSheetUITests: XCTestCase {
         XCTAssertTrue(saveButton.waitForExistence(timeout: 5))
         saveButton.tap()
 
+        // `ShareViewController.saveCapture()` reaches
+        // `extensionContext.completeRequest(...)` only after
+        // `PendingCaptureInbox.save(...)` returns without throwing; a save
+        // failure instead keeps this extension UI on screen with a red status.
+        // So the extension actually going away is the observable proof that
+        // the real App Group write completed. Assert it before touching app
+        // lifecycle, otherwise a missing capture cannot be attributed to
+        // either the extension write or the main-app pickup.
+        XCTAssertTrue(
+            extensionTitle.waitForNonExistence(timeout: 10),
+            "Share Extension never completed/dismissed, so PendingCaptureInbox.save did not succeed"
+        )
+
         // A same-app-triggered Share Sheet does not necessarily background
         // our own app the way a real cross-app share (e.g. from Notes)
         // would, so the production scenePhase-driven pickup may not
         // otherwise re-fire. Force the same background/foreground cycle a
         // real cross-app share induces.
-        XCUIDevice.shared.press(.home)
+        //
+        // `XCUIDevice.shared.press(.home)` cannot drive that cycle on the
+        // physical iPhone this gate runs on: measured in isolation, with no
+        // Share Sheet involved at all, the app still never leaves
+        // `.runningForeground` after the press (it does on the Simulator).
+        // Activating SpringBoard reaches the very home screen the press was
+        // meant to reach, and unlike the press it actually backgrounds us.
+        // Assert the app really left the foreground, so a future regression
+        // here can never again be mistaken for a lost capture.
+        XCUIApplication(bundleIdentifier: "com.apple.springboard").activate()
+        let leftForeground = XCTNSPredicateExpectation(
+            predicate: NSPredicate { application, _ in
+                (application as? XCUIApplication)?.state != .runningForeground
+            },
+            object: app
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [leftForeground], timeout: 10),
+            .completed,
+            "App never left the foreground, so no foreground transition could drive pickup"
+        )
+
         app.activate()
+        XCTAssertEqual(app.state, .runningForeground)
 
         // Back in the main app: the same production pending-capture pickup
         // path `CapturePendingReviewUITests` exercises through the App-Group
