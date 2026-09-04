@@ -10,6 +10,12 @@ enum CompanionConstants {
     /// former artificial product-wide total-batch item cap, so a user batch is
     /// bounded by real input/content/write limits instead.
     static let vocabularyQueryChunkSize = 1_000
+    /// The provider's documented per-request maximum for the public Study
+    /// Records query, used both as the miss-chunk bound and as the explicit
+    /// `limit` that request always sends. It is a transport bound only, and it
+    /// stays separate from `vocabularyQueryChunkSize` because the two public
+    /// surfaces carry independent provider contracts that merely coincide today.
+    static let studyRecordsChunkSize = 1_000
     static let maxInputBytes = 262_144
     static let maxInterpretationCharacters = 2_000
     static let maxTokenCharacters = 8_192

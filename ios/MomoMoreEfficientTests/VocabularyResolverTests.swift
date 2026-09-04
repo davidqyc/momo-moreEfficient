@@ -60,8 +60,10 @@ final class VocabularyResolverTests: XCTestCase {
     }
 
     func testMissingSpellingBlocksOnlyThatItem() async throws {
-        let (resolver, _, _) = try makeResolver([
+        let (resolver, transport, _) = try makeResolver([
             vocabularyQueryResponse([(id: "VOC_A", spelling: "apple")]),
+            // #164: the true miss gets one Study repair, which proves nothing.
+            studyRecordsResponse([]),
         ])
 
         let resolution = try await resolver.resolve(spellings: ["apple", "ghostword"])
@@ -69,6 +71,12 @@ final class VocabularyResolverTests: XCTestCase {
         XCTAssertEqual(
             resolution.outcomes,
             [.resolved(vocabularyID: "VOC_A"), .blocked(.notFound)]
+        )
+        XCTAssertEqual(transport.studyRecordsQueryCount, 1)
+        XCTAssertEqual(
+            transport.studyRecordsBodies.first?["spellings"] as? [String],
+            ["ghostword"],
+            "the resolved spelling must never be re-asked on the Study surface"
         )
     }
 
@@ -101,6 +109,7 @@ final class VocabularyResolverTests: XCTestCase {
     func testMismatchedReturnedSpellingNeverBindsTheRequestedRow() async throws {
         let (resolver, _, _) = try makeResolver([
             vocabularyQueryResponse([(id: "VOC_OTHER", spelling: "banana")]),
+            studyRecordsResponse([]),
         ])
 
         let resolution = try await resolver.resolve(spellings: ["apple"])
@@ -211,6 +220,11 @@ final class VocabularyResolverTests: XCTestCase {
                 "\(itemCount) items must cost \(expectedRequests) vocabulary requests"
             )
             XCTAssertEqual(transport.getCount, 0, "no per-item vocabulary GET fallback")
+            XCTAssertEqual(
+                transport.studyRecordsQueryCount,
+                0,
+                "an all-hit batch adds no Study traffic"
+            )
         }
     }
 
@@ -305,6 +319,352 @@ final class VocabularyResolverTests: XCTestCase {
         }
     }
 
+    // MARK: - Study-Records repair (#164)
+
+    /// The ordinary Preview. An all-hit batch must stay exactly the #167/#168
+    /// shape: no Study request exists to be paid for.
+    func testAllHitBatchesIssueZeroStudyRequests() async throws {
+        for count in [1, 8, 15, 31] {
+            let spellings = (0..<count).map { "word\($0)" }
+            let (resolver, transport, _) = try makeResolver([resolvedQueryResponse(spellings)])
+
+            let resolution = try await resolver.resolve(spellings: spellings)
+
+            XCTAssertTrue(resolution.outcomes.allSatisfy { $0.vocabularyID != nil })
+            XCTAssertEqual(transport.requests.count, 1, "\(count) all-hit items cost one request")
+            XCTAssertEqual(
+                transport.studyRecordsQueryCount,
+                0,
+                "an all-hit batch must never touch the Study surface"
+            )
+        }
+    }
+
+    /// The whole point of the repair: a spelling the vocabulary batch has no
+    /// record for can still carry a unique safe identity in Study data.
+    func testTrueMissResolvesToTheUniqueSafeStudyIdentity() async throws {
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([(id: "VOC_A", spelling: "apple")]),
+            studyRecordsResponse([(id: "VOC_STUDY", spelling: "selfaddedword")]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: ["apple", "selfaddedword"])
+
+        XCTAssertEqual(
+            resolution.outcomes,
+            [.resolved(vocabularyID: "VOC_A"), .resolved(vocabularyID: "VOC_STUDY")]
+        )
+        XCTAssertEqual(transport.studyRecordsQueryCount, 1)
+    }
+
+    /// Binding is by the project's normalization, exactly as on the batch
+    /// surface — never by response position.
+    func testStudySpellingIsMatchedUnderTheProjectNormalization() async throws {
+        let (resolver, _, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([
+                (id: "VOC_OTHER", spelling: "banana"),
+                (id: "VOC_STUDY", spelling: "SelfAddedWord"),
+            ]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: ["selfaddedword"])
+
+        XCTAssertEqual(resolution.outcomes, [.resolved(vocabularyID: "VOC_STUDY")])
+    }
+
+    /// The frozen request contract. All four documented fields are sent
+    /// explicitly, `as_count` is a real JSON `false` (not an omitted or numeric
+    /// stand-in), and `limit` is the provider maximum rather than the official
+    /// CLI's smaller interactive default — either of which could silently
+    /// suppress or truncate the identity rows this route exists to read.
+    func testStudyRequestSendsAllFourExplicitFields() async throws {
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([]),
+        ])
+
+        _ = try await resolver.resolve(spellings: ["ghostword"])
+
+        let request = try XCTUnwrap(
+            transport.requests.first { $0.route == .studyRecordsQuery }
+        )
+        XCTAssertEqual(request.route.method, .post)
+        XCTAssertFalse(request.route.isMutating, "a read-semantic POST is never a write")
+        XCTAssertEqual(
+            request.route.reviewedPath,
+            "/open/api/v1/study/query_study_records"
+        )
+        // Bodies are serialized with sorted keys, so the exact text is stable —
+        // and it proves the boolean is a JSON `false`, which an `as? Bool` cast
+        // could not distinguish from a numeric zero.
+        XCTAssertEqual(
+            String(data: try XCTUnwrap(request.body), encoding: .utf8),
+            #"{"as_count":false,"limit":1000,"spellings":["ghostword"],"voc_ids":[]}"#
+        )
+        XCTAssertEqual(transport.postCount, 0)
+    }
+
+    func testStudyRepairNeverConsumesTheOnePOSTPerItemAllowance() async throws {
+        let (resolver, _, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([]),
+        ])
+        let control = ExecutionControl()
+
+        _ = try await resolver.resolve(spellings: ["ghostword"], control: control)
+
+        XCTAssertTrue(control.beginPostIfAllowed(), "the write allowance is untouched")
+    }
+
+    /// Many misses cost one Study request, not one per miss.
+    func testManyMissesShareOneStudyRequest() async throws {
+        let spellings = (0..<15).map { "ghost\($0)" }
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([(id: "VOC_G7", spelling: "ghost7")]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: spellings)
+
+        XCTAssertEqual(transport.studyRecordsQueryCount, 1)
+        XCTAssertEqual(
+            transport.studyRecordsBodies.first?["spellings"] as? [String],
+            spellings
+        )
+        XCTAssertEqual(resolution.outcomes[7], .resolved(vocabularyID: "VOC_G7"))
+        XCTAssertTrue(
+            resolution.outcomes.enumerated()
+                .filter { $0.offset != 7 }
+                .allSatisfy { $0.element == .blocked(.notFound) }
+        )
+    }
+
+    /// Beyond the provider maximum the repair chunks sequentially, and a record
+    /// answered in one chunk can never bind a spelling from another.
+    func testMissesBeyondTheProviderMaximumChunkWithoutCrossBinding() async throws {
+        let spellings = (0..<1_001).map { "ghost\($0)" }
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            vocabularyQueryResponse([]),
+            // The second Study chunk answers with a first-chunk spelling as well
+            // as its own; only its own may bind.
+            studyRecordsResponse([]),
+            studyRecordsResponse([
+                (id: "VOC_LEAK", spelling: "ghost0"),
+                (id: "VOC_LAST", spelling: "ghost1000"),
+            ]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: spellings)
+
+        XCTAssertEqual(transport.vocabularyQueryCount, 2)
+        XCTAssertEqual(transport.studyRecordsQueryCount, 2)
+        XCTAssertEqual(
+            transport.studyRecordsBodies.map { ($0["spellings"] as? [String])?.count },
+            [1_000, 1]
+        )
+        XCTAssertEqual(
+            resolution.outcomes[0],
+            .blocked(.notFound),
+            "a record returned by another chunk must never bind this spelling"
+        )
+        XCTAssertEqual(resolution.outcomes[1_000], .resolved(vocabularyID: "VOC_LAST"))
+    }
+
+    /// Duplicate input rows naming one word cost exactly one identity lookup on
+    /// each surface, and can never bind two different targets.
+    func testDuplicateMissedSpellingsCostOneStudyLookup() async throws {
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([(id: "VOC_STUDY", spelling: "ghost")]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: ["ghost", "GHOST", "Ghost"])
+
+        XCTAssertEqual(
+            resolution.outcomes,
+            Array(repeating: .resolved(vocabularyID: "VOC_STUDY"), count: 3)
+        )
+        XCTAssertEqual(transport.vocabularyQueryCount, 1)
+        XCTAssertEqual(transport.studyRecordsQueryCount, 1)
+        XCTAssertEqual(
+            transport.studyRecordsBodies.first?["spellings"] as? [String],
+            ["ghost"]
+        )
+    }
+
+    /// A contradiction the batch already established is final. Study data must
+    /// never be allowed to overwrite it with a more convenient answer.
+    func testBatchMatchAnomalyIsNeverReopenedByStudy() async throws {
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([
+                (id: "VOC_A1", spelling: "apple"),
+                (id: "VOC_A2", spelling: "Apple"),
+            ]),
+            // Even a clean, unique Study identity for "apple" must not bind.
+            studyRecordsResponse([
+                (id: "VOC_STUDY_APPLE", spelling: "apple"),
+                (id: "VOC_STUDY_GHOST", spelling: "ghostword"),
+            ]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: ["apple", "ghostword"])
+
+        XCTAssertEqual(
+            resolution.outcomes,
+            [.blocked(.matchAnomaly), .resolved(vocabularyID: "VOC_STUDY_GHOST")]
+        )
+        XCTAssertEqual(
+            transport.studyRecordsBodies.first?["spellings"] as? [String],
+            ["ghostword"],
+            "an anomalous spelling is never even asked about on the Study surface"
+        )
+    }
+
+    /// The batch surface's identity rules apply unchanged to Study rows.
+    func testUnsafeAmbiguousOrMismatchedStudyRowsNeverResolve() async throws {
+        let cases: [(String, [(id: String, spelling: String)], VocabularyTargetOutcome)] = [
+            ("no record at all", [], .blocked(.notFound)),
+            (
+                "mismatched spelling only",
+                [(id: "VOC_OTHER", spelling: "banana")],
+                .blocked(.notFound)
+            ),
+            ("unsafe id", [(id: "VOC/../A", spelling: "ghost")], .blocked(.matchAnomaly)),
+            ("empty id", [(id: "", spelling: "ghost")], .blocked(.matchAnomaly)),
+            (
+                "two different ids",
+                [(id: "VOC_ONE", spelling: "ghost"), (id: "VOC_TWO", spelling: "Ghost")],
+                .blocked(.matchAnomaly)
+            ),
+            (
+                "repeated identical id still one target",
+                [(id: "VOC_ONE", spelling: "ghost"), (id: "VOC_ONE", spelling: "Ghost")],
+                .resolved(vocabularyID: "VOC_ONE")
+            ),
+        ]
+        for (label, records, expected) in cases {
+            let (resolver, _, _) = try makeResolver([
+                vocabularyQueryResponse([]),
+                studyRecordsResponse(records),
+            ])
+
+            let resolution = try await resolver.resolve(spellings: ["ghost"])
+
+            XCTAssertEqual(resolution.outcomes, [expected], label)
+        }
+    }
+
+    /// A record for a spelling nobody asked about can never bind another input.
+    func testUnrequestedStudyRecordsBindNothing() async throws {
+        let (resolver, _, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([
+                (id: "VOC_UNASKED", spelling: "somethingelse"),
+                (id: "VOC_ALSO_UNASKED", spelling: "andanother"),
+            ]),
+        ])
+
+        let resolution = try await resolver.resolve(spellings: ["ghost"])
+
+        XCTAssertEqual(resolution.outcomes, [.blocked(.notFound)])
+    }
+
+    /// A Study envelope this build cannot decode fails closed globally. It never
+    /// fabricates an identity, and never silently downgrades into a target.
+    func testMalformedStudyResponsesNeverFabricateIdentity() async throws {
+        let record = ["voc_id": "VOC_STUDY", "voc_spelling": "ghost"]
+        let malformed: [Any] = [
+            ["unexpected": "shape"],
+            [String: String](),
+            ["records": "not an array"],
+            ["data": ["records": record]],
+            ["data": ["errors": [], "success": true]],
+            // Wrapper nested more deeply than the first-party contract.
+            ["data": ["data": ["records": [record]]]],
+            // Shapes no first-party source shows.
+            ["study_records": [record]],
+            ["data": ["items": [record]]],
+            ["data": [record]],
+            [record],
+            // Well-formed envelope, unusable row.
+            ["data": ["records": [["voc_id": "VOC_STUDY"]]]],
+            ["data": ["records": [["voc_id": 7, "voc_spelling": "ghost"]]]],
+            ["data": ["records": [["voc_id": "VOC_STUDY", "voc_spelling": 7]]]],
+        ]
+        for envelope in malformed {
+            let (resolver, transport, _) = try makeResolver([
+                vocabularyQueryResponse([]),
+                jsonResponse(envelope),
+            ])
+            do {
+                _ = try await resolver.resolve(spellings: ["ghost"])
+                XCTFail("a malformed Study response must abort the whole read plan")
+            } catch {
+                XCTAssertEqual(error as? CompanionError, .responseRejected)
+            }
+            XCTAssertEqual(transport.postCount, 0)
+        }
+    }
+
+    /// Session-wide failures on the Study request stay session-wide. None of
+    /// them may be downgraded into a per-item guess.
+    func testStudyAuthenticationRateLimitAndServerFailuresStayGlobal() async throws {
+        let cases: [(Int, CompanionError)] = [
+            (401, .authenticationRejected),
+            (429, .rateLimited),
+            (503, .serverFailure),
+        ]
+        for (status, expected) in cases {
+            let (resolver, _, _) = try makeResolver([
+                vocabularyQueryResponse([]),
+                jsonResponse([:], status: status),
+            ])
+            do {
+                _ = try await resolver.resolve(spellings: ["ghost"])
+                XCTFail("HTTP \(status) on the Study repair must abort the whole read plan")
+            } catch {
+                XCTAssertEqual(error as? CompanionError, expected)
+            }
+        }
+    }
+
+    func testStudyTransportFailureStaysGlobal() async throws {
+        let (resolver, _, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            .failure(.transport),
+        ])
+
+        do {
+            _ = try await resolver.resolve(spellings: ["ghost"])
+            XCTFail("a transport failure on the Study repair must abort the read plan")
+        } catch {
+            XCTAssertEqual(error as? CompanionError, .transport)
+        }
+    }
+
+    /// Cancellation raised while the batch is in flight stops the plan before
+    /// the repair is ever dispatched.
+    func testCancellationDuringTheBatchStopsBeforeAnyStudyRequest() async throws {
+        let (resolver, transport, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([(id: "VOC_STUDY", spelling: "ghost")]),
+        ])
+        let control = ExecutionControl()
+        transport.onSend = { request in
+            if request.route == .vocabularyQuery { control.requestCancellation() }
+        }
+
+        do {
+            _ = try await resolver.resolve(spellings: ["ghost"], control: control)
+            XCTFail("cancellation must propagate")
+        } catch {
+            XCTAssertEqual(error as? CompanionError, .cancelled)
+        }
+        XCTAssertEqual(transport.studyRecordsQueryCount, 0)
+    }
+
     // MARK: - Response envelope
 
     func testMalformedResponseStaysGlobalAndNeverFallsBackToPerItemGETs() async throws {
@@ -337,12 +697,20 @@ final class VocabularyResolverTests: XCTestCase {
                 XCTAssertEqual(error as? CompanionError, .responseRejected)
             }
             XCTAssertEqual(transport.getCount, 0, "no silent per-item GET fallback")
+            XCTAssertEqual(
+                transport.studyRecordsQueryCount,
+                0,
+                "a malformed batch aborts before any Study repair"
+            )
             XCTAssertEqual(transport.postCount, 0)
         }
     }
 
     func testEmptyResultSetBlocksEveryRequestedSpelling() async throws {
-        let (resolver, _, _) = try makeResolver([vocabularyQueryResponse([])])
+        let (resolver, _, _) = try makeResolver([
+            vocabularyQueryResponse([]),
+            studyRecordsResponse([]),
+        ])
 
         let resolution = try await resolver.resolve(spellings: ["apple", "banana"])
 
@@ -404,7 +772,12 @@ final class VocabularyResolverTests: XCTestCase {
         ]
         for (label, voc, expected) in cases {
             let envelope: [String: Any] = ["data": ["voc": voc], "errors": [], "success": true]
-            let (resolver, _, _) = try makeResolver([jsonResponse(envelope)])
+            // Only the mismatched-spelling case is a true miss, so only it
+            // consumes the trailing Study stub; the anomalies never reach it.
+            let (resolver, _, _) = try makeResolver([
+                jsonResponse(envelope),
+                studyRecordsResponse([]),
+            ])
             let resolution = try await resolver.resolve(spellings: ["apple"])
             XCTAssertEqual(resolution.outcomes, [expected], label)
         }
@@ -462,6 +835,11 @@ final class PreflightThroughputTests: XCTestCase {
             XCTAssertEqual(transport.vocabularyQueryCount, 1, "\(count) items")
             XCTAssertEqual(transport.getCount, count, "one content read per item")
             XCTAssertEqual(transport.requests.count, count + 1, "\(count) items")
+            XCTAssertEqual(
+                transport.studyRecordsQueryCount,
+                0,
+                "an all-hit Preview adds no Study traffic (\(count) items)"
+            )
             XCTAssertEqual(transport.postCount, 0, "Preview dispatches no mutation")
             // #168: pacing goes through the shared aggregate-window scheduler
             // now, but the opening request on a fresh transport is still free
@@ -488,6 +866,11 @@ final class PreflightThroughputTests: XCTestCase {
                 interpretationsResponse([])
             }
             XCTAssertEqual(transport.requests.count, count + 1, "\(count) items")
+            XCTAssertEqual(
+                transport.studyRecordsQueryCount,
+                0,
+                "the #167/#168 request shape gains no Study traffic (\(count) items)"
+            )
             let totalWait = sleeper.seconds.reduce(0, +)
             let oldFixedFloor = 1.6 * Double(count)
             XCTAssertEqual(totalWait, 0, "\(count) items")

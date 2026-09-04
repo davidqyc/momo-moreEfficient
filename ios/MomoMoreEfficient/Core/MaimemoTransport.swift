@@ -125,6 +125,102 @@ final class MaimemoTransport {
         return try decodeVocabularyList(response.body)
     }
 
+    /// The public Study Records query, used by #164's resolver for the true
+    /// vocabulary-batch misses only.
+    ///
+    /// HTTP POST with read/query semantics, exactly like `vocabularyQuery`: it
+    /// reads existing study rows to recover a target identity and writes
+    /// nothing, so it goes through `read` and `InterpretationRoute.isMutating`
+    /// keeps it out of every mutating-POST rule.
+    ///
+    /// All four documented request fields are always sent explicitly. The
+    /// official `maimemo/memo-api-cli` models `QueryStudyRecordsRequest` with
+    /// `voc_ids`, `spellings`, `as_count` and `limit` all present and its
+    /// command handler emits all four, and the provider documents `as_count`
+    /// true as returning an *empty* `records` list. Relying on an omitted or
+    /// defaulted field could therefore suppress or truncate the very identity
+    /// rows this route exists to read, so `as_count` is pinned false and
+    /// `limit` is pinned to the provider maximum rather than the CLI's own
+    /// smaller interactive default.
+    ///
+    /// Only response *schema* is judged here. Exact spelling attribution,
+    /// uniqueness and identifier safety stay in the resolver, so an unsafe
+    /// identifier remains a distinguishable per-item anomaly instead of
+    /// collapsing into "malformed response".
+    func studyRecords(
+        spellings: [String],
+        control: ExecutionControl? = nil
+    ) async throws -> [VocabularyRecord] {
+        guard !spellings.isEmpty,
+              spellings.count <= CompanionConstants.studyRecordsChunkSize
+        else {
+            throw CompanionError.inputRejected
+        }
+        let body = try JSONSerialization.data(
+            withJSONObject: [
+                "voc_ids": [],
+                "spellings": spellings,
+                "as_count": false,
+                "limit": CompanionConstants.studyRecordsChunkSize,
+            ],
+            options: [.sortedKeys]
+        )
+        let response = try await read(
+            route: .studyRecordsQuery,
+            body: body,
+            control: control,
+            readback: false
+        )
+        return try decodeStudyRecordList(response.body)
+    }
+
+    /// Projects study rows onto the same `(id, spelling)` identity the resolver
+    /// already binds vocabulary rows by, reading the documented `voc_id` and
+    /// `voc_spelling` fields. Nothing else about a study record is read: this
+    /// route exists only to recover a vocabulary target identity, never to
+    /// import study state.
+    ///
+    /// The byte ceiling is larger than the vocabulary list's because a full
+    /// 1000-row study page is a much heavier document. It matches the 4 MiB
+    /// bound this project already reviewed for a 1000-item study response in
+    /// the read-only Study Recipe, so a legitimate full page cannot be turned
+    /// into a false global failure.
+    private func decodeStudyRecordList(_ data: Data) throws -> [VocabularyRecord] {
+        guard data.count <= 4 * 1_048_576,
+              let root = try? JSONSerialization.jsonObject(with: data)
+        else {
+            throw CompanionError.responseRejected
+        }
+        guard let values = Self.studyRecordArray(in: root),
+              values.count <= CompanionConstants.studyRecordsChunkSize
+        else {
+            throw CompanionError.responseRejected
+        }
+        return try values.map { value in
+            guard let record = value as? [String: Any],
+                  let id = record["voc_id"] as? String,
+                  let spelling = record["voc_spelling"] as? String
+            else {
+                throw CompanionError.responseRejected
+            }
+            return VocabularyRecord(id: id, spelling: spelling)
+        }
+    }
+
+    /// Locates the study-record array in the first-party envelope.
+    ///
+    /// Same one-level `data` tolerance every other decoder in this file already
+    /// applies, and the same shape the project's read-only Study Recipe accepts
+    /// for `get_today_items`: the list lives at `data.records`, with the
+    /// unwrapped root `records` form tolerated. No other key or shape is
+    /// accepted, so an unrecognised envelope stays a malformed response and can
+    /// never let an identity be synthesised from a guess.
+    private static func studyRecordArray(in root: Any) -> [Any]? {
+        guard let object = root as? [String: Any] else { return nil }
+        let container = (object["records"] != nil ? object : object["data"] as? [String: Any])
+        return container?["records"] as? [Any]
+    }
+
     private func decodeVocabularyList(_ data: Data) throws -> [VocabularyRecord] {
         guard data.count <= 1_048_576,
               let root = try? JSONSerialization.jsonObject(with: data)

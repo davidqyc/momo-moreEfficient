@@ -8,6 +8,7 @@ enum HTTPMethod: String, Equatable, Sendable {
 enum InterpretationRoute: Equatable, Sendable {
     case vocabulary(spelling: String)
     case vocabularyQuery
+    case studyRecordsQuery
     case interpretations(vocabularyID: String)
     case createInterpretation
     case updateInterpretation(recordID: String)
@@ -18,7 +19,8 @@ enum InterpretationRoute: Equatable, Sendable {
         switch self {
         case .vocabulary, .interpretations, .phrases:
             return .get
-        case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase:
+        case .vocabularyQuery, .studyRecordsQuery, .createInterpretation,
+             .updateInterpretation, .createPhrase:
             return .post
         }
     }
@@ -33,7 +35,7 @@ enum InterpretationRoute: Equatable, Sendable {
     /// accounted for or retried as a mutation.
     var isMutating: Bool {
         switch self {
-        case .vocabulary, .vocabularyQuery, .interpretations, .phrases:
+        case .vocabulary, .vocabularyQuery, .studyRecordsQuery, .interpretations, .phrases:
             return false
         case .createInterpretation, .updateInterpretation, .createPhrase:
             return true
@@ -46,6 +48,8 @@ enum InterpretationRoute: Equatable, Sendable {
             return "/open/api/v1/vocabulary"
         case .vocabularyQuery:
             return "/open/api/v1/vocabulary/query"
+        case .studyRecordsQuery:
+            return "/open/api/v1/study/query_study_records"
         case .interpretations:
             return "/open/api/v1/interpretations"
         case .createInterpretation:
@@ -73,7 +77,7 @@ enum InterpretationRoute: Equatable, Sendable {
         case let .phrases(vocabularyID):
             guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
-        case .vocabularyQuery, .createInterpretation, .createPhrase:
+        case .vocabularyQuery, .studyRecordsQuery, .createInterpretation, .createPhrase:
             break
         case let .updateInterpretation(recordID):
             guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }

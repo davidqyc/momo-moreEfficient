@@ -163,6 +163,17 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
     /// Reads of any kind: GETs plus the read-semantic batch vocabulary query.
     var readCount: Int { requests.filter { !$0.route.isMutating }.count }
     var vocabularyQueryCount: Int { requests.filter { $0.route == .vocabularyQuery }.count }
+    /// #164's Study-Records repair. An ordinary all-hit Preview must never
+    /// produce one of these.
+    var studyRecordsQueryCount: Int { requests.filter { $0.route == .studyRecordsQuery }.count }
+    var studyRecordsBodies: [[String: Any]] {
+        requests.filter { $0.route == .studyRecordsQuery }.compactMap {
+            guard let body = $0.body,
+                  let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            else { return nil }
+            return object
+        }
+    }
 }
 
 /// Holds one HTTP response until a test explicitly releases it. This makes the
@@ -335,6 +346,16 @@ func vocabularyResponse(_ id: String, _ spelling: String) -> StubbedResult {
 func vocabularyQueryResponse(_ records: [(id: String, spelling: String)]) -> StubbedResult {
     jsonResponse([
         "data": ["voc": records.map { ["id": $0.id, "spelling": $0.spelling] }],
+        "errors": [],
+        "success": true,
+    ])
+}
+
+/// One Study-Records response in the first-party `data.records` envelope, whose
+/// rows carry the documented `voc_id` / `voc_spelling` identity fields.
+func studyRecordsResponse(_ records: [(id: String, spelling: String)]) -> StubbedResult {
+    jsonResponse([
+        "data": ["records": records.map { ["voc_id": $0.id, "voc_spelling": $0.spelling] }],
         "errors": [],
         "success": true,
     ])

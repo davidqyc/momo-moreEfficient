@@ -158,6 +158,8 @@ final class TransportAndPlanningTests: XCTestCase {
                     (id: "INVALID_VOC_ONE", spelling: "one"),
                     (id: "INVALID_VOC_THREE", spelling: "three"),
                 ]),
+                // #164: the miss gets one Study repair, which proves nothing.
+                studyRecordsResponse([]),
                 interpretationsResponse([]),
                 interpretationsResponse([
                     interpretation("INVALID_RECORD_THREE", "n. 三"),
@@ -172,7 +174,12 @@ final class TransportAndPlanningTests: XCTestCase {
         XCTAssertEqual(snapshot.presentation.rows[1].reason, "VOCABULARY_NOT_FOUND")
         XCTAssertEqual(snapshot.presentation.rows[1].compactBlockedReason, "未读取到可用词条目标")
         XCTAssertNil(snapshot.items[1].vocabularyID)
-        XCTAssertEqual(transport.requests.count, 3, "no unresolved entry costs a content read")
+        XCTAssertEqual(
+            transport.requests.count,
+            4,
+            "one batch query, one Study repair, and no content read for the unresolved entry"
+        )
+        XCTAssertEqual(transport.requests[1].route, .studyRecordsQuery)
         XCTAssertEqual(transport.postCount, 0)
     }
 

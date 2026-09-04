@@ -178,6 +178,18 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
                 "success": true,
             ])
 
+        case .studyRecordsQuery:
+            // The rehearsal's batch query resolves every spelling, so #164's
+            // Study repair is unreachable here by construction. Answering with
+            // an empty record set keeps that true and fail-closed even if a
+            // future rehearsal batch ever does miss: it can only leave the
+            // spelling blocked, never invent a rehearsal-only target.
+            return try json([
+                "data": ["records": [Any]()],
+                "errors": [],
+                "success": true,
+            ])
+
         case let .interpretations(vocabularyID):
             return try json(["interpretations": records(for: vocabularyID)])
 

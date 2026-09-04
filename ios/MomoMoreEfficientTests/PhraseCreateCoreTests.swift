@@ -358,6 +358,8 @@ final class PhraseCreateCoreTests: XCTestCase {
             results: [
                 // The batch resolution simply has no record for "missingword".
                 vocabularyQueryResponse([(id: "INVALID_VOC_ACQUISITION", spelling: "acquisition")]),
+                // #164: the miss gets one Study repair, which proves nothing.
+                studyRecordsResponse([]),
                 phrasesResponse([]),
             ]
         )
@@ -366,7 +368,12 @@ final class PhraseCreateCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.items[0].reason, "VOCABULARY_NOT_FOUND")
         XCTAssertNil(snapshot.items[0].vocabularyID)
         XCTAssertEqual(snapshot.items[1].vocabularyID, "INVALID_VOC_ACQUISITION")
-        XCTAssertEqual(transport.readCount, 2, "no unresolved entry costs a content read")
+        XCTAssertEqual(
+            transport.readCount,
+            3,
+            "one batch query, one Study repair, and no content read for the unresolved entry"
+        )
+        XCTAssertEqual(transport.requests[1].route, .studyRecordsQuery)
         XCTAssertEqual(transport.postCount, 0)
     }
 

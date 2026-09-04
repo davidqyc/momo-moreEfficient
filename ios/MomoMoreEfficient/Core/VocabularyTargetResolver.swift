@@ -51,6 +51,24 @@ struct VocabularyResolution: Equatable, Sendable {
 /// note/mnemonic support reuses this resolver rather than starting a second
 /// target-resolution stack.
 ///
+/// Resolution is batch-first with one bounded Study-Records repair:
+///
+/// ```text
+/// POST /vocabulary/query for every unique spelling
+/// -> every safe batch hit is final
+/// -> every batch match anomaly stays blocked
+/// -> only true batch misses reach POST /study/query_study_records
+/// -> at most one Study request per <=1000 unique missed spellings
+/// ```
+///
+/// The fallback exists because a batch-query miss is not proof that the word is
+/// unavailable on every public surface: a real, already-existing self-added
+/// vocabulary item blocked in an authenticated physical Preview on the
+/// query-only design, and again on a per-spelling exact GET. Study Records is
+/// the last public first-party surface that carries a vocabulary identity for a
+/// spelling. An all-hit batch — the ordinary Preview — issues no Study request
+/// at all, so the #167/#168 request shape is unchanged.
+///
 /// Safety shape — the official resolver's spelling-map pattern, made stricter
 /// where this product's write targets require it:
 ///
@@ -60,6 +78,8 @@ struct VocabularyResolution: Equatable, Sendable {
 ///   to the requested spelling under the project's normalization;
 /// - missing, duplicated, mismatched or unsafe identities fail closed as a
 ///   blocked item, and no ID is ever guessed;
+/// - the fallback may only ever turn a true miss into a *proven* target or a
+///   contradiction; it can never relax a verdict the batch already reached;
 /// - global transport/auth/rate-limit/server failures still abort the whole
 ///   read plan exactly as the per-item path does.
 ///
@@ -96,12 +116,58 @@ struct VocabularyTargetResolver {
             reconcile(records, requested: chunk, into: &byNormalized)
         }
 
+        try await repairTrueMisses(
+            in: &byNormalized,
+            requestOrder: requestOrder,
+            control: control
+        )
+
         return VocabularyResolution(
             outcomes: spellings.map { byNormalized[normalize($0)] ?? .blocked(.notFound) }
         )
     }
 
-    /// Binds returned identities to requested spellings.
+    /// Asks Study Records about the spellings the vocabulary batch genuinely had
+    /// no record for.
+    ///
+    /// Only a true `.notFound` is eligible. A batch hit keeps the target it
+    /// already proved, and `.matchAnomaly` is a contradiction the batch
+    /// established: a second surface must never be allowed to overwrite it with
+    /// a more convenient answer. Deduplication in `resolve` means one Study
+    /// request covers up to 1000 distinct missed spellings however many input
+    /// rows named them, and an all-hit batch sends none at all. A malformed
+    /// batch response never reaches here — it threw, and the whole plan aborted
+    /// with it.
+    ///
+    /// Study rows are reconciled by the *same* `reconcile` the batch uses, into
+    /// a per-chunk scratch map. That is what keeps the repair strictly additive:
+    /// every spelling in the chunk is currently `.notFound`, so merging the
+    /// scratch map back can only leave it `.notFound`, prove a unique safe
+    /// target, or block it as an anomaly.
+    private func repairTrueMisses(
+        in byNormalized: inout [String: VocabularyTargetOutcome],
+        requestOrder: [String],
+        control: ExecutionControl?
+    ) async throws {
+        let misses = requestOrder.filter {
+            byNormalized[normalize($0)] == .blocked(.notFound)
+        }
+        guard !misses.isEmpty else { return }
+
+        // Sequential, one request per chunk, on the same shared scheduler as
+        // every other read. No read concurrency, no retry, no persistence.
+        for chunk in chunks(of: misses, size: CompanionConstants.studyRecordsChunkSize) {
+            let records = try await api.studyRecords(spellings: chunk, control: control)
+            var repaired: [String: VocabularyTargetOutcome] = [:]
+            reconcile(records, requested: chunk, into: &repaired)
+            for (normalized, outcome) in repaired {
+                byNormalized[normalized] = outcome
+            }
+        }
+    }
+
+    /// Binds returned identities to requested spellings, for both the
+    /// vocabulary batch query and the Study-Records repair.
     ///
     /// A record whose normalized spelling was not requested is ignored: it
     /// cannot bind any input row, and treating an unknown extra record as a
@@ -141,8 +207,10 @@ struct VocabularyTargetResolver {
         BatchParser.normalizeSpelling(spelling)
     }
 
-    private func chunks(of spellings: [String]) -> [[String]] {
-        let size = CompanionConstants.vocabularyQueryChunkSize
+    private func chunks(
+        of spellings: [String],
+        size: Int = CompanionConstants.vocabularyQueryChunkSize
+    ) -> [[String]] {
         return stride(from: 0, to: spellings.count, by: size).map {
             Array(spellings[$0..<min($0 + size, spellings.count)])
         }
