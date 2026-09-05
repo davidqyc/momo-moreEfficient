@@ -37,6 +37,23 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var selectedTags: [String] = []
     @Published private(set) var isValidatingCredential = false
     @Published private(set) var tokenErrorMessage: String?
+    /// The one application-level provider operation lane.
+    ///
+    /// The shared `RequestWindowScheduler` is a *rate ledger*: it paces requests
+    /// against the documented windows, but it is not proof that only one request
+    /// is in flight across independent callers. This is that proof. Credential
+    /// validation, Preview, authorized writes and batch Query all take the lane
+    /// before they dispatch, so incompatible provider work can never overlap by
+    /// accident.
+    @Published private(set) var activeProviderOperation: ProviderOperationKind?
+    /// The stable account identity account-derived truth is keyed to.
+    ///
+    /// Deliberately *not* the session UUID and not `isConnected`: see
+    /// `AccountIdentity`. Only an explicit, successful connect / replacement /
+    /// removal changes it.
+    @Published private(set) var accountIdentity = AccountIdentity.disconnected
+
+    var accountFingerprint: String? { accountIdentity.fingerprint }
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -69,6 +86,64 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// credential was then torn down. It is deliberately NOT executable in this
     /// state; `enterForeground()` revalidates it before restoring it.
     private var suspendedPreview: SuspendedPreview?
+
+    /// Whether any provider work currently owns the operation lane.
+    var isProviderLaneBusy: Bool { activeProviderOperation != nil }
+
+    /// Takes the lane, or reports that another operation already owns it.
+    @discardableResult
+    private func beginProviderOperation(_ kind: ProviderOperationKind) -> Bool {
+        guard activeProviderOperation == nil else { return false }
+        activeProviderOperation = kind
+        return true
+    }
+
+    private func endProviderOperation(_ kind: ProviderOperationKind) {
+        guard activeProviderOperation == kind else { return }
+        activeProviderOperation = nil
+    }
+
+    /// The whole read seam batch Query is given.
+    ///
+    /// Query owns its own input, rows, per-cell state, filters and run control.
+    /// It never touches the Keychain, never builds a second `CredentialSession`,
+    /// never creates a second `RequestWindowScheduler`, and has no write
+    /// authority: this hands back a transport built from *this* owner's
+    /// credential lease and *this* owner's shared scheduler, plus the account
+    /// identity the resulting truth belongs to.
+    ///
+    /// Returns `nil` when the lane is already busy or there is no connection, so
+    /// Query simply does not start rather than racing another operation.
+    func beginQueryRead() -> QueryReadLease? {
+        guard isConnected,
+              let fingerprint = credentialSession.fingerprint,
+              let lease = try? credentialSession.makeOperationLease(),
+              beginProviderOperation(.query)
+        else {
+            return nil
+        }
+        return QueryReadLease(
+            api: MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
+            ),
+            credentialFingerprint: fingerprint,
+            lease: lease,
+            onFinish: { [weak self] in
+                self?.endProviderOperation(.query)
+            }
+        )
+    }
+
+    /// A 401 seen by Query is a session failure exactly as it is anywhere else:
+    /// the session disconnects and the Owner is routed to Settings. It is *not*
+    /// an account identity change, so `accountFingerprint` is untouched and the
+    /// completed Query rows stay truthful.
+    func handleQueryAuthenticationRejection() {
+        handleSessionFailure(.authenticationRejected)
+    }
 
     private struct ArmedApprovalIntent {
         let approval: NativeApproval
@@ -143,12 +218,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// Validates a candidate independently. The active session and Keychain value
     /// are untouched until the documented authenticated GET succeeds.
     func connect(token: String) async -> Bool {
-        guard !isBusy, !isValidatingCredential else { return false }
+        guard !isBusy, !isValidatingCredential,
+              beginProviderOperation(.credentialValidation)
+        else {
+            return false
+        }
         var normalized = InMemoryCredential.normalize(token)
         defer { normalized.removeAll(keepingCapacity: false) }
         isValidatingCredential = true
         tokenErrorMessage = nil
         defer {
+            endProviderOperation(.credentialValidation)
             isValidatingCredential = false
             if owesBackgroundTeardown {
                 owesBackgroundTeardown = false
@@ -168,6 +248,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             credentialSession.replace(with: candidate)
             sessionID = UUID()
             isConnected = true
+            // A successful connect or replacement is a real identity change,
+            // even when the Owner re-enters the same Token after a rejection.
+            accountIdentity = AccountIdentity(
+                fingerprint: candidate.fingerprint,
+                authorityGeneration: accountIdentity.authorityGeneration + 1
+            )
             invalidatePreview()
             errorMessage = nil
             tokenErrorMessage = nil
@@ -198,6 +284,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             try tokenStore.saveToken(candidate)
             sessionID = UUID()
             isConnected = true
+            accountIdentity = AccountIdentity(
+                fingerprint: credentialSession.fingerprint,
+                authorityGeneration: accountIdentity.authorityGeneration + 1
+            )
             errorMessage = nil
             invalidatePreview()
         } catch let error as CompanionError {
@@ -217,8 +307,15 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             credentialSession.disconnect()
             sessionID = nil
             isConnected = false
+            // Removal succeeded: this is a real identity change.
+            accountIdentity = AccountIdentity(
+                fingerprint: nil,
+                authorityGeneration: accountIdentity.authorityGeneration + 1
+            )
             errorMessage = nil
         } catch {
+            // Nothing was deleted, so the connection state stays truthful and the
+            // account identity is unchanged.
             errorMessage = CompanionError.credentialStorageUnavailable.description
         }
     }
@@ -280,7 +377,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     func previewCurrentInput() async {
-        guard !isBusy else { return }
+        guard !isBusy, beginProviderOperation(.preview) else { return }
         let mode = contentMode
         let preserveStalePresentationOnFailure = isPreviewStale && activePreviewExists
         isBusy = true
@@ -304,6 +401,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             if activeControl === control { activeControl = nil }
             isPreviewing = false
             isBusy = false
+            endProviderOperation(.preview)
             previewProgress = nil
         }
 
@@ -498,7 +596,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     @discardableResult
     func executeConfirmedPhrase() -> Task<Void, Never>? {
-        guard !isBusy else { return nil }
+        guard !isBusy, !isProviderLaneBusy else { return nil }
         let intent = consumeArmedPhraseApproval()
         guard contentMode == .phrase,
               let displayed = phraseSnapshot,
@@ -525,6 +623,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
         isBusy = true
         isExecuting = true
+        beginProviderOperation(.write)
         executionStage = .securing
         errorMessage = nil
         historyErrorMessage = nil
@@ -609,6 +708,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         activeControl = nil
         isBusy = false
         isExecuting = false
+        endProviderOperation(.write)
         executionStage = nil
         invalidatePreview()
 
@@ -641,7 +741,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// second user gesture between them.
     @discardableResult
     func executeConfirmedWholePlan() -> Task<Void, Never>? {
-        guard !isBusy else { return nil }
+        guard !isBusy, !isProviderLaneBusy else { return nil }
         let intent = consumeArmedBatchApproval()
         guard let displayed = snapshot,
               let currentSessionID = sessionID,
@@ -667,6 +767,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
         isBusy = true
         isExecuting = true
+        beginProviderOperation(.write)
         // Visible immediately, before the first await. The whole-batch preflight
         // that follows is a real network pass over every approved item; it is only
         // its *presentation* that is collapsed to one compact stage.
@@ -773,6 +874,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         activeControl = nil
         isBusy = false
         isExecuting = false
+        endProviderOperation(.write)
         executionStage = nil
         invalidatePreview()
         if !receipts.isEmpty,
@@ -916,7 +1018,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     @discardableResult
     func executeConfirmed(_ group: OperationGroup) -> Task<Void, Never>? {
-        guard !isBusy else { return nil }
+        guard !isBusy, !isProviderLaneBusy else { return nil }
         let intent = consumeArmedApproval()
         guard let displayed = snapshot,
               let currentSessionID = sessionID,
@@ -945,6 +1047,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
         isBusy = true
         isExecuting = true
+        beginProviderOperation(.write)
         // Visible immediately, before the first await, so the UI never sits in an
         // unexplained disabled state.
         executionStage = .securing
@@ -1057,6 +1160,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         activeControl = nil
         isBusy = false
         isExecuting = false
+        endProviderOperation(.write)
         executionStage = nil
         invalidatePreview()
         if let completedReceipt, completedReceipt.isFullSuccess {
@@ -1489,9 +1593,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func restoreCredentialIfAvailable() async {
-        guard !credentialSession.isConnected, !isValidatingCredential else { return }
+        guard !credentialSession.isConnected, !isValidatingCredential,
+              beginProviderOperation(.credentialValidation)
+        else {
+            return
+        }
         isValidatingCredential = true
-        defer { isValidatingCredential = false }
+        defer {
+            endProviderOperation(.credentialValidation)
+            isValidatingCredential = false
+        }
         do {
             guard var token = try tokenStore.loadToken() else {
                 isConnected = false
@@ -1508,6 +1619,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             credentialSession.replace(with: candidate)
             sessionID = UUID()
             isConnected = true
+            // Restoring the *same* saved Token is the same account. The
+            // authority generation deliberately does NOT advance here, so a
+            // foreground restore never clears an account-derived Query result.
+            accountIdentity.fingerprint = candidate.fingerprint
             if tokenErrorMessage == nil { errorMessage = nil }
         } catch let error as CompanionError {
             credentialSession.disconnect()

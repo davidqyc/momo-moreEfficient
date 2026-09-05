@@ -169,6 +169,9 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
     /// Reads of any kind: GETs plus the read-semantic batch vocabulary query.
     var readCount: Int { requests.filter { !$0.route.isMutating }.count }
     var vocabularyQueryCount: Int { requests.filter { $0.route == .vocabularyQuery }.count }
+    func count(of route: InterpretationRoute) -> Int {
+        requests.filter { $0.route == route }.count
+    }
 }
 
 /// Holds one HTTP response until a test explicitly releases it. This makes the
@@ -212,6 +215,135 @@ actor GatedHTTPTransport: HTTPTransport {
     var getCount: Int { requests.filter { $0.route.method == .get }.count }
     var readCount: Int { requests.filter { !$0.route.isMutating }.count }
     var postCount: Int { requests.filter(\.route.isMutating).count }
+}
+
+/// Serves queued responses in order, then **parks** the next request until the
+/// test releases it.
+///
+/// This is how a Query run is stopped at an exact request boundary: let the
+/// first N reads complete, wait for the run to park on the next one, stop the
+/// store, then release. Running out of stubs is a deliberate control point here,
+/// not a test failure.
+actor SteppedHTTPTransport: HTTPTransport {
+    private var results: [StubbedResult]
+    private var parked: CheckedContinuation<TransportResponse, Error>?
+    private var parkWaiters: [CheckedContinuation<Void, Never>] = []
+    private var didPark = false
+    private(set) var requests: [TransportRequest] = []
+
+    init(_ results: [StubbedResult]) {
+        self.results = results
+    }
+
+    func send(
+        _ request: TransportRequest,
+        credential: OperationCredentialLease
+    ) async throws -> TransportResponse {
+        requests.append(request)
+        if !results.isEmpty {
+            switch results.removeFirst() {
+            case let .response(response): return response
+            case let .failure(error): throw error
+            }
+        }
+        didPark = true
+        parkWaiters.forEach { $0.resume() }
+        parkWaiters.removeAll()
+        return try await withCheckedThrowingContinuation { parked = $0 }
+    }
+
+    /// Resumes once the run has reached the first unstubbed request.
+    func waitUntilParked() async {
+        if didPark { return }
+        await withCheckedContinuation { parkWaiters.append($0) }
+    }
+
+    /// Releases the parked request. The default mirrors a request abandoned by
+    /// a stop.
+    func release(_ result: StubbedResult = .failure(.cancelled)) {
+        guard let parked else { return }
+        self.parked = nil
+        switch result {
+        case let .response(response): parked.resume(returning: response)
+        case let .failure(error): parked.resume(throwing: error)
+        }
+    }
+
+    var readCount: Int { requests.filter { !$0.route.isMutating }.count }
+    var postCount: Int { requests.filter(\.route.isMutating).count }
+    var vocabularyQueryCount: Int { requests.filter { $0.route == .vocabularyQuery }.count }
+    var routes: [InterpretationRoute] { requests.map(\.route) }
+}
+
+/// Observes how many requests are genuinely in flight at once.
+///
+/// The shared `RequestWindowScheduler` is a rate ledger, so its reservation
+/// entries alone cannot prove single-flight. This suspends inside `send` long
+/// enough for a second overlapping caller to be observed, and records the
+/// high-water mark — which is what the operation-lane tests actually assert.
+final class ConcurrencyObservingHTTPTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [StubbedResult]
+    private var inFlight = 0
+    private(set) var maximumConcurrentRequests = 0
+    private(set) var requests: [TransportRequest] = []
+
+    init(_ results: [StubbedResult]) {
+        self.results = results
+    }
+
+    func send(
+        _ request: TransportRequest,
+        credential: OperationCredentialLease
+    ) async throws -> TransportResponse {
+        lock.lock()
+        requests.append(request)
+        inFlight += 1
+        maximumConcurrentRequests = max(maximumConcurrentRequests, inFlight)
+        let next = results.isEmpty ? nil : results.removeFirst()
+        lock.unlock()
+
+        // Give any overlapping caller a real chance to be counted.
+        await Task.yield()
+        await Task.yield()
+
+        lock.lock()
+        inFlight -= 1
+        lock.unlock()
+
+        switch next {
+        case let .response(response): return response
+        case let .failure(error): throw error
+        case nil: throw CompanionError.transport
+        }
+    }
+
+    var readCount: Int { requests.filter { !$0.route.isMutating }.count }
+    var postCount: Int { requests.filter(\.route.isMutating).count }
+    func count(of route: InterpretationRoute) -> Int {
+        requests.filter { $0.route == route }.count
+    }
+}
+
+@MainActor
+func queryLease(
+    _ transport: HTTPTransport,
+    fingerprint: String = "QUERY_FP_1",
+    scheduler: RequestWindowScheduler = RequestWindowScheduler(),
+    onFinish: @escaping () -> Void = {}
+) throws -> QueryReadLease {
+    let lease = try credentialLease()
+    return QueryReadLease(
+        api: MaimemoTransport(
+            transport: transport,
+            credential: lease,
+            sleeper: RecordingSleeper(),
+            scheduler: scheduler
+        ),
+        credentialFingerprint: fingerprint,
+        lease: lease,
+        onFinish: onFinish
+    )
 }
 
 final class RecordingSleeper: RequestSleeper, @unchecked Sendable {
