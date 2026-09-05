@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-04
-sourceMainSha=df3f64479493e110df09e1f6e4f4e067e3ba84ee
+updatedAt=2026-09-05
+sourceMainSha=a5706e1206ec632d6684b094761168da09b465ed
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -18,13 +18,14 @@ LAST_MERGED_PR=#176
 LAST_MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
 LAST_MERGE_SCOPE=mechanical TestFlight build-number bump 3 -> 4 for app + ShareExtension only
 
-CURRENT_PRIMARY_ISSUE=#71
-CURRENT_PRIMARY_GATE=TESTFLIGHT_BUILD_1_0_4_PROCESSING_AND_FIRST_COHORT
-CURRENT_RELEASE_GATE_STATUS=UPLOAD_ACCEPTED_PROCESSING_PENDING
-CURRENT_BLOCKER=none; Apple delivery accepted exact build 1.0 (4), App Store Connect visibility not yet independently read back
-CURRENT_UNIQUE_NEXT=do not re-upload build 4; wait for Apple processing/visibility, then continue #71 first-small-cohort evidence without expanding tester/public-link/App-Review scope unless separately authorized
+CURRENT_PRIMARY_ISSUE=#161
+CURRENT_PRIMARY_GATE=FINAL_DESIGN_HANDOFF_ACCEPTED_READY_FOR_CLAUDE_CODE
+CURRENT_RELEASE_GATE_STATUS=UPLOAD_ACCEPTED_PROCESSING_PENDING_IN_PARALLEL
+CURRENT_BLOCKER=none; #161 final Design handoff accepted with Coordinator implementation corrections; TestFlight build 4 remains an independent passive processing/readback lane and must not be re-uploaded
+CURRENT_UNIQUE_NEXT=use Claude Design -> Claude Code native handoff to implement #161 from live main on an Issue branch, preserving the accepted Home/Settings/neutral Query/Contextual History/Capture design and stable write-safety floor
 
-IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=true_until_build4_processing_or_owner_changes_route
+IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=cleared_for_#161_by_owner_explicit_workflow_after_design_gate
+TESTFLIGHT_BUILD4_REUPLOAD_FORBIDDEN=true
 MACHINE_MIGRATION_HOLD=CLEARED
 NEW_MAC_WORKSPACE_READY=yes
 OLD_MAC_REPO_RETIREMENT_GATE=PASS
@@ -137,6 +138,48 @@ APP_STORE_REVIEW_SUBMITTED=no
 
 Apple's delivery payload recorded `cfBundleShortVersionString=1.0` and `cfBundleVersion=4`; Xcode did not renumber the build. App Store Connect/TestFlight UI visibility was not independently read back because no already-authenticated first-party UI/API surface was available in the Agent session. This is not a retry signal. Do not re-upload build 4.
 
+### #161 — final Design handoff accepted
+
+Owner-approved Design baseline:
+
+```text
+HOME=首页乙
+VISUAL_FAMILY=方案一「墨与米」
+SETTINGS_OWNS_ACCOUNT_MANAGEMENT=yes
+WORK_SURFACE_ACCOUNT_COPY=连接状态
+CONTEXTUAL_HISTORY=释义历史 / 例句历史
+QUERY_MODEL=neutral numeric 释义/例句/助记 status inspector
+QUERY_FILTER=user-composed AND predicates
+QUERY_HISTORY_V1=no
+CAPTURE_DIRECT_DESTINATIONS=转到释义编辑 / 转到例句编辑
+```
+
+Final Design handoff package was mechanically verified by the Coordinator:
+
+```text
+ZIP_INTEGRITY=PASS
+MANIFEST_HASH_AND_BYTE_MATCH=PASS
+UNIQUE_TRANSITION_IDS=136
+DUPLICATE_TRANSITION_IDS=0
+INTERACTION_COVERAGE=PASS
+```
+
+Coordinator implementation corrections before Code:
+
+```text
+1. write mode is state inside one write destination; do not encode the current 释义/例句 mode as persistent NavigationStack route identity. Home/Capture set the initial/current ContentMode, then navigate to one write destination. Contextual History may still carry ContentMode.
+2. Query detail v1 does not require created/updated timestamps unless a current first-party schema is explicitly verified for the corresponding list resource. Stable required fields remain the current proven text/tags/status/origin/type-style fields. Do not expand transport decoding merely to satisfy an optional timestamp line.
+```
+
+Publication preference is approved only for interpretations:
+
+```text
+公开=PUBLISHED
+未发布=UNPUBLISHED
+DO_NOT_LABEL_UNPUBLISHED_AS_PRIVATE=true
+PHRASE_OR_NOTE_PUBLICATION_SELECTOR_V1=no
+```
+
 ## Non-blocking tooling note
 
 `MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. Treat this as non-blocking tooling debt unless it causes recurring real friction.
@@ -159,22 +202,20 @@ NEW_MAC_WORKSPACE_READY=yes
 
 `artifacts/private/` remains local/private and must never be pushed for review or migration.
 
-## Release sequence
+## Active sequence
 
 ```text
-#167 merged
--> #168 merged/closed
--> #164 provider-resolution lane closed / Issue completed
--> capture exact-main physical RC PASS
--> PR #175 merged / #105 closed
--> PR #176 build 3 -> 4 merged
--> exact merged-main archive PASS
--> TestFlight 1.0 (4) upload ACCEPTED
--> Apple processing / build visibility
--> #71 first-small-cohort evidence   <-- CURRENT
-```
+TestFlight 1.0 (4) upload ACCEPTED
+-> Apple processing / first-small-cohort readback remains passive parallel lane; never re-upload build 4
 
-Planning may continue in parallel, but unrelated implementation remains on hold until build 4 processing is visible or the Owner explicitly changes the route.
+#161 product lane:
+final Design handoff PASS
+-> Claude Design -> Claude Code native handoff   <-- CURRENT
+-> implementation branch / Draft PR
+-> proportional tests + required fresh review for publication/readback semantic change
+-> Coordinator adjudication
+-> merge / physical smoke only where risk warrants
+```
 
 ## Stable safety boundaries
 
@@ -202,10 +243,8 @@ Fresh Chat takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #71 latest release comment
--> PR #176 merged state
--> Issue #105 final capture evidence
--> Issue #164 closed status
+-> Issue #161 latest Design/code-handoff comments
+-> Issue #71 latest release status only when release work resumes
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
 -> latest explicit Owner instruction
