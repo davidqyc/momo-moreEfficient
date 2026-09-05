@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-09-05
-sourceMainSha=a5706e1206ec632d6684b094761168da09b465ed
+sourceMainSha=1f44d29a488507c28108843880905da4127f32d3
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -224,7 +224,7 @@ final Design handoff PASS
 - fresh authenticated preflight when stale state could change the write target;
 - each changed item gets at most one mutating POST;
 - no automatic mutating-POST retry;
-- authenticated readback after dispatched mutation;
+- authenticated readback after dispatch;
 - uncertain mutation recovery is GET-only;
 - UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
