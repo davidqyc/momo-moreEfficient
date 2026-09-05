@@ -204,7 +204,7 @@ struct HistoryDetailView: View {
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {
-        GroupedRow(label: label) { RowValue(text: value) }
+        GroupedRow(label: label, accessibilityValue: value) { RowValue(text: value) }
     }
 
     private func diagnosticBlock(

@@ -106,6 +106,9 @@ struct QueryView: View {
                     .autocorrectionDisabled()
                     .frame(minHeight: 220)
                     .accessibilityLabel("批量查阅输入")
+                    .accessibilityHint(
+                        "每行一个词；也可用逗号或中文逗号分隔。不会拆开空格、- 或 /。"
+                    )
                     if store.inputText.isEmpty {
                         Text("每行一个词；也可用逗号或中文逗号分隔。不会拆开空格、- 或 /。")
                             .font(Theme.body)

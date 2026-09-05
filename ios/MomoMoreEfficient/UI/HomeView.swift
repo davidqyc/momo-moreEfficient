@@ -134,8 +134,12 @@ private struct HomeTile: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
+        // The name leads; the supporting lines are the value, so VoiceOver
+        // announces "释义录入" rather than one run-on phrase.
+        .accessibilityLabel(title)
+        .accessibilityValue(lines.joined(separator: "，"))
     }
 
     /// Tiles grow rather than truncate under larger type.
@@ -172,7 +176,9 @@ private struct QueryCard: View {
             .themedCard(radius: Theme.radiusTile)
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("批量查阅")
+        .accessibilityValue("一批词各有多少释义 / 例句 / 助记，只读取不写入")
     }
 }

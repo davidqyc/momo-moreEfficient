@@ -22,17 +22,32 @@ struct CaptureReviewView: View {
     private var isEmpty: Bool { trimmedText.isEmpty }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // A modal over whatever was underneath, with its own bar rather than a
+        // back control: the review is answered, not navigated away from. The
+        // `抓词` title and the nav-bar 取消 are the shape existing physical- and
+        // simulator-device regression tests already drive.
+        NavigationStack {
             VStack(alignment: .leading, spacing: Theme.gapM) {
                 header
                 editor
             }
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, Theme.gapM)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .themedScreen()
+            .navigationTitle("抓词")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", role: .cancel, action: onCancel)
+                        .accessibilityIdentifier(
+                            CaptureAccessibilityIdentifier.cancelButton
+                        )
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .themedScreen()
-        .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
+        .tint(Theme.ink)
     }
 
     private var header: some View {
@@ -109,11 +124,6 @@ struct CaptureReviewView: View {
                     onAccept(.phrase)
                 }
             }
-            Button("取消", role: .cancel, action: onCancel)
-                .font(Theme.body.weight(.semibold))
-                .foregroundStyle(Theme.ink)
-                .frame(maxWidth: .infinity, minHeight: Theme.minimumTarget)
-                .accessibilityIdentifier(CaptureAccessibilityIdentifier.cancelButton)
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, Theme.gapM)

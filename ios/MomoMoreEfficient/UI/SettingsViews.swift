@@ -28,6 +28,7 @@ struct SettingsRootView: View {
                     GroupedRow(
                         label: "录入偏好",
                         showsChevron: true,
+                        accessibilityValue: viewModel.writePreferenceSummary,
                         action: isBusy ? nil : { router.go(.preferences) }
                     ) {
                         RowValue(text: viewModel.writePreferenceSummary)
@@ -85,7 +86,7 @@ struct SettingsRootView: View {
                 + "不会上传给开发者或任何项目服务器。移除 Token 即断开连接。"
         ) {
             if viewModel.isConnected {
-                GroupedRow(label: "连接状态") {
+                GroupedRow(label: "连接状态", accessibilityValue: "已连接") {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.footnote)
@@ -110,7 +111,7 @@ struct SettingsRootView: View {
                 )
                 .opacity(isBusy ? 0.5 : 1)
             } else {
-                GroupedRow(label: "连接状态") {
+                GroupedRow(label: "连接状态", accessibilityValue: "未连接") {
                     HStack(spacing: 6) {
                         Circle()
                             .strokeBorder(Theme.textSecondary, lineWidth: 1.5)

@@ -501,6 +501,31 @@ final class BindingAndExecutionTests: XCTestCase {
             XCTAssertTrue(settings.contains(requiredCopy), requiredCopy)
         }
 
+        // Frozen Query copy. The separator-rule hint is reachable to VoiceOver
+        // as the input field's hint, which XCUITest cannot read back, so it is
+        // pinned here alongside the other decision-bearing Query strings.
+        let queryViews = try XCTUnwrap(sources["UI/QueryViews.swift"])
+        for requiredCopy in [
+            "每行一个词；也可用逗号或中文逗号分隔。不会拆开空格、- 或 /。",
+            "无法识别当前输入 · 请用换行或逗号分隔",
+            "连接墨墨账号后可查阅",
+            "只读取，不写入",
+            "账号已更换 · 请重新查阅",
+            "查阅仍在进行",
+            "停止并修改",
+            "停止并返回",
+            "继续查阅",
+            "不计为 0，也不参与数值筛选",
+            "来自刚才那次读取，不再发起新的请求；不可编辑、不保存、不显示原始 ID。",
+        ] {
+            XCTAssertTrue(queryViews.contains(requiredCopy), requiredCopy)
+        }
+        // Forbidden Query copy: the superseded malformed guidance, and framing a
+        // zero as a missing value.
+        for forbiddenCopy in ["请每行一个词", "缺失"] {
+            XCTAssertFalse(queryViews.contains(forbiddenCopy), forbiddenCopy)
+        }
+
         // The receipt detail keeps its sanitized share affordance.
         let history = try XCTUnwrap(sources["UI/HistoryViews.swift"])
         XCTAssertTrue(history.contains("复制或分享诊断信息"))

@@ -114,21 +114,37 @@ struct GroupedRow<Trailing: View>: View {
     let label: String
     var isDestructive = false
     var showsChevron = false
+    /// Spoken as the row's value. The row's *name* stays the label alone, so a
+    /// row is addressable by its title rather than by a merged phrase.
+    var accessibilityValue: String?
     var action: (() -> Void)?
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        Group {
-            if let action {
-                Button(action: action) { rowBody }
-                    .buttonStyle(.plain)
-            } else {
-                rowBody
-            }
+        // The accessibility identity goes on the Button itself. Wrapping a
+        // Button in an accessibility element instead produces a second, silent
+        // element that absorbs taps without activating anything.
+        if let action {
+            // Label/value only: a Button is already one element, and forcing
+            // `.accessibilityElement` on it drops the button trait, leaving the
+            // row unreachable to VoiceOver and to UI tests alike.
+            Button(action: action) { paddedRowBody }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label)
+                .accessibilityValue(accessibilityValue ?? "")
+        } else {
+            paddedRowBody
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+                .accessibilityValue(accessibilityValue ?? "")
         }
-        .frame(minHeight: Theme.rowMinHeight)
-        .padding(.horizontal, Theme.rowPaddingH)
-        .contentShape(Rectangle())
+    }
+
+    private var paddedRowBody: some View {
+        rowBody
+            .frame(minHeight: Theme.rowMinHeight)
+            .padding(.horizontal, Theme.rowPaddingH)
+            .contentShape(Rectangle())
     }
 
     private var rowBody: some View {
@@ -173,12 +189,14 @@ extension GroupedRow where Trailing == EmptyView {
         label: String,
         isDestructive: Bool = false,
         showsChevron: Bool = false,
+        accessibilityValue: String? = nil,
         action: (() -> Void)? = nil
     ) {
         self.init(
             label: label,
             isDestructive: isDestructive,
             showsChevron: showsChevron,
+            accessibilityValue: accessibilityValue,
             action: action,
             trailing: { EmptyView() }
         )
@@ -339,6 +357,9 @@ struct SegmentControl<Value: Hashable>: View {
             in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
         .opacity(isEnabled ? 1 : 0.6)
+        // `.contain`, not `.ignore`: a caller may name the group, but each
+        // segment must stay individually addressable and readable.
+        .accessibilityElement(children: .contain)
     }
 
     private func segmentForeground(isSelected: Bool) -> Color {
