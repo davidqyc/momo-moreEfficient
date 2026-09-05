@@ -1,5 +1,18 @@
 import Foundation
 
+/// The accessibility identifiers physical- and simulator-device Capture
+/// regression tests address the review surface by.
+///
+/// They are a validated external contract, not styling: `MomoMoreEfficientUITests`
+/// looks each one up by literal string, so the #161 Capture redesign re-homes the
+/// surface but must keep these values byte-identical. `RetrofitCharacterizationTests`
+/// pins them.
+enum CaptureAccessibilityIdentifier {
+    static let status = "captureReviewStatus"
+    static let textEditor = "captureReviewTextEditor"
+    static let cancelButton = "cancelCaptureButton"
+}
+
 /// The source-agnostic in-app boundary for text that still needs human review.
 ///
 /// This type deliberately owns no credential, transport, parser, Preview or write
@@ -16,6 +29,10 @@ final class CaptureReviewStore: ObservableObject {
         let sourceTitle: String?
         let capturedAt: Date
         let replacementCount: Int
+        /// Whether the Owner has edited this capture in the review surface. It
+        /// affects presentation only; the captured text is authoritative either
+        /// way, and editing never leaves this review.
+        var isEdited = false
 
         var replacedExistingReview: Bool { replacementCount > 0 }
     }
@@ -58,7 +75,9 @@ final class CaptureReviewStore: ObservableObject {
 
     func edit(_ text: String) {
         guard var review else { return }
+        guard text != review.text else { return }
         review.text = text
+        review.isEdited = true
         self.review = review
     }
 

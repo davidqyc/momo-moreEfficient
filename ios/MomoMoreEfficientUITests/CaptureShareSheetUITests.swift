@@ -38,14 +38,36 @@ final class CaptureShareSheetUITests: XCTestCase {
         // The system Share Sheet is presented modally over our own app; its
         // elements are queryable through the same XCUIApplication instance
         // — no coordinates, no assumption about row position.
-        let extensionRow = app.descendants(matching: .any)
+        //
+        // Since #161 the app's own Home also displays `小黑鸟伴侣` as its
+        // header, and that header sorts first in the hierarchy — so matching by
+        // label alone would resolve to a view the modal sheet is covering.
+        // Hittability disambiguates them without reintroducing a coordinate or
+        // row-position assumption: while the Share Sheet is presented, only the
+        // sheet's own row is actually tappable. (`hittable` is not a valid
+        // predicate key path, so the choice is made here rather than in the
+        // query.)
+        let candidates = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "小黑鸟伴侣"))
-            .firstMatch
         XCTAssertTrue(
-            extensionRow.waitForExistence(timeout: 15),
+            candidates.firstMatch.waitForExistence(timeout: 15),
             "Share Sheet extension row for '小黑鸟伴侣' was not accessibility-selectable"
         )
-        extensionRow.tap()
+
+        var extensionRow: XCUIElement?
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            extensionRow = candidates
+                .allElementsBoundByAccessibilityElement
+                .first { $0.isHittable }
+            if extensionRow != nil { break }
+            _ = candidates.firstMatch.waitForExistence(timeout: 1)
+        }
+        let row = try XCTUnwrap(
+            extensionRow,
+            "No hittable '小黑鸟伴侣' element: the Share Sheet row was never selectable"
+        )
+        row.tap()
 
         // The extension's own UI runs in a separate process
         // (com.jiripple.xiaoheiniao.ShareExtension) but stays reachable

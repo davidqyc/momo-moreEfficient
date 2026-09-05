@@ -128,6 +128,10 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
     private struct StoredInterpretation {
         let text: String
         let tags: [String]
+        /// The rehearsal server echoes the exact status it was asked to write,
+        /// so a 未发布 rehearsal reads back truthfully instead of always
+        /// appearing PUBLISHED (#161).
+        let status: String
     }
 
     private struct StoredPhrase {
@@ -185,26 +189,33 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
             let payload = try interpretationPayload(request.body)
             guard let vocabularyID = payload["voc_id"] as? String,
                   let text = payload["interpretation"] as? String,
-                  let tags = payload["tags"] as? [String]
+                  let tags = payload["tags"] as? [String],
+                  let status = payload["status"] as? String,
+                  InterpretationPublicationStatus.isDocumentedWriteStatus(status)
             else {
                 return TransportResponse(status: 400, body: Data("{}".utf8))
             }
-            store(text, tags: tags, for: vocabularyID)
+            store(text, tags: tags, status: status, for: vocabularyID)
             return try json([:], status: 201)
 
         case let .updateInterpretation(recordID):
             let payload = try interpretationPayload(request.body)
             guard let text = payload["interpretation"] as? String,
                   let tags = payload["tags"] as? [String],
+                  let status = payload["status"] as? String,
+                  InterpretationPublicationStatus.isDocumentedWriteStatus(status),
                   let vocabularyID = vocabularyID(forRecord: recordID)
             else {
                 return TransportResponse(status: 400, body: Data("{}".utf8))
             }
-            store(text, tags: tags, for: vocabularyID)
+            store(text, tags: tags, status: status, for: vocabularyID)
             return try json([:])
 
         case let .phrases(vocabularyID):
             return try json(["phrases": phraseRecords(for: vocabularyID)])
+
+        case let .notes(vocabularyID):
+            return try json(["notes": noteRecords(for: vocabularyID)])
 
         case .createPhrase:
             let payload = try phrasePayload(request.body)
@@ -238,7 +249,8 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
         if RehearsalMode.seededExistingSpellings.contains(normalized) {
             stored[identifier] = StoredInterpretation(
                 text: "n. 演练用旧释义",
-                tags: ["考研"]
+                tags: ["考研"],
+                status: CompanionConstants.status
             )
         }
         return identifier
@@ -260,14 +272,40 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
                 "id": "REHEARSAL_REC_\(number)",
                 "interpretation": stored.text,
                 "tags": stored.tags,
-                "status": CompanionConstants.status,
+                "status": stored.status,
             ],
         ]
     }
 
-    private func store(_ text: String, tags: [String], for vocabularyID: String) {
+    /// Read-only rehearsal notes. There is no note write route, so this is
+    /// purely a deterministic read fixture for batch Query.
+    private func noteRecords(for vocabularyID: String) -> [[String: Any]] {
         lock.lock()
-        stored[vocabularyID] = StoredInterpretation(text: text, tags: tags)
+        defer { lock.unlock() }
+        guard stored[vocabularyID] != nil else { return [] }
+        let number = vocabularyID.dropFirst("REHEARSAL_VOC_".count)
+        return [
+            [
+                "id": "REHEARSAL_NOTE_\(number)",
+                "note_type": "MNEMONIC",
+                "note": "演练用助记",
+                "status": "PUBLISHED",
+            ],
+        ]
+    }
+
+    private func store(
+        _ text: String,
+        tags: [String],
+        status: String,
+        for vocabularyID: String
+    ) {
+        lock.lock()
+        stored[vocabularyID] = StoredInterpretation(
+            text: text,
+            tags: tags,
+            status: status
+        )
         lock.unlock()
     }
 
