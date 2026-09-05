@@ -3,15 +3,21 @@ import Foundation
 struct PreflightPlanner {
     let api: MaimemoTransport
 
+    /// - Parameter status: the intended interpretation publication status.
+    ///   Defaults to the legacy shared constant, so pre-#161 callers and the
+    ///   default preference produce byte-identical snapshots. It participates in
+    ///   classification, so a record differing only in status is an `更新`.
     func buildSnapshot(
         entries: [BatchEntry],
         tags: [String],
+        status: String = CompanionConstants.status,
         credentialFingerprint: String,
         control: ExecutionControl? = nil,
         onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PreviewSnapshot {
         guard !entries.isEmpty,
-              (try? WriteTagPreference.canonicalized(tags)) == tags
+              (try? WriteTagPreference.canonicalized(tags)) == tags,
+              InterpretationPublicationStatus.isDocumentedWriteStatus(status)
         else {
             throw CompanionError.inputRejected
         }
@@ -62,7 +68,8 @@ struct PreflightPlanner {
                             entry: entry,
                             classification: baseline.matchesIntendedState(
                                 entry.interpretation,
-                                tags: tags
+                                tags: tags,
+                                status: status
                             )
                                 ? .alreadyMatching
                                 : .update,
@@ -115,7 +122,8 @@ struct PreflightPlanner {
             accountMode: CompanionConstants.accountMode,
             bindingContext: try ConfirmationBinding.makePreviewBindingContext(
                 items: planned,
-                tags: tags
+                tags: tags,
+                status: status
             ),
             items: planned,
             presentation: presentation

@@ -62,6 +62,70 @@ enum WriteTagPreference {
     }
 }
 
+/// The interpretation publication status the Owner intends to write (#161).
+///
+/// Deliberately *not* a relaxation of `CompanionConstants.status`, which stays
+/// the immutable legacy/shared constant the phrase path and every default write
+/// still bind to. This is a separate, explicitly allowlisted value threaded
+/// through the interpretation Preview snapshot → binding context → digest →
+/// fresh preflight → request body → authenticated readback chain.
+///
+/// `UNPUBLISHED` is the provider's own status name, proven by the current
+/// first-party `maimemo/memo-api-cli` interpretation contract. It is never
+/// presented as `私密`: the public contract does not establish that it means
+/// "private", only that it is a documented non-published state.
+enum InterpretationPublicationStatus: String, Codable, CaseIterable, Equatable, Sendable {
+    case published = "PUBLISHED"
+    case unpublished = "UNPUBLISHED"
+
+    /// The exact set a create/update request may carry. Anything else fails
+    /// closed rather than being forwarded to the provider.
+    static let documentedWriteStatuses: Set<String> = Set(
+        allCases.map(\.rawValue)
+    )
+
+    static func isDocumentedWriteStatus(_ status: String) -> Bool {
+        documentedWriteStatuses.contains(status)
+    }
+
+    init?(providerStatus: String) {
+        guard let value = InterpretationPublicationStatus(rawValue: providerStatus) else {
+            return nil
+        }
+        self = value
+    }
+
+    var providerStatus: String { rawValue }
+    var label: String { self == .published ? "公开" : "未发布" }
+}
+
+/// The device-local interpretation publication preference.
+///
+/// Non-sensitive local preference data stored exactly like `WriteTagPreference`:
+/// no remote state, credential state or History record participates. The default
+/// preserves today's behavior, so an app that has never seen this preference
+/// writes precisely what it wrote before.
+enum InterpretationPublicationPreference {
+    static let userDefaultsKey = "interpretation-publication-preference-v1"
+    static let `default` = InterpretationPublicationStatus.published
+
+    static func load(from defaults: UserDefaults) -> InterpretationPublicationStatus {
+        guard let stored = defaults.string(forKey: userDefaultsKey),
+              let value = InterpretationPublicationStatus(rawValue: stored)
+        else {
+            return `default`
+        }
+        return value
+    }
+
+    static func save(
+        _ status: InterpretationPublicationStatus,
+        to defaults: UserDefaults
+    ) {
+        defaults.set(status.rawValue, forKey: userDefaultsKey)
+    }
+}
+
 enum ContentMode: String, CaseIterable, Equatable, Sendable {
     case interpretation
     case phrase
@@ -706,13 +770,54 @@ struct InterpretationRecord: Equatable, Sendable {
     let tags: [String]
     let status: String
 
-    func matchesIntendedState(_ proposed: String, tags intendedTags: [String]) -> Bool {
+    /// Whether this stored record already *is* the intended state.
+    ///
+    /// Status participates (#161): a record equal in text and tags but carrying a
+    /// different publication status is not `一致`, it is an `更新`. Without this,
+    /// a requested 公开 → 未发布 change would silently no-op.
+    ///
+    /// `intendedStatus` defaults to the legacy shared constant, so every existing
+    /// caller — and every default-preference write — keeps exactly today's
+    /// meaning.
+    func matchesIntendedState(
+        _ proposed: String,
+        tags intendedTags: [String],
+        status intendedStatus: String = CompanionConstants.status
+    ) -> Bool {
         interpretation == proposed
             && tags.count == intendedTags.count
             && Set(tags).count == intendedTags.count
             && Set(tags) == Set(intendedTags)
-            && status == CompanionConstants.status
+            && status == intendedStatus
     }
+}
+
+/// One safely decoded note (助记) record.
+///
+/// Read-only. The shape mirrors the current first-party contract
+/// (`maimemo/memo-api-cli` `src/types/note.ts`, itself mirroring
+/// `maimemo/openapi/note/v1/note.proto`): `id`, `note_type`, `note`, `status`,
+/// with optional created/updated times this product does not need. #161 adds no
+/// note mutation route, so nothing here participates in write planning.
+struct NoteRecord: Equatable, Sendable {
+    /// The documented note statuses. `UNSPECIFIED` is documented but carries no
+    /// safe meaning for counting, so it is decoded and then treated as an
+    /// inability rather than silently counted or dropped.
+    static let documentedStatuses = [
+        "NOTE_STATUS_UNSPECIFIED", "PUBLISHED", "DELETED",
+    ]
+
+    let id: String
+    let noteType: String
+    let note: String
+    let status: String
+
+    /// `PUBLISHED` is the only status that counts as an active note.
+    var isActive: Bool { status == "PUBLISHED" }
+    /// `DELETED` is decoded, then deliberately excluded from the count.
+    var isDeleted: Bool { status == "DELETED" }
+    /// A documented-but-unsafe status must never become a `0`.
+    var hasUnsafeStatusForCounting: Bool { !isActive && !isDeleted }
 }
 
 struct PrivatePreflightItem: Equatable, Sendable {

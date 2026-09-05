@@ -372,7 +372,8 @@ func makeSnapshot(
     document: String,
     results: [StubbedResult],
     token: String = fakeToken,
-    tags: [String] = []
+    tags: [String] = [],
+    status: String = CompanionConstants.status
 ) async throws -> (PreviewSnapshot, FakeHTTPTransport, RecordingSleeper) {
     let batch = try BatchParser.parseDailyInput(document)
     let transport = FakeHTTPTransport(results)
@@ -382,10 +383,44 @@ func makeSnapshot(
     let snapshot = try await PreflightPlanner(api: api).buildSnapshot(
         entries: batch.entries,
         tags: tags,
+        status: status,
         credentialFingerprint: lease.fingerprint
     )
     lease.clear()
     return (snapshot, transport, sleeper)
+}
+
+func notesResponse(_ records: [[String: Any]]) -> StubbedResult {
+    jsonResponse(["notes": records])
+}
+
+func note(
+    _ id: String,
+    _ text: String,
+    type: String = "MNEMONIC",
+    status: String = "PUBLISHED"
+) -> [String: Any] {
+    ["id": id, "note_type": type, "note": text, "status": status]
+}
+
+func phraseRecordPayload(
+    _ id: String,
+    english: String,
+    chinese: String = "中文",
+    origin: String = "",
+    status: String = "PUBLISHED"
+) -> [String: Any] {
+    [
+        "id": id,
+        "phrase": english,
+        "interpretation": chinese,
+        "origin": origin,
+        "status": status,
+    ]
+}
+
+func phrasesResponse(_ records: [[String: Any]]) -> StubbedResult {
+    jsonResponse(["phrases": records])
 }
 
 struct GoldenFile: Decodable {

@@ -255,6 +255,55 @@ final class MaimemoTransport {
         }
     }
 
+    /// The strict read-only notes list used by batch Query (#161).
+    ///
+    /// Deliberately the smallest possible extension of this transport family: the
+    /// same authenticated path, the same shared scheduler, the same one-level
+    /// `data` envelope tolerance the vocabulary/interpretation/phrase decoders
+    /// already apply, and the same fail-closed rule — an unrecognised envelope is
+    /// a whole-response rejection, and an unrecognised record is an item
+    /// rejection. There is no notes mutation route, and nothing here is ever
+    /// guessed or synthesised.
+    ///
+    /// Records are returned *whole*, including `DELETED` ones. Deciding what
+    /// counts is Query's own pure projection, never this shared transport
+    /// (adjudication finding 7).
+    func notes(
+        vocabularyID: String,
+        control: ExecutionControl? = nil
+    ) async throws -> [NoteRecord] {
+        let response = try await read(
+            route: .notes(vocabularyID: vocabularyID),
+            control: control,
+            readback: false
+        )
+        let object = try jsonObject(response.body)
+        let container = (object["notes"] != nil
+            ? object
+            : object["data"] as? [String: Any])
+        guard let values = container?["notes"] as? [[String: Any]] else {
+            throw CompanionError.responseRejected
+        }
+
+        var seen = Set<String>()
+        return try values.map { value in
+            guard let id = value["id"] as? String,
+                  isSafeIdentifier(id),
+                  seen.insert(id).inserted,
+                  let noteType = safeSingleLine(value["note_type"], maximumCharacters: 64),
+                  let note = value["note"] as? String,
+                  !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  note.unicodeScalars.count <= CompanionConstants.maxInterpretationCharacters,
+                  !containsDisallowedControlCharacter(note, allowingNewline: true),
+                  let status = value["status"] as? String,
+                  NoteRecord.documentedStatuses.contains(status)
+            else {
+                throw CompanionError.itemResponseRejected
+            }
+            return NoteRecord(id: id, noteType: noteType, note: note, status: status)
+        }
+    }
+
     func post(
         route: InterpretationRoute,
         body: Data,

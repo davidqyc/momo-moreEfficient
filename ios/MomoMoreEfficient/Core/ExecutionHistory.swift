@@ -42,6 +42,12 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
     let stopped: Bool
     let items: [ExecutionReceiptItem]
     let diagnosticEnvironment: DiagnosticEnvironment
+    /// The interpretation publication status this run intended to write (#161).
+    ///
+    /// Optional and backward-compatible on purpose: receipts written before
+    /// #161 simply do not carry it, and are never migrated or backfilled. It is
+    /// `nil` for phrase receipts, which have no publication selector.
+    let interpretationStatus: String?
 
     init(
         id: UUID = UUID(),
@@ -49,6 +55,7 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         contentKind: ReceiptContentKind = .interpretation,
         operationGroup: OperationGroup,
         selectedSpellings: [String],
+        interpretationStatus: String? = nil,
         result: ExecutionSummary,
         diagnosticEnvironment: DiagnosticEnvironment = .current
     ) {
@@ -57,6 +64,9 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         self.contentKind = contentKind
         self.operationGroup = operationGroup
         self.diagnosticEnvironment = diagnosticEnvironment
+        self.interpretationStatus = contentKind == .interpretation
+            ? interpretationStatus
+            : nil
         items = selectedSpellings.enumerated().map { index, spelling in
             ExecutionReceiptItem(
                 ordinal: result.results.indices.contains(index)
@@ -96,6 +106,7 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         contentKind = .phrase
         operationGroup = .create
         self.diagnosticEnvironment = diagnosticEnvironment
+        interpretationStatus = nil
         items = selectedSpellings.enumerated().map { index, spelling in
             ExecutionReceiptItem(
                 ordinal: result.results.indices.contains(index)
@@ -128,6 +139,7 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
         case id, timestamp, contentKind, operationGroup
         case succeeded, failed, unconfirmed, notAttempted, stopped, items
         case diagnosticEnvironment
+        case interpretationStatus
     }
 
     init(from decoder: Decoder) throws {
@@ -147,6 +159,24 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
             DiagnosticEnvironment.self,
             forKey: .diagnosticEnvironment
         ) ?? .legacy
+        // Absent in every pre-#161 archive; absence is not a decode failure and
+        // is never backfilled from a current preference.
+        interpretationStatus = try values.decodeIfPresent(
+            String.self,
+            forKey: .interpretationStatus
+        )
+    }
+
+    /// The user-facing publication value for this receipt, or `nil` when the
+    /// receipt predates #161 or is a phrase receipt.
+    var publicationLabel: String? {
+        guard contentKind == .interpretation,
+              let interpretationStatus,
+              let status = InterpretationPublicationStatus(providerStatus: interpretationStatus)
+        else {
+            return nil
+        }
+        return status.label
     }
 
     var isFullSuccess: Bool {
@@ -179,6 +209,9 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
             "内容：\(contentKind.displayLabel) [\(contentKind.rawValue)]",
             "操作：\(operationGroup == .create ? "新建" : "更新") [\(operationGroup.rawValue)]",
         ]
+        if let publicationLabel, let interpretationStatus {
+            lines.append("发布：\(publicationLabel) [\(interpretationStatus)]")
+        }
 
         for (index, item) in items.enumerated() {
             let ordinal = item.ordinal > 0 ? item.ordinal : index + 1

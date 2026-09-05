@@ -21,6 +21,9 @@ struct ConfirmationPlan {
     let group: OperationGroup
     let credentialFingerprint: String
     let tags: [String]
+    /// The approved interpretation publication status for this plan, taken from
+    /// the Preview snapshot's binding context — never from a live preference.
+    let status: String
     let items: [Item]
     let batchDigest: String
     let bindingDigest: String
@@ -85,11 +88,19 @@ struct BatchPlanApproval: Equatable, Sendable {
 }
 
 enum ConfirmationBinding {
+    /// Binds the Preview to the exact status it will write.
+    ///
+    /// `status` defaults to the legacy shared constant so every pre-#161 caller
+    /// keeps identical behavior and identical digests. An out-of-allowlist value
+    /// fails closed here, before it can reach a digest or a request body.
     static func makePreviewBindingContext(
         items: [PrivatePreflightItem],
-        tags: [String]
+        tags: [String],
+        status: String = CompanionConstants.status
     ) throws -> PreviewBindingContext {
-        guard try WriteTagPreference.canonicalized(tags) == tags else {
+        guard try WriteTagPreference.canonicalized(tags) == tags,
+              InterpretationPublicationStatus.isDocumentedWriteStatus(status)
+        else {
             throw CompanionError.inputRejected
         }
         let createItems = try confirmationItems(items, group: .create)
@@ -99,13 +110,17 @@ enum ConfirmationBinding {
             createPath: reviewedBindingPath(.create),
             updatePath: reviewedBindingPath(.update),
             tags: tags,
-            status: CompanionConstants.status,
+            status: status,
             createBatchDigest: createItems.isEmpty
                 ? nil
-                : try makeBatchDigest(items: createItems, group: .create, tags: tags),
+                : try makeBatchDigest(
+                    items: createItems, group: .create, tags: tags, status: status
+                ),
             updateBatchDigest: updateItems.isEmpty
                 ? nil
-                : try makeBatchDigest(items: updateItems, group: .update, tags: tags)
+                : try makeBatchDigest(
+                    items: updateItems, group: .update, tags: tags, status: status
+                )
         )
     }
 
@@ -172,13 +187,15 @@ enum ConfirmationBinding {
         let items = try confirmationItems(snapshot.items, group: group)
         guard !items.isEmpty else { throw CompanionError.blocked }
         let intendedTags = snapshot.bindingContext.tags
+        let intendedStatus = snapshot.bindingContext.status
         guard try WriteTagPreference.canonicalized(intendedTags) == intendedTags else {
             throw CompanionError.stalePreview
         }
         let batchDigest = try makeBatchDigest(
             items: items,
             group: group,
-            tags: intendedTags
+            tags: intendedTags,
+            status: intendedStatus
         )
         let expectedStoredDigest = group == .create
             ? snapshot.bindingContext.createBatchDigest
@@ -186,7 +203,10 @@ enum ConfirmationBinding {
         guard snapshot.bindingContext.host == CompanionConstants.productionBaseURL.absoluteString,
               snapshot.bindingContext.createPath == reviewedBindingPath(.create),
               snapshot.bindingContext.updatePath == reviewedBindingPath(.update),
-              snapshot.bindingContext.status == CompanionConstants.status,
+              // #161 relaxes this pin to an explicit documented allowlist and
+              // nothing wider: an unknown or undocumented status still fails
+              // closed here, before any digest, body or POST exists.
+              InterpretationPublicationStatus.isDocumentedWriteStatus(intendedStatus),
               expectedStoredDigest == batchDigest
         else {
             throw CompanionError.stalePreview
@@ -198,11 +218,13 @@ enum ConfirmationBinding {
             "method": "POST",
             "path": reviewedBindingPath(group),
             "tags": intendedTags,
-            "status": CompanionConstants.status,
+            "status": intendedStatus,
             "item_count": items.count,
             "batch_digest": batchDigest,
             "credential_fingerprint": snapshot.credentialFingerprint,
-            "items": items.map { boundItem($0, tags: intendedTags) },
+            "items": items.map {
+                boundItem($0, tags: intendedTags, status: intendedStatus)
+            },
         ]
         if group == .update { boundFields["no_op_count"] = 0 }
 
@@ -210,7 +232,7 @@ enum ConfirmationBinding {
         binding["account_label"] = CompanionConstants.accountLabel
         binding["vocabulary_ids"] = items.map(\.vocabularyID)
         binding["request_bodies"] = items.map {
-            requestBody($0, group: group, tags: intendedTags)
+            requestBody($0, group: group, tags: intendedTags, status: intendedStatus)
         }
         binding["write_policy"] = CompanionConstants.writePolicy
         binding["pricing_and_terms_checked"] = true
@@ -228,6 +250,7 @@ enum ConfirmationBinding {
             group: group,
             credentialFingerprint: snapshot.credentialFingerprint,
             tags: intendedTags,
+            status: intendedStatus,
             items: items,
             batchDigest: batchDigest,
             bindingDigest: bindingDigest,
@@ -263,7 +286,7 @@ enum ConfirmationBinding {
             "write_policy": CompanionConstants.writePolicy,
             "pricing_and_terms_checked": true,
             "tags": snapshot.bindingContext.tags,
-            "status": CompanionConstants.status,
+            "status": snapshot.bindingContext.status,
             "credential_fingerprint": snapshot.credentialFingerprint,
             // Commits the approval to the exact Preview the Owner was shown,
             // including its counts, classifications and baselines.
@@ -280,9 +303,13 @@ enum ConfirmationBinding {
                     // The per-group binding digest, verbatim. A later phase is
                     // admitted only by reproducing exactly this value.
                     "binding_digest": plan.bindingDigest,
-                    "items": plan.items.map { boundItem($0, tags: plan.tags) },
+                    "items": plan.items.map {
+                        boundItem($0, tags: plan.tags, status: plan.status)
+                    },
                     "request_bodies": plan.items.map {
-                        requestBody($0, group: plan.group, tags: plan.tags)
+                        requestBody(
+                            $0, group: plan.group, tags: plan.tags, status: plan.status
+                        )
                     },
                     "vocabulary_ids": plan.items.map(\.vocabularyID),
                     "record_ids": plan.items.compactMap { $0.baseline?.id },
@@ -319,12 +346,13 @@ enum ConfirmationBinding {
     static func requestBody(
         _ item: ConfirmationPlan.Item,
         group: OperationGroup,
-        tags: [String]
+        tags: [String],
+        status: String = CompanionConstants.status
     ) -> [String: Any] {
         var interpretation: [String: Any] = [
             "interpretation": item.interpretation,
             "tags": tags,
-            "status": CompanionConstants.status,
+            "status": status,
         ]
         if group == .create { interpretation["voc_id"] = item.vocabularyID }
         return ["interpretation": interpretation]
@@ -333,9 +361,12 @@ enum ConfirmationBinding {
     static func requestData(
         _ item: ConfirmationPlan.Item,
         group: OperationGroup,
-        tags: [String]
+        tags: [String],
+        status: String = CompanionConstants.status
     ) throws -> Data {
-        try canonicalData(requestBody(item, group: group, tags: tags))
+        try canonicalData(
+            requestBody(item, group: group, tags: tags, status: status)
+        )
     }
 
     static func digest(_ value: Any) throws -> String {
@@ -356,7 +387,8 @@ enum ConfirmationBinding {
     private static func makeBatchDigest(
         items: [ConfirmationPlan.Item],
         group: OperationGroup,
-        tags: [String]
+        tags: [String],
+        status: String = CompanionConstants.status
     ) throws -> String {
         try digest([
             "operation": operationName(group),
@@ -364,7 +396,7 @@ enum ConfirmationBinding {
             "method": "POST",
             "path": reviewedBindingPath(group),
             "tags": tags,
-            "status": CompanionConstants.status,
+            "status": status,
             "item_count": items.count,
             "items": items.map {
                 [
@@ -401,14 +433,15 @@ enum ConfirmationBinding {
 
     private static func boundItem(
         _ item: ConfirmationPlan.Item,
-        tags: [String]
+        tags: [String],
+        status: String = CompanionConstants.status
     ) -> [String: Any] {
         var value: [String: Any] = [
             "ordinal": item.ordinal,
             "spelling": item.spelling,
             "interpretation": item.interpretation,
             "tags": tags,
-            "status": CompanionConstants.status,
+            "status": status,
             "voc_id_fingerprint": item.vocabularyFingerprint,
         ]
         if let baseline = item.baseline, let fingerprint = item.recordFingerprint {
