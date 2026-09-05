@@ -410,11 +410,20 @@ final class BindingAndExecutionTests: XCTestCase {
         })
         let source = sources.values.joined(separator: "\n")
         for forbidden in [
-            "UIPasteboard", "os_log", "NSUbiquitousKeyValueStore",
+            "os_log", "NSUbiquitousKeyValueStore",
             "localStorage", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
         }
+        // #161's 复制当前 N 项 is the app's only clipboard write, and it copies
+        // nothing but the Owner's own matched spellings. Keep it confined to the
+        // Query results view so no other surface can start exporting data.
+        XCTAssertEqual(
+            Set(sources.compactMap { path, contents in
+                contents.contains("UIPasteboard") ? path : nil
+            }),
+            Set(["UI/QueryViews.swift"])
+        )
         for (path, contents) in sources where path != "Core/ExecutionHistory.swift" {
             XCTAssertFalse(contents.contains("FileManager.default"), path)
             XCTAssertFalse(contents.contains("write(to:"), path)
@@ -433,17 +442,24 @@ final class BindingAndExecutionTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(sources["Core/ExecutionHistory.swift"]).contains("selectedTags"))
         XCTAssertFalse(try XCTUnwrap(sources["Core/TokenStore.swift"]).contains("selectedTags"))
 
-        let contentView = try XCTUnwrap(sources["UI/ContentView.swift"])
-        XCTAssertFalse(contentView.contains("主账号"))
-        let staleStart = try XCTUnwrap(contentView.range(of: "private var stalePreviewRow"))
+        // No *user-facing* surface may name the legacy account label. It stays
+        // a binding constant in Domain.swift, which is not product copy.
+        for (path, contents) in sources where path.hasPrefix("UI/") {
+            XCTAssertFalse(contents.contains("主账号"), path)
+        }
+
+        // The write surface kept the re-preview progress affordance verbatim
+        // through the move out of ContentView.
+        let writeSurface = try XCTUnwrap(sources["UI/WriteSurfaceView.swift"])
+        let staleStart = try XCTUnwrap(writeSurface.range(of: "private var stalePreviewRow"))
         let staleEnd = try XCTUnwrap(
-            contentView.range(
-                of: "private func phrasePreviewRow",
-                range: staleStart.upperBound..<contentView.endIndex
+            writeSurface.range(
+                of: "private func previewRow",
+                range: staleStart.upperBound..<writeSurface.endIndex
             )
         )
         let stalePreviewSource = String(
-            contentView[staleStart.lowerBound..<staleEnd.lowerBound]
+            writeSurface[staleStart.lowerBound..<staleEnd.lowerBound]
         )
         for required in [
             "if viewModel.isPreviewing", "ProgressView()",
@@ -452,28 +468,48 @@ final class BindingAndExecutionTests: XCTestCase {
             XCTAssertTrue(stalePreviewSource.contains(required), required)
         }
         XCTAssertTrue(
-            contentView.contains(
+            writeSurface.contains(
                 "正在重新预览 \\(progress.entry)/\\(progress.total)…"
             )
         )
-        XCTAssertTrue(contentView.contains("return \"正在重新预览…\""))
+        XCTAssertTrue(writeSurface.contains("return \"正在重新预览…\""))
+        for requiredCopy in ["现有", "拟写入", "标签", "未填写", "连接墨墨账号后可预览"] {
+            XCTAssertTrue(writeSurface.contains(requiredCopy), requiredCopy)
+        }
+
+        // The Token sheet's validation lock and privacy copy moved intact.
+        let settings = try XCTUnwrap(sources["UI/SettingsViews.swift"])
         for requiredCopy in [
-            "墨墨账号", "粘贴 Token", "录入偏好", "发布", "公开", "未填写",
-            "复制或分享诊断信息",
+            "墨墨账号", "粘贴 Token", "录入偏好",
             "墨墨 App → 我的 → 更多设置 → 实验功能 → 开放 API",
             "设备本地 Keychain", "不会上传给开发者或任何项目服务器",
-            "独立第三方工具", "不是墨墨官方应用", "隐私说明", "项目与反馈",
+            "独立第三方工具", "不是墨墨官方应用",
         ] {
-            XCTAssertTrue(contentView.contains(requiredCopy), requiredCopy)
+            XCTAssertTrue(settings.contains(requiredCopy), requiredCopy)
         }
-        XCTAssertTrue(contentView.contains("PasteButton(payloadType: String.self)"))
-        XCTAssertTrue(contentView.contains("tokenDraft = pastedToken"))
-        XCTAssertTrue(contentView.contains("Text(\"正在验证…\")"))
-        XCTAssertTrue(contentView.contains("@State private var isSubmittingToken = false"))
-        XCTAssertTrue(contentView.contains("isSubmittingToken = true\n                        Task {"))
-        XCTAssertTrue(contentView.contains("isSubmittingToken || viewModel.isValidatingCredential"))
-        XCTAssertTrue(contentView.contains(".interactiveDismissDisabled(tokenValidationIsInFlight)"))
-        XCTAssertTrue(contentView.contains(".disabled(tokenValidationIsInFlight)"))
+        XCTAssertTrue(settings.contains("PasteButton(payloadType: String.self)"))
+        XCTAssertTrue(settings.contains("tokenDraft = pastedToken"))
+        XCTAssertTrue(settings.contains("Text(\"正在验证…\")"))
+        XCTAssertTrue(settings.contains("@State private var isSubmittingToken = false"))
+        XCTAssertTrue(settings.contains("isSubmittingToken = true\n                        Task {"))
+        XCTAssertTrue(settings.contains("isSubmittingToken || viewModel.isValidatingCredential"))
+        XCTAssertTrue(settings.contains(".interactiveDismissDisabled(validationIsInFlight)"))
+        XCTAssertTrue(settings.contains(".disabled(validationIsInFlight)"))
+
+        // About keeps both external destinations.
+        for requiredCopy in ["隐私说明", "项目与反馈"] {
+            XCTAssertTrue(settings.contains(requiredCopy), requiredCopy)
+        }
+
+        // The receipt detail keeps its sanitized share affordance.
+        let history = try XCTUnwrap(sources["UI/HistoryViews.swift"])
+        XCTAssertTrue(history.contains("复制或分享诊断信息"))
+
+        // The publication labels live on the domain enum, and UNPUBLISHED is
+        // never presented as 私密 anywhere in the app.
+        let domain = try XCTUnwrap(sources["Core/Domain.swift"])
+        XCTAssertTrue(domain.contains("\"公开\" : \"未发布\""))
+        XCTAssertFalse(source.contains("私密"))
 
         let projectFile = testsDirectory
             .deletingLastPathComponent()

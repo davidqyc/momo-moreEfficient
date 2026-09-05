@@ -29,6 +29,10 @@ final class CaptureReviewStore: ObservableObject {
         let sourceTitle: String?
         let capturedAt: Date
         let replacementCount: Int
+        /// Whether the Owner has edited this capture in the review surface. It
+        /// affects presentation only; the captured text is authoritative either
+        /// way, and editing never leaves this review.
+        var isEdited = false
 
         var replacedExistingReview: Bool { replacementCount > 0 }
     }
@@ -71,7 +75,9 @@ final class CaptureReviewStore: ObservableObject {
 
     func edit(_ text: String) {
         guard var review else { return }
+        guard text != review.text else { return }
         review.text = text
+        review.isEdited = true
         self.review = review
     }
 

@@ -5,6 +5,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published var sourceText = "" {
         didSet {
             if sourceText != oldValue {
+                cameFromCapture = false
                 storeActiveDraft(sourceText)
                 detachInlineExecutionFeedback()
                 updateLocalParseState()
@@ -54,6 +55,15 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var accountIdentity = AccountIdentity.disconnected
 
     var accountFingerprint: String? { accountIdentity.fingerprint }
+    /// The device-local interpretation publication preference (#161).
+    @Published private(set) var publicationPreference = InterpretationPublicationPreference.default
+    /// A brief ink acknowledgement for the last credential change.
+    @Published private(set) var credentialAcknowledgement: String?
+    /// Armed by the 移除 Token row; consumed by the destructive dialog.
+    @Published private(set) var isPendingTokenRemoval = false
+    /// Shown only when a removal actually failed, so the truthful 已连接 state is
+    /// never contradicted by a silent success.
+    @Published private(set) var tokenRemovalErrorMessage: String?
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -212,6 +222,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         self.dateProvider = dateProvider
         self.preferenceDefaults = preferenceDefaults
         selectedTags = WriteTagPreference.load(from: preferenceDefaults)
+        publicationPreference = InterpretationPublicationPreference.load(from: preferenceDefaults)
         restoreHistory()
     }
 
@@ -225,6 +236,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
         var normalized = InMemoryCredential.normalize(token)
         defer { normalized.removeAll(keepingCapacity: false) }
+        // Distinguishes a first connection from a replacement for the ack copy.
+        let wasConnected = isConnected
         isValidatingCredential = true
         tokenErrorMessage = nil
         defer {
@@ -254,6 +267,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 fingerprint: candidate.fingerprint,
                 authorityGeneration: accountIdentity.authorityGeneration + 1
             )
+            credentialAcknowledgement = wasConnected
+                ? "已更换 Token · 新连接已生效；此前的预览与查阅结果已失效"
+                : "已连接墨墨账号 · Token 已保存在本机 Keychain"
+            tokenRemovalErrorMessage = nil
             invalidatePreview()
             errorMessage = nil
             tokenErrorMessage = nil
@@ -298,6 +315,22 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
     #endif
 
+    /// Arms the destructive `移除 Token` confirmation. Nothing is deleted yet.
+    func askToRemoveToken() {
+        guard !isBusy, isConnected else { return }
+        tokenRemovalErrorMessage = nil
+        isPendingTokenRemoval = true
+    }
+
+    func cancelTokenRemoval() {
+        isPendingTokenRemoval = false
+    }
+
+    func confirmRemoveToken() {
+        isPendingTokenRemoval = false
+        removeToken()
+    }
+
     func removeToken() {
         guard !isBusy else { return }
         activeControl?.requestCancellation()
@@ -312,10 +345,14 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 fingerprint: nil,
                 authorityGeneration: accountIdentity.authorityGeneration + 1
             )
+            credentialAcknowledgement = "已移除本机 Token · 已断开连接"
+            tokenRemovalErrorMessage = nil
             errorMessage = nil
         } catch {
             // Nothing was deleted, so the connection state stays truthful and the
             // account identity is unchanged.
+            tokenRemovalErrorMessage =
+                "无法安全访问设备上的 Token；请解锁设备后重试。原连接保持不变。"
             errorMessage = CompanionError.credentialStorageUnavailable.description
         }
     }
@@ -378,6 +415,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     func previewCurrentInput() async {
         guard !isBusy, beginProviderOperation(.preview) else { return }
+        cameFromCapture = false
         let mode = contentMode
         let preserveStalePresentationOnFailure = isPreviewStale && activePreviewExists
         isBusy = true
@@ -408,6 +446,9 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         do {
             let document = sourceText
             let tags = selectedTags
+            // Captured once, so the whole Preview binds one status even if the
+            // preference somehow changed mid-read.
+            let status = publicationPreference.providerStatus
             let lease = try credentialSession.makeOperationLease()
             defer { lease.clear() }
             let api = MaimemoTransport(
@@ -427,6 +468,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 let built = try await PreflightPlanner(api: api).buildSnapshot(
                     entries: batch.entries,
                     tags: tags,
+                    status: status,
                     credentialFingerprint: lease.fingerprint,
                     control: control,
                     onEntryStarted: progress
@@ -1190,6 +1232,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             timestamp: dateProvider(),
             operationGroup: group,
             selectedSpellings: selectedSpellings,
+            // The approved snapshot's status, never a live preference read.
+            interpretationStatus: displayed.bindingContext.status,
             result: result
         )
         history.insert(receipt, at: 0)
@@ -1282,6 +1326,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
         sourceText = text
         updateLocalParseState()
+        // Set after `sourceText`, whose didSet clears it for ordinary edits.
+        cameFromCapture = true
     }
 
     var isShowingEditor: Bool {
@@ -1298,6 +1344,50 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         sourceText = mode == .interpretation ? interpretationDraft : phraseDraft
         updateLocalParseState()
     }
+
+    /// Changing the publication preference invalidates the current
+    /// interpretation Preview exactly as a tag change does: the executable
+    /// authority no longer describes what would be written.
+    func selectPublicationPreference(_ status: InterpretationPublicationStatus) {
+        guard !isBusy, status != publicationPreference else { return }
+        publicationPreference = status
+        InterpretationPublicationPreference.save(status, to: preferenceDefaults)
+        detachInlineExecutionFeedback()
+        invalidatePreview()
+        noteStaleReason("发布状态已更改 · 需重新预览后才能写入")
+    }
+
+    /// Records *why* the Preview went stale, but only when a stale presentation
+    /// is actually on screen to explain.
+    private func noteStaleReason(_ reason: String) {
+        staleReason = isPreviewStale ? reason : nil
+    }
+
+    /// The Settings root summary, e.g. `公开 · 标签 2/3`.
+    var writePreferenceSummary: String {
+        "\(publicationPreference.label) · 标签 \(selectedTags.count)/\(WriteTagPreference.maximumSelectionCount)"
+    }
+
+    var tagSummaryLine: String {
+        selectedTags.isEmpty
+            ? "未选标签 · 可选，最多 3 项"
+            : "已选：" + selectedTags.joined(separator: " · ")
+    }
+
+    var tagSelectionHint: String {
+        let remaining = WriteTagPreference.maximumSelectionCount - selectedTags.count
+        return remaining == 0
+            ? "已达上限 3 项 · 取消任意一项后可再选"
+            : "还可再选 \(remaining) 项"
+    }
+
+    /// Why the current Preview went stale, when the app can say precisely.
+    @Published private(set) var staleReason: String?
+    /// True from the moment captured text is installed until the Owner edits it
+    /// or previews. Preview is never triggered automatically.
+    @Published private(set) var cameFromCapture = false
+    /// A brief acknowledgement for the last History mutation.
+    @Published private(set) var historyAcknowledgement: String?
 
     var availableWriteTags: [String] { WriteTagPreference.availableTags }
 
@@ -1328,6 +1418,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             selectedTags = saved
             detachInlineExecutionFeedback()
             invalidatePreview()
+            noteStaleReason("标签已更改 · 需重新预览后才能写入")
         } catch {
             errorMessage = CompanionError.inputRejected.description
         }
@@ -1395,13 +1486,18 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         invalidatePreview()
     }
 
+    /// Clears the one receipt store. This is deliberately global to both
+    /// content kinds even when invoked from a contextual History screen; the
+    /// confirmation copy says so.
     func clearHistory() {
         do {
             try historyStore.clearReceipts()
             history.removeAll()
             historyErrorMessage = nil
+            historyAcknowledgement = "已清空本机历史"
         } catch {
-            historyErrorMessage = "历史记录清空失败"
+            historyAcknowledgement = nil
+            historyErrorMessage = "历史记录清空失败 · 本机存储暂不可用，回执已保留"
         }
     }
 
@@ -1442,6 +1538,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func invalidateExecutionAuthorization() {
         snapshot = nil
         phraseSnapshot = nil
+        staleReason = nil
         // A source edit, token change or explicit invalidation also discards any
         // Preview held aside across an interruption.
         suspendedPreview = nil

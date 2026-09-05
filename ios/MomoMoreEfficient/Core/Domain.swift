@@ -71,9 +71,11 @@ enum WriteTagPreference {
 /// fresh preflight → request body → authenticated readback chain.
 ///
 /// `UNPUBLISHED` is the provider's own status name, proven by the current
-/// first-party `maimemo/memo-api-cli` interpretation contract. It is never
-/// presented as `私密`: the public contract does not establish that it means
-/// "private", only that it is a documented non-published state.
+/// first-party `maimemo/memo-api-cli` interpretation contract. Its user-facing
+/// label is 未发布 and nothing else: the public contract does not establish that
+/// the status means "private", only that it is a documented non-published state,
+/// so the forbidden-copy guard in the test suite asserts the private-sounding
+/// word appears nowhere in production sources.
 enum InterpretationPublicationStatus: String, Codable, CaseIterable, Equatable, Sendable {
     case published = "PUBLISHED"
     case unpublished = "UNPUBLISHED"
