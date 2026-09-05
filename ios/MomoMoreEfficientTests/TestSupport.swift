@@ -13,6 +13,10 @@ final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String?
     private(set) var saveCount = 0
     private(set) var deleteCount = 0
+    /// Simulates a locked/unavailable Keychain so a candidate that passed
+    /// validation can still fail to become the active credential.
+    var failSave = false
+    var failDelete = false
 
     init(token: String? = nil) {
         self.token = token
@@ -21,11 +25,13 @@ final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     func loadToken() throws -> String? { token }
 
     func saveToken(_ token: String) throws {
+        if failSave { throw CompanionError.credentialStorageUnavailable }
         self.token = token
         saveCount += 1
     }
 
     func deleteToken() throws {
+        if failDelete { throw CompanionError.credentialStorageUnavailable }
         token = nil
         deleteCount += 1
     }

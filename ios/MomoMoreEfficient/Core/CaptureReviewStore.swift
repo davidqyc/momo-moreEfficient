@@ -1,5 +1,18 @@
 import Foundation
 
+/// The accessibility identifiers physical- and simulator-device Capture
+/// regression tests address the review surface by.
+///
+/// They are a validated external contract, not styling: `MomoMoreEfficientUITests`
+/// looks each one up by literal string, so the #161 Capture redesign re-homes the
+/// surface but must keep these values byte-identical. `RetrofitCharacterizationTests`
+/// pins them.
+enum CaptureAccessibilityIdentifier {
+    static let status = "captureReviewStatus"
+    static let textEditor = "captureReviewTextEditor"
+    static let cancelButton = "cancelCaptureButton"
+}
+
 /// The source-agnostic in-app boundary for text that still needs human review.
 ///
 /// This type deliberately owns no credential, transport, parser, Preview or write
