@@ -540,15 +540,20 @@ func phraseRecordPayload(
     english: String,
     chinese: String = "中文",
     origin: String = "",
-    status: String = "PUBLISHED"
+    status: String = "PUBLISHED",
+    tags: Any? = nil
 ) -> [String: Any] {
-    [
+    var record: [String: Any] = [
         "id": id,
         "phrase": english,
         "interpretation": chinese,
         "origin": origin,
         "status": status,
     ]
+    // Absent by default so existing callers keep exercising the missing-tags
+    // path; pass any value (including a malformed one) to cover inbound decoding.
+    if let tags { record["tags"] = tags }
+    return record
 }
 
 func phrasesResponse(_ records: [[String: Any]]) -> StubbedResult {

@@ -110,9 +110,12 @@ final class PhraseCreateCoreTests: XCTestCase {
     }
 
     func testMalformedTagsAndRawResponseValuesDoNotLeak() async throws {
+        // The sentinel rides inside a genuinely malformed tag value (an embedded
+        // control character), not merely a tag outside the local write catalog:
+        // provider tags are an open `string[]`, so "unknown" is not "malformed".
         let serverSentinel = "PRIVATE_SERVER_SENTINEL"
         let result = phrasesResponse([
-            phraseRecord(tags: ["MBA", serverSentinel], highlight: []),
+            phraseRecord(tags: ["MBA", serverSentinel + "\u{0007}"], highlight: []),
         ])
         let transport = FakeHTTPTransport([result])
         let lease = try credentialLease("FAKE_PRIVATE_CREDENTIAL_SENTINEL")
@@ -131,6 +134,97 @@ final class PhraseCreateCoreTests: XCTestCase {
             XCTAssertFalse(String(reflecting: transport.requests).contains("FAKE_PRIVATE"))
         }
         lease.clear()
+    }
+
+    // MARK: - Inbound provider phrase tags (post-write recovery regression)
+
+    /// Regression for the observed defect: an already-created phrase came back
+    /// from the provider with a tag outside this app's 22-item local write
+    /// catalog, the decoder rejected the whole record, and the re-Preview showed
+    /// 阻断 / 无法安全读取例句状态 instead of 一致. First-party `Phrase.tags` is an
+    /// open `string[]` and official phrase fixtures return values such as
+    /// `greeting` / `updated`, so inbound tags must decode.
+    func testInboundPhraseTagsOutsideLocalWriteCatalogDecode() async throws {
+        let cases: [[String]] = [
+            ["greeting"],
+            ["updated"],
+            ["MBA", "greeting"],
+            // Longer than the local catalog: no catalog-derived count limit
+            // may be imposed on the provider.
+            (1...40).map { "provider-tag-\($0)" },
+        ]
+        for tags in cases {
+            let records = try await readPhrases([phraseRecord(tags: tags, highlight: [])])
+            XCTAssertEqual(records.count, 1)
+            XCTAssertEqual(records[0].tags, tags)
+            XCTAssertEqual(records[0].status, "PUBLISHED")
+        }
+    }
+
+    /// The repair must not make the tag field permissive: shape and per-string
+    /// safety are still enforced.
+    func testInboundPhraseTagsStillRejectMalformedShapesAndUnsafeStrings() async throws {
+        let malformed: [Any] = [
+            "greeting",                     // not an array
+            ["greeting", 42],               // not all strings
+            [["greeting"]],                 // nested array
+            [""],                           // empty string
+            ["   "],                        // whitespace only
+            ["green\u{0007}ing"],           // control character
+            ["multi\nline"],                // newline is not a single line
+            [String(repeating: "x", count: 257)], // beyond the bounded length
+        ]
+        for tags in malformed {
+            await assertPhraseReadRejected(
+                phrasesResponse([phraseRecord(tags: tags, highlight: [])])
+            )
+        }
+    }
+
+    /// End-to-end through the production decoder + preflight planner: the exact
+    /// phrase that was already written recovers to 一致 rather than READ_FAILED.
+    func testAlreadyCreatedPhraseWithNonLocalProviderTagRecoversToAlreadyMatching()
+        async throws
+    {
+        let alreadyCreated = phraseRecord(tags: ["greeting"], highlight: [])
+        let (snapshot, _, _) = try await makePhraseSnapshot(
+            document: document,
+            results: [
+                vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "acquisition")]),
+                phrasesResponse([alreadyCreated]),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.alreadyMatchingCount, 1)
+        XCTAssertEqual(snapshot.createCount, 0)
+        XCTAssertEqual(snapshot.blockedCount, 0)
+        let item = snapshot.items[0]
+        XCTAssertEqual(item.classification, .alreadyMatching)
+        XCTAssertEqual(item.classification.compactLabel, "一致")
+        XCTAssertNil(item.reason)
+        // The differing provider tag stays observational metadata, never identity.
+        XCTAssertTrue(
+            item.observations(tags: snapshot.bindingContext.tags).contains(.tagsDiffer)
+        )
+    }
+
+    /// The local outbound write-preference contract is unchanged by this repair.
+    func testLocalOutboundTagPreferenceCatalogRemainsClosed() throws {
+        XCTAssertEqual(WriteTagPreference.availableTags.count, 22)
+        XCTAssertEqual(WriteTagPreference.maximumSelectionCount, 3)
+        XCTAssertFalse(WriteTagPreference.availableTags.contains("greeting"))
+
+        XCTAssertEqual(try WriteTagPreference.canonicalized(["MBA", "BEC"]), ["MBA", "BEC"])
+        // A safe provider tag is still not user-selectable.
+        XCTAssertThrowsError(try WriteTagPreference.canonicalized(["greeting"])) {
+            XCTAssertEqual($0 as? CompanionError, .inputRejected)
+        }
+        XCTAssertThrowsError(try WriteTagPreference.canonicalized(["MBA", "BEC", "GRE", "SAT"])) {
+            XCTAssertEqual($0 as? CompanionError, .inputRejected)
+        }
+        XCTAssertThrowsError(try WriteTagPreference.canonicalized(["MBA", "MBA"])) {
+            XCTAssertEqual($0 as? CompanionError, .inputRejected)
+        }
     }
 
     func testUnrelatedPhrasesDoNotBlockCreate() async throws {

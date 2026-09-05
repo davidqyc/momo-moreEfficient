@@ -475,11 +475,25 @@ final class MaimemoTransport {
         return safeSingleLine(value, maximumCharacters: 256)
     }
 
+    /// Inbound provider phrase tags are observational metadata, not this app's
+    /// outbound write-preference catalog. The first-party `Phrase` schema types
+    /// `tags` as an open `string[]`, and official phrase fixtures return values
+    /// such as `greeting` / `updated` that are outside the local 22-item
+    /// selection catalog. Requiring `documentedTags` membership therefore
+    /// rejected valid provider records: an already-created phrase failed to
+    /// decode (`itemResponseRejected`), which the phrase preflight catches as
+    /// `READ_FAILED`, so a written phrase came back as 阻断 /
+    /// 无法安全读取例句状态 instead of recovering to 一致.
+    ///
+    /// The local catalog still governs what the user may select and write; it
+    /// says nothing about what the provider may return. Element strings keep
+    /// the same bounded safe-string check used for `origin`, and the
+    /// whole-response size cap in `jsonObject` still bounds the array, so no
+    /// catalog-derived count or value limit is imposed on the provider.
     private func phraseTags(_ record: [String: Any]) throws -> [String]? {
         guard let raw = record["tags"] else { return nil }
         guard let tags = raw as? [String],
-              tags.count <= documentedTags.count,
-              tags.allSatisfy({ documentedTags.contains($0) })
+              tags.allSatisfy({ safeSingleLine($0, maximumCharacters: 256) != nil })
         else {
             throw CompanionError.itemResponseRejected
         }

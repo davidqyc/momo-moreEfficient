@@ -590,6 +590,33 @@ final class QuerySessionStoreTests: XCTestCase {
         XCTAssertEqual(store.copyPayload, "")
     }
 
+    /// The Query read path shares `MaimemoTransport.phrases` with the write
+    /// preflight, so the inbound-tag repair must keep a provider tag outside the
+    /// local write catalog counting truthfully instead of making the 例句 cell
+    /// 无法读取.
+    func testPhraseWithNonLocalProviderTagStillCountsAndAppearsInDetail() async throws {
+        let store = QuerySessionStore()
+        store.updateInput("alpha")
+        let transport = FakeHTTPTransport([
+            resolvedQueryResponse(["alpha"]),
+            interpretationsResponse([]),
+            phrasesResponse([
+                phraseRecordPayload("P1", english: "an alpha", tags: ["greeting"]),
+                phraseRecordPayload("P2", english: "alpha again", tags: ["updated"]),
+                phraseRecordPayload("P3", english: "gone", status: "DELETED"),
+            ]),
+            notesResponse([]),
+        ])
+        store.start(lease: try queryLease(transport))
+        await store.awaitRunCompletion()
+
+        XCTAssertEqual(store.phase, .completed)
+        XCTAssertEqual(store.rows[0].cell(.phrase), .count(2))
+        let detail = try XCTUnwrap(store.detail(forRowID: 1))
+        XCTAssertEqual(detail.phrases.map(\.id), ["P1", "P2"])
+        XCTAssertEqual(detail.phrases[0].tags, ["greeting"])
+    }
+
     // MARK: - D-01 … D-05: detail
 
     func testDetailUsesAlreadyReturnedObjectsAndSendsNoRequest() async throws {
