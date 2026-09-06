@@ -639,7 +639,8 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             pendingBatchConfirmation = PendingBatchConfirmation(
                 createSpellings: plan.plan(for: .create)?.items.map(\.spelling) ?? [],
                 updateSpellings: plan.plan(for: .update)?.items.map(\.spelling) ?? [],
-                bindingDigest: plan.bindingDigest
+                bindingDigest: plan.bindingDigest,
+                statusLabel: snapshot.intendedStatusLabel
             )
             errorMessage = nil
         } catch let error as CompanionError {
@@ -1399,6 +1400,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// The Settings root summary, e.g. `公开 · 标签 2/3`.
     var writePreferenceSummary: String {
         "\(publicationPreference.label) · 标签 \(selectedTags.count)/\(WriteTagPreference.maximumSelectionCount)"
+    }
+
+    /// The intended 公开/未发布 label for the currently displayed interpretation
+    /// Preview and its native confirmations (#161 A-01).
+    ///
+    /// Reads the bound `snapshot`, never `publicationPreference`: once a Preview
+    /// exists, this is the value every commit surface must agree on, even if the
+    /// live preference has since changed (which invalidates the Preview anyway).
+    /// `nil` outside interpretation Preview — phrase writes do not offer this.
+    var previewStatusLabel: String? {
+        snapshot?.intendedStatusLabel
     }
 
     var tagSummaryLine: String {

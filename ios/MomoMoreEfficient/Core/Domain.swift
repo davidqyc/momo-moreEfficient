@@ -677,6 +677,9 @@ struct PendingBatchConfirmation: Equatable, Sendable {
     /// Short form of the whole-plan binding digest, which commits to the exact
     /// Preview and to both subplans including their proposed content.
     let bindingDigest: String
+    /// The exact intended 公开/未发布 label this mixed batch will write (#161
+    /// A-01), captured from the same bound snapshot the digest itself commits to.
+    let statusLabel: String
 
     var createCount: Int { createSpellings.count }
     var updateCount: Int { updateSpellings.count }
@@ -690,6 +693,7 @@ struct PendingBatchConfirmation: Equatable, Sendable {
 
     var message: String {
         var lines = ["共 \(totalCount) 条 · 新建 \(createCount) · 更新 \(updateCount)"]
+        lines.append("拟写入状态：\(statusLabel)")
         if !createSpellings.isEmpty {
             lines.append("新建：" + createSpellings.joined(separator: "、"))
         }
@@ -868,6 +872,18 @@ struct PreviewSnapshot: Equatable, Sendable {
     func items(for group: OperationGroup) -> [PrivatePreflightItem] {
         let desired: PreviewClassification = group == .create ? .create : .update
         return items.filter { $0.classification == desired }
+    }
+
+    /// The exact 公开/未发布 label this bound plan will write (#161 A-01).
+    ///
+    /// Reads only the already-bound `bindingContext.status` — the same value the
+    /// digest, fresh preflight and request body use — never the live
+    /// `publicationPreference`, so Preview and every native confirmation always
+    /// state the plan that was actually captured, not whatever the preference
+    /// happens to be at render time.
+    var intendedStatusLabel: String {
+        InterpretationPublicationStatus(providerStatus: bindingContext.status)?.label
+            ?? bindingContext.status
     }
 }
 

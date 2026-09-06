@@ -129,6 +129,9 @@ struct WriteSurfaceView: View {
                     summaryLabel("阻断", preview.counts.blocked, isAlert: true)
                 }
                 CaptionLine(text: viewModel.selectedTagsSummary)
+                if let statusLabel = viewModel.previewStatusLabel {
+                    CaptionLine(text: "拟写入状态：\(statusLabel)")
+                }
                 if preview.counts.create == 0,
                    preview.counts.update == 0,
                    preview.counts.blocked == 0 {
@@ -295,9 +298,6 @@ struct WriteSurfaceView: View {
                             "\(WriteTagPreference.compactLabel(currentTags)) → "
                                 + WriteTagPreference.compactLabel(proposedTags)
                         )
-                    }
-                    if row.classification == .update {
-                        detailLabel("状态", viewModel.publicationPreference.label)
                     }
                 }
                 .padding(.top, 2)

@@ -303,7 +303,7 @@ private struct WriteConfirmationDialogs: ViewModifier {
                 }
                 Button("取消", role: .cancel) { viewModel.cancelPendingConfirmation() }
             } message: {
-                Text("将重新完整预检；只有结果与当前预览严格一致时才会顺序写入。每项最多一次 POST，不重试。")
+                Text(singleGroupConfirmationMessage)
             }
             .confirmationDialog(
                 viewModel.pendingBatchConfirmation?.title ?? "确认执行？",
@@ -345,5 +345,17 @@ private struct WriteConfirmationDialogs: ViewModifier {
 
     private var confirmationTitle: String {
         viewModel.pendingConfirmation == .update ? "确认更新现有自建释义？" : "确认新建自建释义？"
+    }
+
+    /// States the exact bound 公开/未发布 status (#161 A-01) ahead of the fixed
+    /// preflight/no-retry sentence, so a single-group CREATE or UPDATE plan never
+    /// hides decision-bearing publication state at its one native confirmation.
+    private var singleGroupConfirmationMessage: String {
+        var lines: [String] = []
+        if let statusLabel = viewModel.previewStatusLabel {
+            lines.append("拟写入状态：\(statusLabel)")
+        }
+        lines.append("将重新完整预检；只有结果与当前预览严格一致时才会顺序写入。每项最多一次 POST，不重试。")
+        return lines.joined(separator: "\n")
     }
 }

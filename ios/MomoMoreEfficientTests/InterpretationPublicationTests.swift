@@ -178,6 +178,31 @@ final class InterpretationPublicationTests: XCTestCase {
         )
     }
 
+    // MARK: - A-01 presentation: bound status label, not the live preference
+
+    func testIntendedStatusLabelReflectsTheBoundSnapshotForBothStatuses() async throws {
+        let (published, _, _) = try await makeSnapshot(
+            document: document,
+            results: [
+                resolvedQueryResponse(["merchandise"]),
+                interpretationsResponse([]),
+            ]
+        )
+        XCTAssertEqual(published.bindingContext.status, "PUBLISHED")
+        XCTAssertEqual(published.intendedStatusLabel, "公开")
+
+        let (unpublished, _, _) = try await makeSnapshot(
+            document: document,
+            results: [
+                resolvedQueryResponse(["merchandise"]),
+                interpretationsResponse([]),
+            ],
+            status: "UNPUBLISHED"
+        )
+        XCTAssertEqual(unpublished.bindingContext.status, "UNPUBLISHED")
+        XCTAssertEqual(unpublished.intendedStatusLabel, "未发布")
+    }
+
     // MARK: - Fail closed
 
     func testStatusOutsideTheAllowlistFailsClosedBeforeAnyDigestExists() async throws {

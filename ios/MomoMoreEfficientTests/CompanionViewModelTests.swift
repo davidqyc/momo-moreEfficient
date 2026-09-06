@@ -547,6 +547,56 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertFalse(model.executionActions.contains { $0.coversWholePlan })
     }
 
+    /// #161 A-01: interpretation publication status must be visible at every
+    /// commit surface — CREATE-only and mixed alike — and must reflect the
+    /// bound Preview snapshot the digest itself commits to.
+    func testPreviewStatusLabelAndConfirmationsSurfaceTheBoundStatusForEveryPlanShape() async throws {
+        // Isolated from the real `.standard` UserDefaults every other test in
+        // this class relies on: `selectPublicationPreference` below persists to
+        // `preferenceDefaults`, and a shared store would leak `未发布` into
+        // unrelated tests that assume the default 公开 preference.
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "companion-vm-\(UUID().uuidString)"))
+
+        // CREATE-only, default 公开 preference. Previously this classification
+        // hid status entirely (only UPDATE rows carried a status detail).
+        let createOnly = connectedModel(
+            SequencedTransportFactory([
+                [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
+            ]),
+            preferenceDefaults: defaults
+        )
+        createOnly.sourceText = "word\nn. 新建"
+        await createOnly.previewCurrentInput()
+        XCTAssertEqual(createOnly.executionActions.map(\.group), [.create, .update])
+        XCTAssertEqual(createOnly.previewStatusLabel, "公开")
+
+        // Mixed CREATE+UPDATE, 未发布 preference selected before Preview.
+        let old = interpretation("INVALID_RECORD", "n. 旧版", tags: [])
+        let mixed = connectedModel(
+            SequencedTransportFactory([
+                [
+                    vocabularyQueryResponse([
+                        (id: "INVALID_VOC_A", spelling: "create"),
+                        (id: "INVALID_VOC_B", spelling: "update"),
+                    ]),
+                    interpretationsResponse([]),
+                    interpretationsResponse([old]),
+                ],
+            ]),
+            preferenceDefaults: defaults
+        )
+        mixed.selectPublicationPreference(.unpublished)
+        mixed.sourceText = "create\nn. 新建\nupdate\nn. 新版"
+        await mixed.previewCurrentInput()
+        XCTAssertEqual(mixed.previewStatusLabel, "未发布")
+        XCTAssertTrue(mixed.executionActions.contains { $0.coversWholePlan })
+
+        mixed.askToExecuteWholePlan()
+        let batchConfirmation = try XCTUnwrap(mixed.pendingBatchConfirmation)
+        XCTAssertEqual(batchConfirmation.statusLabel, "未发布")
+        XCTAssertTrue(batchConfirmation.message.contains("拟写入状态：未发布"))
+    }
+
     func testSourceEditClearsStalePreviewPresentation() async {
         let factory = SequencedTransportFactory([
             [vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([])],
@@ -1344,7 +1394,8 @@ final class CompanionViewModelTests: XCTestCase {
         _ factory: SequencedTransportFactory,
         tokenStore: FakeTokenStore = FakeTokenStore(),
         historyStore: HistoryStore = InMemoryHistoryStore(),
-        assertion: FakeBackgroundExecutionAssertion? = nil
+        assertion: FakeBackgroundExecutionAssertion? = nil,
+        preferenceDefaults: UserDefaults = .standard
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
@@ -1353,7 +1404,8 @@ final class CompanionViewModelTests: XCTestCase {
             transportFactory: factory.make,
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: preferenceDefaults
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)

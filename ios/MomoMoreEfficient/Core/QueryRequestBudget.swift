@@ -37,8 +37,14 @@ struct QueryRequestBudget: Equatable, Sendable {
         return .quiet
     }
 
-    /// Frozen copy from `USER_VISIBLE_COPY_LEDGER.md §5`. The `建议每批 600 项以内`
-    /// sentence is advisory wording, not a 600-item limit.
+    /// The `建议每批 600 项以内` sentence is advisory wording, not a 600-item limit.
+    ///
+    /// `estimatedMinutes` assumes a clean/recovered shared window (#161 B-03):
+    /// `RequestWindowScheduler` retains real dispatches for a full 5-hour window
+    /// across the whole app, so a batch run soon after another large one can take
+    /// far longer than this per-batch number alone would suggest. The `.calm`
+    /// copy states that qualifier explicitly rather than trying to forecast the
+    /// scheduler's actual remaining allowance.
     var advisory: String? {
         switch tier {
         case .quiet:
@@ -46,7 +52,9 @@ struct QueryRequestBudget: Equatable, Sendable {
         case .calm:
             return "较大批次：预计约 \(estimatedRequests) 次请求"
                 + "（定位 \(resolverRequests) 次 + 每项最多 3 次读取），"
-                + "受墨墨频率限制约需 \(estimatedMinutes) 分钟；读取中可随时停止，已读结果保留。"
+                + "额度充足时预计约需 \(estimatedMinutes) 分钟；"
+                + "若近期已有较大批量查阅，共享的 5 小时额度可能使实际等待明显更久。"
+                + "读取中可随时停止，已读结果保留。"
         case .suggestSplitting:
             return "建议分批：预计约 \(estimatedRequests) 次请求，"
                 + "超出墨墨 5 小时内 2000 次的额度，一次读完可能需要等待数小时。"

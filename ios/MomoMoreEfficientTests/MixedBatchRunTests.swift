@@ -787,12 +787,14 @@ final class MixedBatchRunTests: XCTestCase {
         let pending = PendingBatchConfirmation(
             createSpellings: ["collapse", "ledger"],
             updateSpellings: ["manning", "certified"],
-            bindingDigest: "0123456789abcdef"
+            bindingDigest: "0123456789abcdef",
+            statusLabel: "公开"
         )
 
         XCTAssertEqual(pending.title, "确认执行 4 条？")
         XCTAssertEqual(pending.actionTitle, "确认执行 4 条（新建 2 · 更新 2）")
         XCTAssertTrue(pending.message.contains("共 4 条 · 新建 2 · 更新 2"))
+        XCTAssertTrue(pending.message.contains("拟写入状态：公开"))
         XCTAssertTrue(pending.message.contains("新建：collapse、ledger"))
         XCTAssertTrue(pending.message.contains("更新：manning、certified"))
         XCTAssertTrue(pending.message.contains("授权指纹 0123456789abcdef"))

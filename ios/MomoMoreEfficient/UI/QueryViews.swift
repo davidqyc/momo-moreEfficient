@@ -236,27 +236,27 @@ struct QueryView: View {
             .padding(Theme.rowPaddingH)
             .themedCard()
         } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        QueryTableHeader()
-                        ForEach(store.visibleRows) { row in
-                            RowDivider()
-                            QueryRowView(row: row) {
-                                store.scrollAnchor = row.id
-                                router.go(.queryDetail(row.id))
-                            }
-                            .id(row.id)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    QueryTableHeader()
+                    ForEach(store.visibleRows) { row in
+                        RowDivider()
+                        QueryRowView(row: row) {
+                            store.scrollAnchor = row.id
+                            router.go(.queryDetail(row.id))
                         }
-                    }
-                    .themedCard()
-                }
-                .onAppear {
-                    if let anchor = store.scrollAnchor {
-                        proxy.scrollTo(anchor, anchor: .center)
+                        .id(row.id)
                     }
                 }
+                .scrollTargetLayout()
+                .themedCard()
             }
+            // Native semantic scroll-position tracking (#161 D-01): ordinary
+            // scrolling keeps this binding's leading row current, not only a
+            // row tap, so 修改 -> 返回结果 restores where the Owner actually was
+            // reading, and setting `scrollAnchor` (e.g. on a filter reset)
+            // scrolls back to that row the same way `proxy.scrollTo` used to.
+            .scrollPosition(id: $store.scrollAnchor, anchor: .center)
         }
     }
 

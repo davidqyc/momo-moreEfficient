@@ -111,7 +111,9 @@ final class QueryCoreTests: XCTestCase {
         XCTAssertEqual(
             calmCopy,
             "较大批次：预计约 43 次请求（定位 1 次 + 每项最多 3 次读取），"
-                + "受墨墨频率限制约需 2 分钟；读取中可随时停止，已读结果保留。"
+                + "额度充足时预计约需 2 分钟；"
+                + "若近期已有较大批量查阅，共享的 5 小时额度可能使实际等待明显更久。"
+                + "读取中可随时停止，已读结果保留。"
         )
 
         // At/above the 2000/5h allowance: the 建议分批 advisory.
@@ -122,6 +124,31 @@ final class QueryCoreTests: XCTestCase {
             "建议分批：预计约 2101 次请求，超出墨墨 5 小时内 2000 次的额度，"
                 + "一次读完可能需要等待数小时。建议每批 600 项以内；仍可开始，读取中可随时停止。"
         )
+    }
+
+    /// #161 B-03: `RequestWindowScheduler` is shared and stateful across the app,
+    /// but `QueryRequestBudget` is intentionally stateless, so its per-batch
+    /// minute figure can only ever be true when the shared window is clean. The
+    /// copy must say so rather than read like a precise current ETA — the
+    /// original repro was a 600-unique-item batch (601 resolver+content = 1801
+    /// requests, ~46 clean-quota minutes) immediately after another large batch,
+    /// where the real wait was ~295 minutes.
+    func testCalmAdvisoryStatesTheQuotaAssumptionRatherThanAPreciseETA() {
+        let repro = QueryRequestBudget.estimate(uniqueInputCount: 600)
+        XCTAssertEqual(repro.resolverRequests, 1)
+        XCTAssertEqual(repro.contentRequests, 1_800)
+        XCTAssertEqual(repro.estimatedRequests, 1_801)
+        XCTAssertEqual(repro.tier, .calm)
+        XCTAssertEqual(repro.estimatedMinutes, 46)
+
+        let advisory = repro.advisory ?? ""
+        // States the number is conditional on available quota, not a promise.
+        XCTAssertTrue(advisory.contains("额度充足时"), advisory)
+        // Names the actual mechanism that can make the real wait much longer.
+        XCTAssertTrue(advisory.contains("5 小时额度"), advisory)
+        XCTAssertTrue(advisory.contains("更久"), advisory)
+        // Never phrased as an unconditional/precise ETA.
+        XCTAssertFalse(advisory.contains("需 \(repro.estimatedMinutes) 分钟；读取"), advisory)
     }
 
     func testAdvisoryIsNeverACapAndIsDrivenByUniqueItemsNotVisibleRows() throws {
