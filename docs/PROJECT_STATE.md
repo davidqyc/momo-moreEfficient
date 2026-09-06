@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-05
-sourceMainSha=1f44d29a488507c28108843880905da4127f32d3
+updatedAt=2026-09-06
+sourceMainSha=35ccfc2f6a54a23bf23e1328a96e4a14f7fe10d6
 sourceMainShaIsSnapshotOnly=true
 
 ## Current truth
@@ -19,10 +19,21 @@ LAST_MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
 LAST_MERGE_SCOPE=mechanical TestFlight build-number bump 3 -> 4 for app + ShareExtension only
 
 CURRENT_PRIMARY_ISSUE=#161
-CURRENT_PRIMARY_GATE=FINAL_DESIGN_HANDOFF_ACCEPTED_READY_FOR_CLAUDE_CODE
+CURRENT_PRIMARY_PR=#177
+CURRENT_PRIMARY_PR_HEAD=936cf8123395238c0fada03e8f04faf7667f8fd9
+CURRENT_PRIMARY_PR_STATUS=OPEN_DRAFT_UNMERGED
+CURRENT_PRIMARY_GATE=PR_177_FRESH_REVIEW_BLOCKED_ON_CONNECTION_LIFECYCLE_REPAIR
 CURRENT_RELEASE_GATE_STATUS=UPLOAD_ACCEPTED_PROCESSING_PENDING_IN_PARALLEL
-CURRENT_BLOCKER=none; #161 final Design handoff accepted with Coordinator implementation corrections; TestFlight build 4 remains an independent passive processing/readback lane and must not be re-uploaded
-CURRENT_UNIQUE_NEXT=use Claude Design -> Claude Code native handoff to implement #161 from live main on an Issue branch, preserving the accepted Home/Settings/neutral Query/Contextual History/Capture design and stable write-safety floor
+CURRENT_BLOCKER=C-02 + C-01 accepted must-fix product blockers; C-03 accepted only as same-batch test-evidence hardening. A-01/B-03/D-01 remain pending later progressive adjudication; D-03 is deferred low priority. Do not expand this repair batch.
+CURRENT_UNIQUE_NEXT=complete or ingest the existing bounded Claude Builder connection-lifecycle repair on PR #177; do not duplicate-dispatch it; then Coordinator performs exact-diff adjudication and decides proportional independent re-review / physical gate before merge
+
+CURRENT_EXTERNAL_AGENT_TASK_ID=XHN-161-PR177-CONNECTION-LIFECYCLE-REPAIR-20260906
+CURRENT_EXTERNAL_AGENT_TARGET_FAMILY=Claude
+CURRENT_EXTERNAL_AGENT_CONVERSATION=NEW_CONVERSATION
+CURRENT_EXTERNAL_AGENT_DISPATCH_STATE=unknown
+CURRENT_RETURN_BRIDGE_COMMENT=5558663073
+CURRENT_REPAIR_AUTHORITY_COMMENTS=5558626632 + 5558647248
+DUPLICATE_DISPATCH_ALLOWED=no_by_default
 
 IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=cleared_for_#161_by_owner_explicit_workflow_after_design_gate
 TESTFLIGHT_BUILD4_REUPLOAD_FORBIDDEN=true
@@ -180,6 +191,46 @@ DO_NOT_LABEL_UNPUBLISHED_AS_PRIVATE=true
 PHRASE_OR_NOTE_PUBLICATION_SELECTOR_V1=no
 ```
 
+### #161 / PR #177 — Fresh Review repair gate
+
+PR #177 currently remains open, Draft, and unmerged at exact head:
+
+```text
+936cf8123395238c0fada03e8f04faf7667f8fd9
+```
+
+Fresh external increment and Coordinator progressive adjudication are frozen in Issue #161 comments `5558626632` and `5558647248`.
+
+Accepted repair scope:
+
+```text
+C-02=ACCEPTED_MUST_FIX
+C-01=ACCEPTED_MUST_FIX
+C-03=ACCEPTED_TEST_EVIDENCE_GAP_SAME_BATCH
+A-01=PENDING_LATER_PROGRESSIVE_ADJUDICATION
+B-03=PENDING_LATER_PROGRESSIVE_ADJUDICATION
+D-01=PENDING_LATER_PROGRESSIVE_ADJUDICATION
+D-03=DEFERRED_LOW_PRIORITY_PENDING_FINAL_DISPOSITION
+ALL_OTHER_REVIEW_CANDIDATES=NOT_PROMOTED_TO_BUILDER_SCOPE
+```
+
+Frozen Builder boundary:
+
+```text
+PRODUCT_SCOPE=C-02 + C-01 only
+TEST_EVIDENCE_SCOPE=C-03 + direct regression tests for C-02/C-01
+NO_SECOND_CREDENTIAL_STACK=true
+NO_SECOND_SCHEDULER=true
+NO_NEW_QUERY_EXECUTOR=true
+NO_AUTOMATIC_POST_RETRY=true
+NO_ACCOUNT_IDENTITY_CHANGE_ON_401=true
+PRESERVE_COMPLETED_QUERY_RESULTS_ON_401=true
+NO_PHYSICAL_OR_REAL_MAIMEMO_ACTION_IN_BUILDER=true
+NO_A01_B03_D01_D03_REPAIR_IN_THIS_BATCH=true
+```
+
+Return Bridge comment `5558663073` records the existing bounded Claude repair task. It is prepared for Owner relay, but dispatch/run completion remain unknown unless later Owner/result evidence advances them. Duplicate dispatch is forbidden by default. A matching returned result is stronger execution evidence than this prepared-state snapshot.
+
 ## Non-blocking tooling note
 
 `MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. Treat this as non-blocking tooling debt unless it causes recurring real friction.
@@ -210,11 +261,12 @@ TestFlight 1.0 (4) upload ACCEPTED
 
 #161 product lane:
 final Design handoff PASS
--> Claude Design -> Claude Code native handoff   <-- CURRENT
--> implementation branch / Draft PR
--> proportional tests + required fresh review for publication/readback semantic change
--> Coordinator adjudication
--> merge / physical smoke only where risk warrants
+-> implementation on PR #177
+-> Fresh Review adjudication: C-02 + C-01 MUST_FIX; C-03 evidence hardening
+-> bounded connection-lifecycle repair on existing PR #177 branch   <-- CURRENT
+-> Coordinator exact-diff adjudication
+-> proportional independent re-review / physical gate decision
+-> merge only after blockers are closed
 ```
 
 ## Stable safety boundaries
@@ -243,7 +295,9 @@ Fresh Chat takeover should read:
 ```text
 CHAT_HANDOFF.md
 -> this file
--> Issue #161 latest Design/code-handoff comments
+-> Issue #161 metadata/body
+-> exact PR #177 metadata/head
+-> exact Issue #161 repair authority comments 5558626632 + 5558647248 + Return Bridge 5558663073
 -> Issue #71 latest release status only when release work resumes
 -> live Owner collaboration preferences
 -> live agent-skills JIT routing only when dispatching
