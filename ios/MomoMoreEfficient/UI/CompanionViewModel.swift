@@ -87,10 +87,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private var armedPhraseApproval: ArmedPhraseApprovalIntent?
     private var interpretationDraft = ""
     private var phraseDraft = ""
-    /// Set when the app left the foreground while an authorized batch or an active
-    /// Preview was running. The transient credential teardown is owed but
-    /// deliberately postponed until that work resolves, so that scene changes
-    /// cannot disturb it.
+    /// Set when the app left the foreground while an authorized batch, an active
+    /// Preview or a batch Query run was still holding the provider operation
+    /// lane. The transient credential teardown is owed but deliberately
+    /// postponed until that work resolves, so that scene changes cannot disturb
+    /// it — and so that the restore on the way back is never asked to acquire a
+    /// lane somebody else still owns.
     private var owesBackgroundTeardown = false
     /// A Preview that finished while the app was away and whose transient
     /// credential was then torn down. It is deliberately NOT executable in this
@@ -111,6 +113,41 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func endProviderOperation(_ kind: ProviderOperationKind) {
         guard activeProviderOperation == kind else { return }
         activeProviderOperation = nil
+    }
+
+    /// Whether root lifecycle work must be postponed rather than run right now.
+    ///
+    /// A batch Query run belongs here for exactly the reason an in-flight
+    /// Preview or authorized write does: it owns the one provider operation
+    /// lane, so tearing the transient credential down underneath it would leave
+    /// the app disconnected while a lane-blocked foreground restore has no
+    /// guaranteed later lifecycle event to retry on. `ScenePhase` delivers the
+    /// transitions the system actually has; it does not promise a second one.
+    private var isLifecycleBusy: Bool {
+        isExecuting || isPreviewing || isValidatingCredential
+            || activeProviderOperation == .query
+    }
+
+    /// Runs the transient-credential teardown a scene transition asked for while
+    /// lane-owning work was still in flight, and reports whether it actually ran.
+    ///
+    /// One flag and one helper: credential validation, Preview, both write paths
+    /// and now a Query run all settle the *same* owed transition rather than
+    /// growing a second deferred-work queue.
+    @discardableResult
+    private func settleDeferredBackgroundTeardown() -> Bool {
+        guard owesBackgroundTeardown else { return false }
+        owesBackgroundTeardown = false
+        clearTransientCredential(preservingPreviewPresentation: true)
+        return true
+    }
+
+    /// The Query run released the lane. Nothing else can have taken it in the
+    /// meantime, so this is the point where a scene transition postponed by that
+    /// run finally settles — without needing a second foreground event.
+    private func endQueryOperation() {
+        endProviderOperation(.query)
+        settleDeferredBackgroundTeardown()
     }
 
     /// The whole read seam batch Query is given.
@@ -141,8 +178,11 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             ),
             credentialFingerprint: fingerprint,
             lease: lease,
+            onAuthenticationRejected: { [weak self] in
+                self?.handleQueryAuthenticationRejection()
+            },
             onFinish: { [weak self] in
-                self?.endProviderOperation(.query)
+                self?.endQueryOperation()
             }
         )
     }
@@ -243,10 +283,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         defer {
             endProviderOperation(.credentialValidation)
             isValidatingCredential = false
-            if owesBackgroundTeardown {
-                owesBackgroundTeardown = false
-                clearTransientCredential(preservingPreviewPresentation: true)
-            }
+            settleDeferredBackgroundTeardown()
         }
 
         do {
@@ -362,13 +399,19 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// Before execution starts this keeps the existing stale-Preview safety: the
     /// transient credential is dropped and the executable Preview is invalidated.
     ///
-    /// Once an authorized batch has actually started — or a read-only Preview is
-    /// already part-way through its reads — a scene change is NOT an instruction
-    /// to cancel. App switching and call interruptions leave that work alone; only
-    /// the system reclaiming our background assertion stops it, through the
-    /// ordinary cancellation path.
+    /// Once an authorized batch has actually started — or a read-only Preview or
+    /// a batch Query run is already part-way through its reads — a scene change
+    /// is NOT an instruction to cancel. App switching and call interruptions
+    /// leave that work alone; only the system reclaiming our background
+    /// assertion stops it, through the ordinary cancellation path.
+    ///
+    /// Postponing the teardown is also what keeps a short interruption during a
+    /// Query run from leaving a valid saved credential falsely disconnected: the
+    /// credential is still there when the scene comes back, and if the run
+    /// instead finishes while the app is still away, `endQueryOperation()`
+    /// settles the owed teardown so the next `.active` restores normally.
     func enterBackground() {
-        guard !isExecuting, !isPreviewing, !isValidatingCredential else {
+        guard !isLifecycleBusy else {
             owesBackgroundTeardown = true
             return
         }
@@ -542,14 +585,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// result, held aside as non-executable until `enterForeground()` revalidates
     /// it, so a short interruption does not force the Owner to re-read every item.
     private func settleBackgroundTeardownOwedByPreview(mode: ContentMode, document: String) {
-        guard owesBackgroundTeardown else { return }
-        owesBackgroundTeardown = false
+        // Read before the teardown, exactly as before: it is the Preview that
+        // just completed which is held aside, not whatever survives the clear.
         let completed: SuspendedSnapshot? = switch mode {
         case .interpretation: snapshot.map(SuspendedSnapshot.interpretation)
         case .phrase: phraseSnapshot.map(SuspendedSnapshot.phrase)
         }
-        clearTransientCredential(preservingPreviewPresentation: true)
-        guard let completed else { return }
+        guard settleDeferredBackgroundTeardown(), let completed else { return }
         suspendedPreview = SuspendedPreview(mode: mode, snapshot: completed, document: document)
     }
 
@@ -773,10 +815,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             )
         }
 
-        if owesBackgroundTeardown {
-            owesBackgroundTeardown = false
-            clearTransientCredential(preservingPreviewPresentation: true)
-        }
+        settleDeferredBackgroundTeardown()
     }
 
     /// Runs the whole approved plan: CREATE phase, then UPDATE phase, with no
@@ -944,10 +983,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         if fullySucceeded, !receipts.isEmpty {
             completionAcknowledgement = acknowledgement(forBatch: receipts)
         }
-        if owesBackgroundTeardown {
-            owesBackgroundTeardown = false
-            clearTransientCredential(preservingPreviewPresentation: true)
-        }
+        settleDeferredBackgroundTeardown()
     }
 
     /// Receipts stay per phase, so CREATE and UPDATE remain distinguishable in
@@ -1215,10 +1251,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             historyErrorMessage = localHistoryError
         }
         // The scene change we postponed while the batch was authorized and running.
-        if owesBackgroundTeardown {
-            owesBackgroundTeardown = false
-            clearTransientCredential(preservingPreviewPresentation: true)
-        }
+        settleDeferredBackgroundTeardown()
     }
 
     @discardableResult

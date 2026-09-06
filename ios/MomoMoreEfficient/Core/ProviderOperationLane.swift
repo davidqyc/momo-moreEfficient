@@ -54,6 +54,11 @@ struct AccountIdentity: Equatable, Sendable {
 ///
 /// `finish()` returns the operation lane and clears the lease. It is idempotent,
 /// so the runner can release it on every exit path.
+///
+/// `reportAuthenticationRejection()` is the other direction of the same seam: a
+/// 401 is not a Query-local fact, it is the root session's credential being
+/// rejected, so the run reports it back to the one root owner instead of holding
+/// a failure the root cannot see.
 @MainActor
 final class QueryReadLease {
     let api: MaimemoTransport
@@ -63,22 +68,38 @@ final class QueryReadLease {
 
     private let lease: OperationCredentialLease
     private var onFinish: (() -> Void)?
+    private var onAuthenticationRejected: (() -> Void)?
 
     init(
         api: MaimemoTransport,
         credentialFingerprint: String,
         lease: OperationCredentialLease,
+        onAuthenticationRejected: @escaping () -> Void = {},
         onFinish: @escaping () -> Void
     ) {
         self.api = api
         self.credentialFingerprint = credentialFingerprint
         self.lease = lease
+        self.onAuthenticationRejected = onAuthenticationRejected
         self.onFinish = onFinish
+    }
+
+    /// Tells the root session owner that this run's credential was rejected.
+    ///
+    /// A lease is minted once per run, and this fires at most once per lease, so
+    /// one failing run reaches the existing root session-failure path exactly
+    /// once. It does not release the lane: the run is still unwinding, and
+    /// `finish()` stays the single place that returns it.
+    func reportAuthenticationRejection() {
+        guard let onAuthenticationRejected else { return }
+        self.onAuthenticationRejected = nil
+        onAuthenticationRejected()
     }
 
     func finish() {
         guard let onFinish else { return }
         self.onFinish = nil
+        onAuthenticationRejected = nil
         lease.clear()
         onFinish()
     }

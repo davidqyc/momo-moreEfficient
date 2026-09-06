@@ -330,6 +330,7 @@ func queryLease(
     _ transport: HTTPTransport,
     fingerprint: String = "QUERY_FP_1",
     scheduler: RequestWindowScheduler = RequestWindowScheduler(),
+    onAuthenticationRejected: @escaping () -> Void = {},
     onFinish: @escaping () -> Void = {}
 ) throws -> QueryReadLease {
     let lease = try credentialLease()
@@ -342,8 +343,20 @@ func queryLease(
         ),
         credentialFingerprint: fingerprint,
         lease: lease,
+        onAuthenticationRejected: onAuthenticationRejected,
         onFinish: onFinish
     )
+}
+
+/// Counts how often a narrow main-actor seam actually fired, so "exactly once"
+/// and "not before now" can be asserted rather than assumed.
+@MainActor
+final class CallCounter {
+    private(set) var count = 0
+
+    func record() { count += 1 }
+
+    var didFire: Bool { count > 0 }
 }
 
 final class RecordingSleeper: RequestSleeper, @unchecked Sendable {

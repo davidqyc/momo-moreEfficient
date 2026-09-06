@@ -56,16 +56,32 @@ final class QuerySessionStore: ObservableObject {
     private var runGeneration = 0
     private var activeControl: ExecutionControl?
     private var activeTask: Task<Void, Never>?
+    /// The most recently dispatched run task.
+    ///
+    /// Deliberately **not** cleared by `stopDispatching()`. `activeTask` says
+    /// which run currently has dispatch authority; this is only a handle on the
+    /// last run's actual completion, and confers no authority whatsoever —
+    /// `runGeneration` alone still decides whether a response may apply. It
+    /// exists so a stopped run can be awaited until it has genuinely unwound and
+    /// released its `QueryReadLease`, rather than being observed as a `nil` task
+    /// that answers instantly.
+    private var lastDispatchedRunTask: Task<Void, Never>?
     /// Set once the resolver stage has completed for the current result, so
     /// 继续查阅 knows whether it must run that atomic stage again.
     private var resolverCompleted = false
 
     init() {}
 
-    /// Awaits the in-flight run so a headless test can assert terminal state
-    /// without polling. Production never calls this: the UI observes `phase`.
+    /// Awaits the last dispatched run so a headless test can assert terminal
+    /// state without polling. Production never calls this: the UI observes
+    /// `phase`.
+    ///
+    /// It waits on `lastDispatchedRunTask`, not `activeTask`, so it is still a
+    /// real signal after `stop()`: when it returns, the old run has finished
+    /// unwinding and has released the provider operation lane, which is what a
+    /// late-response or single-flight assertion actually needs to wait for.
     func awaitRunCompletion() async {
-        await activeTask?.value
+        await lastDispatchedRunTask?.value
     }
 
     // MARK: - Derived presentation
@@ -312,7 +328,7 @@ final class QuerySessionStore: ObservableObject {
         activeControl = control
         phase = resolverCompleted ? .reading : .resolving
 
-        activeTask = Task { [weak self] in
+        let task = Task { [weak self] in
             await self?.execute(
                 generation: generation,
                 lease: lease,
@@ -321,6 +337,8 @@ final class QuerySessionStore: ObservableObject {
             )
             lease.finish()
         }
+        activeTask = task
+        lastDispatchedRunTask = task
     }
 
     /// The sequential, row-major read loop. Exactly one request is in flight at
@@ -348,7 +366,7 @@ final class QuerySessionStore: ObservableObject {
                 phase = .reading
             } catch let error as CompanionError where error.abortsReadPlan {
                 guard isCurrent(generation) else { return }
-                finishWithGlobalFailure(error)
+                finishWithGlobalFailure(error, lease: lease)
                 return
             } catch {
                 // Cancelled, or interrupted before the stage completed: no
@@ -385,7 +403,7 @@ final class QuerySessionStore: ObservableObject {
                     // The cell that was mid-flight goes back to unfinished, not
                     // to a wrong value.
                     setCell(.queued, normalized: normalized, family: family)
-                    finishWithGlobalFailure(error)
+                    finishWithGlobalFailure(error, lease: lease)
                     return
                 } catch {
                     guard isCurrent(generation) else { return }
@@ -404,7 +422,16 @@ final class QuerySessionStore: ObservableObject {
 
     private func isCurrent(_ generation: Int) -> Bool { generation == runGeneration }
 
-    private func finishWithGlobalFailure(_ error: CompanionError) {
+    /// Records a batch-level provider failure: the run stops, completed cells
+    /// keep their truth, everything unfinished becomes 未读, and nothing retries.
+    ///
+    /// A 401 is additionally reported back through the lease. It is the *root*
+    /// session's credential that the provider rejected, so leaving the root
+    /// believing it is connected would let the very next 查阅 mint another lease
+    /// from the same rejected credential. Only `authenticationRejected` crosses
+    /// this seam: a decode failure, a transport error and a rate limit are all
+    /// ordinary read failures and say nothing about the credential.
+    private func finishWithGlobalFailure(_ error: CompanionError, lease: QueryReadLease) {
         activeControl?.requestCancellation()
         activeControl = nil
         markUnfinishedAsUnread()
@@ -412,6 +439,9 @@ final class QuerySessionStore: ObservableObject {
         lastStopReason = reason
         phase = .stopped(reason)
         runGeneration &+= 1
+        if error == .authenticationRejected {
+            lease.reportAuthenticationRejection()
+        }
     }
 
     private func uniqueSpellingsInRowOrder() -> [String] {

@@ -289,6 +289,33 @@ final class QuerySessionStoreTests: XCTestCase {
         }
     }
 
+    /// The synchronization `stop()` tests actually depend on.
+    ///
+    /// `stop()` clears `activeTask`, so awaiting *that* after a stop answers
+    /// instantly and proves nothing. `awaitRunCompletion()` waits on the last
+    /// dispatched run instead, so it only returns once the run has genuinely
+    /// unwound and released its `QueryReadLease`.
+    func testAwaitingAStoppedRunWaitsForItsLeaseToBeReleased() async throws {
+        let store = QuerySessionStore()
+        store.updateInput("alpha")
+
+        let released = CallCounter()
+        let gated = GatedHTTPTransport(resolvedQueryResponse(["alpha"]))
+        store.start(lease: try queryLease(gated, onFinish: { released.record() }))
+        await gated.waitUntilRequested()
+
+        store.stop()
+        XCTAssertFalse(released.didFire, "stop() must not pretend the run finished")
+
+        await gated.resume()
+        await store.awaitRunCompletion()
+
+        XCTAssertEqual(released.count, 1)
+        // The late response still could not touch the stopped result.
+        XCTAssertNil(store.rows[0].vocabularyID)
+        XCTAssertEqual(store.rows[0].cell(.interpretation), .unread)
+    }
+
     // MARK: - Q-33 … Q-36: global stops
 
     func testAuthenticationRejectionStopsTheBatchAndPreservesCompletedTruth() async throws {
