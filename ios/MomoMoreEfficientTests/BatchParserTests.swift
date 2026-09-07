@@ -100,7 +100,8 @@ final class BatchParserTests: XCTestCase {
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
             transportFactory: { FakeHTTPTransport([]) },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         model.installVerifiedCredentialForTesting(token: &draft)
         XCTAssertTrue(model.isConnected)

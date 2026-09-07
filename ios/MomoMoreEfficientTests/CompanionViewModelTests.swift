@@ -13,7 +13,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: rejectedStore,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { rejectedTransport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         let rejectedResult = await rejected.connect(token: fakeToken)
@@ -33,7 +34,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: validStore,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { validTransport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         let validResult = await valid.connect(token: "  \(fakeToken)\n")
@@ -54,7 +56,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         let connection = Task { await model.connect(token: fakeToken) }
@@ -90,7 +93,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { validationTransports.removeFirst() },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var old = fakeToken
         model.installVerifiedCredentialForTesting(token: &old)
@@ -124,7 +128,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { validTransport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var old = fakeToken
         model.installVerifiedCredentialForTesting(token: &old)
@@ -148,7 +153,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         XCTAssertFalse(model.isConnected)
@@ -263,7 +269,8 @@ final class CompanionViewModelTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         let connected = await model.connect(token: "  \(fakeToken)\n")
@@ -313,6 +320,65 @@ final class CompanionViewModelTests: XCTestCase {
 
         reconstructed.toggleTag("BEC")
         XCTAssertEqual(reconstructed.selectedTags, ["MBA", "GMAT"])
+    }
+
+    /// #161 test-isolation repair, negative control: proves the isolation
+    /// mechanism itself, not just that three runs happened to come up green.
+    /// Two models given the *same* explicit suite intentionally share
+    /// preference state; two models given *separate* isolated suites — the
+    /// default every test helper now uses — must never observe each other's
+    /// writes, however randomized execution order interleaves them.
+    func testIsolatedPreferenceSuitesDoNotLeakButAnExplicitlySharedSuiteDoes() {
+        let (sharedDefaults, sharedSuite) = isolatedDefaults()
+        defer { sharedDefaults.removePersistentDomain(forName: sharedSuite) }
+
+        let sharedFirst = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: sharedDefaults
+        )
+        let sharedSecond = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: sharedDefaults
+        )
+        sharedFirst.selectPublicationPreference(.unpublished)
+        sharedFirst.toggleTag("MBA")
+        XCTAssertEqual(sharedSecond.selectedTags, [])
+        XCTAssertEqual(sharedSecond.publicationPreference, .published)
+        XCTAssertEqual(
+            InterpretationPublicationPreference.load(from: sharedDefaults),
+            .unpublished
+        )
+
+        let isolatedA = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: isolatedPreferenceDefaults()
+        )
+        let isolatedB = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: isolatedPreferenceDefaults()
+        )
+        isolatedA.selectPublicationPreference(.unpublished)
+        isolatedA.toggleTag("MBA")
+        isolatedA.toggleTag("BEC")
+
+        XCTAssertEqual(isolatedA.selectedTags, ["MBA", "BEC"])
+        XCTAssertEqual(isolatedA.publicationPreference, .unpublished)
+        // The independently-isolated model never observes A's writes...
+        XCTAssertEqual(isolatedB.selectedTags, [])
+        XCTAssertEqual(isolatedB.publicationPreference, .published)
+        // ...nor does a freshly-isolated construction made afterward, which
+        // is exactly what every `connectedModel` helper's default now does.
+        let isolatedC = CompanionViewModel(
+            tokenStore: FakeTokenStore(),
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: isolatedPreferenceDefaults()
+        )
+        XCTAssertEqual(isolatedC.selectedTags, [])
+        XCTAssertEqual(isolatedC.publicationPreference, .published)
     }
 
     func testInvalidSubmittedOrStoredTagPreferencesFailSafely() throws {
@@ -374,13 +440,14 @@ final class CompanionViewModelTests: XCTestCase {
         let store = FakeTokenStore()
         var draft = fakeToken
         let historyStore = InMemoryHistoryStore()
-        let first = CompanionViewModel(tokenStore: store, historyStore: historyStore)
+        let first = CompanionViewModel(tokenStore: store, historyStore: historyStore, preferenceDefaults: isolatedPreferenceDefaults())
         first.installVerifiedCredentialForTesting(token: &draft)
 
         let reconstructed = CompanionViewModel(
             tokenStore: store,
             historyStore: historyStore,
-            credentialValidationTransportFactory: successfulCredentialValidationTransport
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         XCTAssertFalse(reconstructed.isConnected)
@@ -397,7 +464,8 @@ final class CompanionViewModelTests: XCTestCase {
         let model = CompanionViewModel(
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
-            credentialValidationTransportFactory: successfulCredentialValidationTransport
+            credentialValidationTransportFactory: successfulCredentialValidationTransport,
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -417,7 +485,8 @@ final class CompanionViewModelTests: XCTestCase {
     func testLocalParseAcknowledgementReportsCountAndEndpoints() {
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
-            historyStore: InMemoryHistoryStore()
+            historyStore: InMemoryHistoryStore(),
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         model.sourceText = "sphere\nn. 球体\nracket\nn. 球拍"
 
@@ -443,7 +512,8 @@ final class CompanionViewModelTests: XCTestCase {
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             sleeperFactory: { gate },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -713,7 +783,8 @@ final class CompanionViewModelTests: XCTestCase {
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             sleeperFactory: { gate },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -1334,7 +1405,7 @@ final class CompanionViewModelTests: XCTestCase {
         )
         let historyStore = InMemoryHistoryStore(receipts: [receipt])
         let tokenStore = FakeTokenStore(token: fakeToken)
-        let model = CompanionViewModel(tokenStore: tokenStore, historyStore: historyStore)
+        let model = CompanionViewModel(tokenStore: tokenStore, historyStore: historyStore, preferenceDefaults: isolatedPreferenceDefaults())
         model.sourceText = "draft\nn. 草稿"
 
         model.clearHistory()
@@ -1395,7 +1466,7 @@ final class CompanionViewModelTests: XCTestCase {
         tokenStore: FakeTokenStore = FakeTokenStore(),
         historyStore: HistoryStore = InMemoryHistoryStore(),
         assertion: FakeBackgroundExecutionAssertion? = nil,
-        preferenceDefaults: UserDefaults = .standard
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
@@ -1416,7 +1487,8 @@ final class CompanionViewModelTests: XCTestCase {
     private func connectedModel(
         transports: [HTTPTransport],
         historyStore: HistoryStore = InMemoryHistoryStore(),
-        assertion: FakeBackgroundExecutionAssertion? = nil
+        assertion: FakeBackgroundExecutionAssertion? = nil,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         var remaining = transports
@@ -1426,7 +1498,8 @@ final class CompanionViewModelTests: XCTestCase {
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: preferenceDefaults
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)

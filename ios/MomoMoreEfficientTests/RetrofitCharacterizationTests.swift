@@ -32,7 +32,8 @@ final class RetrofitCharacterizationTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         let firstConnect = await model.connect(token: fakeToken)
@@ -64,7 +65,8 @@ final class RetrofitCharacterizationTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         let firstConnect = await model.connect(token: fakeToken)
@@ -121,7 +123,8 @@ final class RetrofitCharacterizationTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: store,
             credentialValidationTransportFactory: { successfulCredentialValidationTransport() },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         XCTAssertEqual(model.history.count, 2)
         XCTAssertEqual(Set(model.history.map(\.contentKind)), [.interpretation, .phrase])

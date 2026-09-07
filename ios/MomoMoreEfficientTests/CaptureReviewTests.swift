@@ -111,7 +111,8 @@ final class CaptureReviewTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
@@ -152,7 +153,8 @@ final class CaptureReviewTests: XCTestCase {
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let intent = CaptureTextIntent()
         intent.text = "network-free"
@@ -178,7 +180,8 @@ final class CaptureReviewTests: XCTestCase {
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let store = CaptureReviewStore()
 
@@ -224,7 +227,8 @@ final class CaptureReviewTests: XCTestCase {
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         await CaptureReviewForegroundGate.activate(

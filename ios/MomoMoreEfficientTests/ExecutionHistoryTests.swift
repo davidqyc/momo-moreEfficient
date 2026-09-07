@@ -106,11 +106,13 @@ final class ExecutionHistoryTests: XCTestCase {
 
         let first = CompanionViewModel(
             tokenStore: FakeTokenStore(),
-            historyStore: store
+            historyStore: store,
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let reconstructed = CompanionViewModel(
             tokenStore: FakeTokenStore(),
-            historyStore: FileHistoryStore(applicationSupportDirectory: root)
+            historyStore: FileHistoryStore(applicationSupportDirectory: root),
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
 
         XCTAssertEqual(first.history.map { $0.items[0].spelling }, ["newer", "older"])

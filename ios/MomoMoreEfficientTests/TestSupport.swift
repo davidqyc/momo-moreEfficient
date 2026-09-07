@@ -9,6 +9,16 @@ func successfulCredentialValidationTransport() -> HTTPTransport {
     FakeHTTPTransport([vocabularyResponse("INVALID_VALIDATION_VOC", "apple")])
 }
 
+/// A `UserDefaults` domain scoped to one caller. `CompanionViewModel` reads
+/// `WriteTagPreference`/`InterpretationPublicationPreference` from whatever
+/// `preferenceDefaults` it is given at `init`, defaulting to the app's real
+/// `.standard` domain; every test construction must instead get its own
+/// isolated domain, or one test's preference write (or leftover state from a
+/// prior run) can leak into another under randomized execution order.
+func isolatedPreferenceDefaults() -> UserDefaults {
+    UserDefaults(suiteName: "MomoMoreEfficientTests.\(UUID().uuidString)")!
+}
+
 final class FakeTokenStore: TokenStore, CustomDebugStringConvertible {
     private var token: String?
     private(set) var saveCount = 0

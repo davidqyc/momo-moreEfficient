@@ -15,7 +15,7 @@
    </BuildAction>
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
       <Testables>
-         <TestableReference skipped="NO">
+         <TestableReference skipped="NO" randomExecutionOrdering="YES">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A50000000000000000000002" BuildableName="MomoMoreEfficientTests.xctest" BlueprintName="MomoMoreEfficientTests" ReferencedContainer="container:MomoMoreEfficient.xcodeproj"/>
          </TestableReference>
          <TestableReference skipped="NO">

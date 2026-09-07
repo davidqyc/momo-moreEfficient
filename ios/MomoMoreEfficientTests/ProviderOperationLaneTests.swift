@@ -76,7 +76,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { gated },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let connection = Task { await model.connect(token: fakeToken) }
         await gated.waitUntilRequested()
@@ -130,7 +131,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { FakeHTTPTransport([]) },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         XCTAssertFalse(model.isConnected)
         XCTAssertNil(model.beginQueryRead())
@@ -149,7 +151,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         XCTAssertEqual(model.accountIdentity, .disconnected)
 
@@ -173,7 +176,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let connected = await model.connect(token: fakeToken)
         XCTAssertTrue(connected)
@@ -191,7 +195,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { successfulCredentialValidationTransport() },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let connected = await model.connect(token: fakeToken)
         XCTAssertTrue(connected)
@@ -211,7 +216,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { successfulCredentialValidationTransport() },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let connected = await model.connect(token: fakeToken)
         XCTAssertTrue(connected)
@@ -235,7 +241,8 @@ final class ProviderOperationLaneTests: XCTestCase {
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         let connected = await model.connect(token: fakeToken)
         XCTAssertTrue(connected)
@@ -547,7 +554,8 @@ final class ProviderOperationLaneTests: XCTestCase {
                 successfulCredentialValidationTransport()
             },
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)

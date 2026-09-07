@@ -844,7 +844,8 @@ final class MixedBatchRunTests: XCTestCase {
     private func connectedModel(
         _ factory: SequencedTransportFactory,
         historyStore: HistoryStore = InMemoryHistoryStore(),
-        assertion: FakeBackgroundExecutionAssertion? = nil
+        assertion: FakeBackgroundExecutionAssertion? = nil,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
@@ -852,7 +853,8 @@ final class MixedBatchRunTests: XCTestCase {
             historyStore: historyStore,
             transportFactory: factory.make,
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: preferenceDefaults
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -862,7 +864,8 @@ final class MixedBatchRunTests: XCTestCase {
     private func connectedModel(
         transports: [HTTPTransport],
         historyStore: HistoryStore = InMemoryHistoryStore(),
-        assertion: FakeBackgroundExecutionAssertion? = nil
+        assertion: FakeBackgroundExecutionAssertion? = nil,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         var remaining = transports
@@ -871,7 +874,8 @@ final class MixedBatchRunTests: XCTestCase {
             historyStore: historyStore,
             transportFactory: { remaining.removeFirst() },
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: preferenceDefaults
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)

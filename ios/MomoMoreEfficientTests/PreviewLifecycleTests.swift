@@ -237,7 +237,8 @@ final class PreviewLifecycleTests: XCTestCase {
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleepers.isEmpty ? RecordingSleeper() : sleepers.removeFirst() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -323,7 +324,8 @@ final class PreviewLifecycleTests: XCTestCase {
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleepers.isEmpty ? RecordingSleeper() : sleepers.removeFirst() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -424,7 +426,8 @@ final class PreviewLifecycleTests: XCTestCase {
         transport: HTTPTransport,
         sleeper: RequestSleeper,
         tokenStore: FakeTokenStore = FakeTokenStore(),
-        assertion: FakeBackgroundExecutionAssertion? = nil
+        assertion: FakeBackgroundExecutionAssertion? = nil,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         let model = CompanionViewModel(
@@ -433,7 +436,8 @@ final class PreviewLifecycleTests: XCTestCase {
             transportFactory: { transport },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleeper },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: preferenceDefaults
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)

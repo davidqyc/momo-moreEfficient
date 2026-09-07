@@ -204,7 +204,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
                 RehearsalTransport(perRequestDelaySeconds: 0)
             },
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         await model.enterForeground()
         model.sourceText = "word\nn. 释义草稿"
@@ -326,7 +327,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transports.removeFirst() },
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
@@ -525,7 +527,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
     private func connectedModel(
         transports: [HTTPTransport],
-        sleeperFactory: @escaping () -> RequestSleeper = { RecordingSleeper() }
+        sleeperFactory: @escaping () -> RequestSleeper = { RecordingSleeper() },
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         var remaining = transports
         let model = CompanionViewModel(
@@ -534,21 +537,26 @@ final class PhraseUIIntegrationTests: XCTestCase {
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: sleeperFactory,
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: preferenceDefaults
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
         return model
     }
 
-    private func connectedModel(factory: SequencedTransportFactory) -> CompanionViewModel {
+    private func connectedModel(
+        factory: SequencedTransportFactory,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
+    ) -> CompanionViewModel {
         let model = CompanionViewModel(
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: factory.make,
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: preferenceDefaults
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
