@@ -1,157 +1,197 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-06
-sourceMainSha=35ccfc2f6a54a23bf23e1328a96e4a14f7fe10d6
+updatedAt=2026-09-08
+sourceMainSha=39b464641910f781173de4deb730f631678f334c
 sourceMainShaIsSnapshotOnly=true
 
-## Current truth
+> Current truth only. Live default branch + current Issue/PR/WIP + latest explicit Owner instruction outrank this snapshot. Historical accepted detail remains in the owning Issues/PRs/git history and should be read only when the current task needs it.
+
+## 1. Current truth
 
 ```text
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_PRODUCT_VERSION=1.0 (4) uploaded to App Store Connect; Apple processing pending
-
-LAST_COMPLETED_PRODUCT_ISSUE=#105
-LAST_MERGED_PR=#176
-LAST_MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
-LAST_MERGE_SCOPE=mechanical TestFlight build-number bump 3 -> 4 for app + ShareExtension only
 
 CURRENT_PRIMARY_ISSUE=#161
 CURRENT_PRIMARY_PR=#177
-CURRENT_PRIMARY_PR_HEAD=936cf8123395238c0fada03e8f04faf7667f8fd9
+CURRENT_PRIMARY_PR_HEAD=4dc2a53522a3b9dd4ec9e88a5b6e295872229734
 CURRENT_PRIMARY_PR_STATUS=OPEN_DRAFT_UNMERGED
-CURRENT_PRIMARY_GATE=PR_177_FRESH_REVIEW_BLOCKED_ON_CONNECTION_LIFECYCLE_REPAIR
-CURRENT_RELEASE_GATE_STATUS=UPLOAD_ACCEPTED_PROCESSING_PENDING_IN_PARALLEL
-CURRENT_BLOCKER=C-02 + C-01 accepted must-fix product blockers; C-03 accepted only as same-batch test-evidence hardening. A-01/B-03/D-01 remain pending later progressive adjudication; D-03 is deferred low priority. Do not expand this repair batch.
-CURRENT_UNIQUE_NEXT=complete or ingest the existing bounded Claude Builder connection-lifecycle repair on PR #177; do not duplicate-dispatch it; then Coordinator performs exact-diff adjudication and decides proportional independent re-review / physical gate before merge
 
-CURRENT_EXTERNAL_AGENT_TASK_ID=XHN-161-PR177-CONNECTION-LIFECYCLE-REPAIR-20260906
-CURRENT_EXTERNAL_AGENT_TARGET_FAMILY=Claude
-CURRENT_EXTERNAL_AGENT_CONVERSATION=NEW_CONVERSATION
-CURRENT_EXTERNAL_AGENT_DISPATCH_STATE=unknown
-CURRENT_RETURN_BRIDGE_COMMENT=5558663073
-CURRENT_REPAIR_AUTHORITY_COMMENTS=5558626632 + 5558647248
-DUPLICATE_DISPATCH_ALLOWED=no_by_default
+CONNECTION_LIFECYCLE_REPAIR=COMPLETE_ON_CURRENT_PR_LINE
+TEST_ISOLATION_REPAIR=COMPLETE_ON_CURRENT_PR_HEAD
+LATEST_TEST_ISOLATION_COMMIT=4dc2a53522a3b9dd4ec9e88a5b6e295872229734
+LATEST_TEST_ISOLATION_COMMIT_SCOPE=TEST_ONLY
 
-IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=cleared_for_#161_by_owner_explicit_workflow_after_design_gate
+NORMAL_TESTS_CI=PASS
+iOS_CAPTURE_RELEASE_GATE=FAIL
+CAPTURE_GATE_RUN_ID=34130642290
+CAPTURE_GATE_RERUN_ATTEMPT=2
+
+CURRENT_GATE=CAPTURE_GATE_OBSERVATION_SUBSTRATE_REPAIR
+TEST_SUBSTRATE_FAILURE_STRONGLY_SUSPECTED=yes
+PRODUCT_REGRESSION_ESTABLISHED=no
+PRODUCT_REGRESSION_EXCLUDED=no
+CURRENT_UNIQUE_NEXT=release exactly one bounded Capture Gate Test Substrate Repair Builder task after fresh-chat JIT prompt preflight, then adjudicate the returned diff/evidence
+
+ACTIVE_EXTERNAL_AGENT=0
+CURRENT_EXTERNAL_AGENT_TASK=none
+NEXT_CAPTURE_GATE_TASK_DISPATCHED=no
+CURRENT_CAPTURE_GATE_RETURN_BRIDGE=none_until_actual_prompt_release
+
+CURRENT_ROLLOVER_ADJUDICATION_COMMENT=5573587756
+PREVIOUS_CI_TRIAGE_COMMENT=5572405173
+```
+
+## 2. What is already proven on the current PR line
+
+The latest completed `【XHN】#161 PR177 Test Isolation Repair` changed test isolation only. Its returned evidence was admitted before this rollover:
+
+```text
+TARGETED_TESTS=126_PASS
+FULL_TEST_SUITE=425_OF_425_PASS
+FULL_SUITE_REPEAT_COUNT=5
+FULL_SUITE_CRASHES=0
+REMOTE_PR_HEAD_PUSHED=yes
+PR_REMAINS_DRAFT_OPEN_UNMERGED=yes
+```
+
+This closes the shared-`UserDefaults.standard` test-state contamination problem strongly enough to move on. It does **not** make the Capture Release Gate green.
+
+The current capture failure is narrower:
+
+```text
+real system Share Sheet opens
+→ 小黑鸟伴侣 Share Extension is found
+→ extension is tapped
+→ UI test then waits for Button "保存"
+→ host-app-rooted XCUIApplication never observes that button
+→ gate fails
+```
+
+The same-head Capture Gate was rerun exactly once and failed again. Ordinary tests remain green.
+
+## 3. Current adjudication of the red Capture Gate
+
+Fresh external increment and rollover adjudication are frozen in Issue #161 comment `5573587756`.
+
+Apple's current app-extension model makes the existing observation route structurally suspect: the extension is invoked through extension context / separate extension execution, while the current gate continues querying the host-app `XCUIApplication` after entering the Share Extension.
+
+Therefore current classification is deliberately narrower than the prior Chat's wording:
+
+```text
+TEST_SUBSTRATE_FAILURE_STRONGLY_SUSPECTED=yes
+PRODUCT_REGRESSION_ESTABLISHED=no
+PRODUCT_REGRESSION_EXCLUDED=no
+```
+
+Do **not** mutate production code merely to make the gate green. First reproduce/classify the extension observation boundary. Production code may be touched only if direct evidence establishes a product defect.
+
+The latest isolation commit being test-only is useful scope evidence, but it is not by itself causal proof: the last known-green Capture Gate predates both the preceding connection-lifecycle production repair and the isolation commit.
+
+## 4. Next Builder contract shape
+
+The next task is one bounded Builder round:
+
+```text
+TASK_CLASS=CAPTURE_GATE_TEST_SUBSTRATE_REPAIR
+PRIMARY_SCOPE=UI_TEST / TEST_OBSERVATION_SUBSTRATE
+REPRODUCE_AND_CLASSIFY_BEFORE_MUTATION=yes
+PREFER_PROVIDER_NATIVE_XCUITEST_OBSERVATION=yes
+MINIMUM_SAFE_TEST_HOOK_ONLY_IF_NEEDED=yes
+PRODUCTION_CODE=only_if_direct_product_defect_is_proven
+MERGE=no
+```
+
+The repair must preserve the original release proof chain:
+
+```text
+real system Share Sheet
+→ actual 小黑鸟伴侣 Share Extension
+→ deterministic text saved through the extension
+→ main app receives the real result
+→ Capture Review appears
+→ exact payload equality proven
+```
+
+Forbidden shortcut:
+
+```text
+make CI green by bypassing the real Share Sheet / actual Share Extension / post-save main-app exact-payload proof
+```
+
+### External-Agent routing
+
+```text
+LAST_OWNER_SELECTED_AGENT_FAMILY=Claude
+NEXT_TASK_AGENT_FAMILY=Claude_unless_hard_current_constraint_requires_switch
+MODEL_EFFORT_SPEED_TOPOLOGY=JIT_UNRESOLVED
+TARGET_WORKSPACE_CONTINUITY=/Users/david/Documents/GitHub/momo-moreEfficient
+```
+
+Fresh Chat must live-read current `agent-skills` before release, prove workspace identity/freshness, establish exactly one Return Bridge, and return one Owner-relay dispatch. Do not inherit a previous Claude model/effort mechanically.
+
+## 5. Product-value route after the gate
+
+If the repaired candidate restores a green Capture Release Gate without weakening the proof:
+
+```text
+PR_177_CANDIDATE_CONFIRMED_FOR_DEVICE_USE
+→ Development install to Owner iPhone
+→ Owner real-use smoke / daily use
+→ later merge/release decisions from actual evidence
+```
+
+Do not let low-value deferred evidence block this device-use step:
+
+```text
+D-03=DEFERRED_LOW_PRIORITY
+UNPUBLISHED_REAL_ACCOUNT_EVIDENCE=NOT_A_BLOCKER_FOR_DEVELOPMENT_INSTALL
+```
+
+The current route does **not** require iPhone Mirroring. If a future task ever proposes Mirroring, notify Owner before launching it and re-evaluate whether a shorter manual check is cheaper.
+
+## 6. Stable safety / non-authorization boundaries
+
+```text
+MERGE_AUTHORIZED_BY_THIS_STATE=false
+TESTFLIGHT_NEW_UPLOAD_AUTHORIZED=false
 TESTFLIGHT_BUILD4_REUPLOAD_FORBIDDEN=true
-MACHINE_MIGRATION_HOLD=CLEARED
-NEW_MAC_WORKSPACE_READY=yes
-OLD_MAC_REPO_RETIREMENT_GATE=PASS
-NO_FOURTH_RESOLVER_SURFACE=true
-SELF_ADDED_UNRESOLVABLE_POLICY=FAIL_CLOSED_WITH_未读取到可用词条目标
+REAL_MAIMEMO_WRITE_AUTHORIZED=false
+TOKEN_READ_AUTHORIZED=false
+IPHONE_MIRRORING_AUTHORIZED=false
+AUTOMATION_AUTHORIZED=false
+MONITORING_AUTHORIZED=false
 ```
 
-## Accepted shipping baseline
+Stable product write floor remains:
 
-### #167 — batch vocabulary / parser
+- Preview is not write authorization;
+- explicit approval before mutation;
+- fresh authenticated preflight when stale state could change the write target;
+- each changed item gets at most one mutating POST;
+- no automatic mutating-POST retry;
+- authenticated readback after dispatch;
+- uncertain mutation recovery is GET-only;
+- UPDATE requires an explicit authenticated-user target;
+- no automatic delete/rollback/replay;
+- personal Maimemo Token and private batch material stay device-local and out of Git/logs/review artifacts;
+- 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
-Merged at `25e5cd85ea8f436cc66b41e49d6313547b0a6148`.
+## 7. Accepted historical anchors still relevant
 
-- public batch vocabulary query is the normal resolver;
-- query POST is read-semantic;
-- no artificial fixed 30-item total cap;
-- interpretation and phrase inputs accept unambiguous batches with or without blank lines;
-- bounded input/content safety remains.
+### Capture / Share baseline
 
-### #168 — aggregate-window scheduler
+Issue #105 previously closed the original capture workflow with a real system Share Sheet and Share Extension physical gate. That historical proof remains relevant as a baseline, but it does not override the current failing PR #177 Capture Release Gate.
 
-Merged through PR #172 at `bc03ee03e06bfa23a160e2599bebc9db34635812`.
+### TestFlight build 4
 
-- no blanket 1.6s read floor;
-- `20/10s`, `40/60s`, `2000/5h` enforced with `ContinuousClock` semantics;
-- sequential reads/writes, no mutating retry, mandatory post-POST readback preserved.
+TestFlight `1.0 (4)` was uploaded and accepted previously. Do not re-upload build 4 merely because PR #177 is under repair.
 
-Accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
+### #161 Design/product baseline
 
-### #164 — completed with provider visibility limit
-
-Issue #164 is closed completed.
-
-Real physical evidence exhausted the bounded first-party public target-resolution surfaces for the Owner's self-added item:
-
-```text
-POST /open/api/v1/vocabulary/query          -> no safe target
-GET  /open/api/v1/vocabulary?spelling=...   -> no safe target
-POST /open/api/v1/study/query_study_records -> no safe target after bounded sync settling
-```
-
-PR #173 and PR #174 were both closed unmerged. No fourth resolver, private endpoint, or guessed id is allowed. Items without a safe public target remain fail-closed with `未读取到可用词条目标`.
-
-### #105 — capture workflow completed
-
-Issue #105 is closed completed after the final physical release gate.
-
-The accepted capture RC ultimately established:
-
-```text
-PRODUCT_BUILD_SIGN=PASS
-PHYSICAL_INSTALL_LAUNCH=PASS
-NORMAL_MODE=PASS
-SHARE_EXTENSION_REAL_SAVE=PASS
-APP_GROUP_RUNTIME_IDENTITY=PASS
-MAIN_PENDING_CAPTURE_PICKUP=PASS
-REAL_SYSTEM_SHARE_SHEET_ROUTE=PASS
-NO_REAL_MAIMEMO_MUTATION_DURING_RC=PASS
-```
-
-PR #175 corrected only the physical UI-test substrate (`XCUIDevice.shared.press(.home)` was inert on the physical iPhone); no product code/config/lifecycle behavior changed.
-
-Accepted PR #175 evidence:
-
-```text
-PR=175
-HEAD=0763f9184bd28871010b379306cdb213ef8350e0
-MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
-TARGETED_CAPTURE_UNIT_TESTS=24/0
-SIMULATOR_UI=3/0
-PHYSICAL_UI=3/0
-CAPTURE_SHARE_SHEET_PHYSICAL=PASS
-CAPTURE_PENDING_REVIEW_PHYSICAL=PASS
-PRODUCT_CODE_CHANGED=no
-PRODUCT_CONFIG_CHANGED=no
-```
-
-### TestFlight 1.0 (4) release upload
-
-Owner authorized build 4 and TestFlight upload.
-
-PR #176 changed exactly one repository file and only the app/ShareExtension build number:
-
-```text
-PR=176
-HEAD=5158473776421e1e61d110d65ee78c7d8b8a9c60
-MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
-MARKETING_VERSION=1.0
-CURRENT_PROJECT_VERSION=4
-MAIN_BUNDLE_ID=com.jiripple.xiaoheiniao
-EXTENSION_BUNDLE_ID=com.jiripple.xiaoheiniao.ShareExtension
-DISTRIBUTION_TEAM=W26LH686PD
-```
-
-The exact merged-main archive passed identity validation and was uploaded exactly once after Xcode account re-authentication:
-
-```text
-ARCHIVE=PASS
-ARCHIVE_IDENTITY=PASS
-CLOUD_MANAGED_SIGNING_USED=yes
-UPLOAD_DISPATCHED=yes
-UPLOAD_ACCEPTED=yes
-APPLE_DELIVERY_RECEIPT=d7e3f368-ed80-49e4-b1fc-d093d50d7031
-APPLE_DELIVERY_BYTES=1871341
-APPLE_PROCESSING_STATUS=Uploaded package is processing
-TESTER_GROUP_CHANGED=no
-BETA_APP_REVIEW_SUBMITTED=no
-APP_STORE_REVIEW_SUBMITTED=no
-```
-
-Apple's delivery payload recorded `cfBundleShortVersionString=1.0` and `cfBundleVersion=4`; Xcode did not renumber the build. App Store Connect/TestFlight UI visibility was not independently read back because no already-authenticated first-party UI/API surface was available in the Agent session. This is not a retry signal. Do not re-upload build 4.
-
-### #161 — final Design handoff accepted
-
-Owner-approved Design baseline:
+The accepted #161 product shape remains:
 
 ```text
 HOME=首页乙
@@ -165,24 +205,7 @@ QUERY_HISTORY_V1=no
 CAPTURE_DIRECT_DESTINATIONS=转到释义编辑 / 转到例句编辑
 ```
 
-Final Design handoff package was mechanically verified by the Coordinator:
-
-```text
-ZIP_INTEGRITY=PASS
-MANIFEST_HASH_AND_BYTE_MATCH=PASS
-UNIQUE_TRANSITION_IDS=136
-DUPLICATE_TRANSITION_IDS=0
-INTERACTION_COVERAGE=PASS
-```
-
-Coordinator implementation corrections before Code:
-
-```text
-1. write mode is state inside one write destination; do not encode the current 释义/例句 mode as persistent NavigationStack route identity. Home/Capture set the initial/current ContentMode, then navigate to one write destination. Contextual History may still carry ContentMode.
-2. Query detail v1 does not require created/updated timestamps unless a current first-party schema is explicitly verified for the corresponding list resource. Stable required fields remain the current proven text/tags/status/origin/type-style fields. Do not expand transport decoding merely to satisfy an optional timestamp line.
-```
-
-Publication preference is approved only for interpretations:
+Publication preference remains interpretations-only:
 
 ```text
 公开=PUBLISHED
@@ -191,117 +214,43 @@ DO_NOT_LABEL_UNPUBLISHED_AS_PRIVATE=true
 PHRASE_OR_NOTE_PUBLICATION_SELECTOR_V1=no
 ```
 
-### #161 / PR #177 — Fresh Review repair gate
+Do not reopen these during the Capture Gate repair.
 
-PR #177 currently remains open, Draft, and unmerged at exact head:
-
-```text
-936cf8123395238c0fada03e8f04faf7667f8fd9
-```
-
-Fresh external increment and Coordinator progressive adjudication are frozen in Issue #161 comments `5558626632` and `5558647248`.
-
-Accepted repair scope:
+## 8. Active sequence
 
 ```text
-C-02=ACCEPTED_MUST_FIX
-C-01=ACCEPTED_MUST_FIX
-C-03=ACCEPTED_TEST_EVIDENCE_GAP_SAME_BATCH
-A-01=PENDING_LATER_PROGRESSIVE_ADJUDICATION
-B-03=PENDING_LATER_PROGRESSIVE_ADJUDICATION
-D-01=PENDING_LATER_PROGRESSIVE_ADJUDICATION
-D-03=DEFERRED_LOW_PRIORITY_PENDING_FINAL_DISPOSITION
-ALL_OTHER_REVIEW_CANDIDATES=NOT_PROMOTED_TO_BUILDER_SCOPE
+#161 / PR #177:
+implementation
+→ connection-lifecycle repair
+→ test-isolation repair at 4dc2a535... PASS
+→ normal tests green
+→ Capture Release Gate red after one same-head rerun
+→ bounded Capture Gate Test Substrate Repair   <-- CURRENT
+→ Coordinator exact-diff/evidence adjudication
+→ green Capture Gate
+→ Development install to Owner iPhone
+→ real-use evidence
 ```
 
-Frozen Builder boundary:
+No new Builder/Reviewer/Agent task is currently running at this snapshot.
+
+## 9. Handoff rule
+
+Fresh Chat takeover should read only:
 
 ```text
-PRODUCT_SCOPE=C-02 + C-01 only
-TEST_EVIDENCE_SCOPE=C-03 + direct regression tests for C-02/C-01
-NO_SECOND_CREDENTIAL_STACK=true
-NO_SECOND_SCHEDULER=true
-NO_NEW_QUERY_EXECUTOR=true
-NO_AUTOMATIC_POST_RETRY=true
-NO_ACCOUNT_IDENTITY_CHANGE_ON_401=true
-PRESERVE_COMPLETED_QUERY_RESULTS_ON_401=true
-NO_PHYSICAL_OR_REAL_MAIMEMO_ACTION_IN_BUILDER=true
-NO_A01_B03_D01_D03_REPAIR_IN_THIS_BATCH=true
+live main
+→ CHAT_HANDOFF.md
+→ this file
+→ Issue #161 metadata/body
+→ exact PR #177 metadata/head
+→ Issue #161 comment 5573587756
+→ Issue #161 comment 5572405173 only if CI-history context is needed
+→ live Owner collaboration preferences
+→ live fresh-chat preference application policy
+→ latest explicit Owner instruction
 ```
 
-Return Bridge comment `5558663073` records the existing bounded Claude repair task. It is prepared for Owner relay, but dispatch/run completion remain unknown unless later Owner/result evidence advances them. Duplicate dispatch is forbidden by default. A matching returned result is stronger execution evidence than this prepared-state snapshot.
+Do not fetch the full Issue #161 history during takeover.
 
-## Non-blocking tooling note
-
-`MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. Treat this as non-blocking tooling debt unless it causes recurring real friction.
-
-## Machine migration — closed
-
-```text
-WORKSPACE_ROOT=/Users/david/Documents/GitHub/momo-moreEfficient
-REPOSITORY_IDENTITY=davidqyc/momo-moreEfficient
-MIGRATED_PRIVATE_DIRECTORY_PRESENT=yes
-MIGRATED_PRIVATE_FILE_COUNT=11
-MIGRATED_PRIVATE_LOGICAL_BYTES=44083
-MIGRATED_PRIVATE_DU_SIZE=68K
-PRIVATE_CONTENT_OPENED=no
-PRIVATE_CONTENT_PUBLISHED=no
-PRIVATE_DIRECTORY_GITIGNORED=yes
-OLD_MAC_REPO_RETIREMENT_GATE=PASS
-NEW_MAC_WORKSPACE_READY=yes
-```
-
-`artifacts/private/` remains local/private and must never be pushed for review or migration.
-
-## Active sequence
-
-```text
-TestFlight 1.0 (4) upload ACCEPTED
--> Apple processing / first-small-cohort readback remains passive parallel lane; never re-upload build 4
-
-#161 product lane:
-final Design handoff PASS
--> implementation on PR #177
--> Fresh Review adjudication: C-02 + C-01 MUST_FIX; C-03 evidence hardening
--> bounded connection-lifecycle repair on existing PR #177 branch   <-- CURRENT
--> Coordinator exact-diff adjudication
--> proportional independent re-review / physical gate decision
--> merge only after blockers are closed
-```
-
-## Stable safety boundaries
-
-- Preview is not write authorization;
-- explicit approval before mutation;
-- fresh authenticated preflight when stale state could change the write target;
-- each changed item gets at most one mutating POST;
-- no automatic mutating-POST retry;
-- authenticated readback after dispatch;
-- uncertain mutation recovery is GET-only;
-- UPDATE requires an explicit authenticated-user target;
-- no automatic delete/rollback/replay;
-- vocabulary-query POST is read-semantic;
-- personal Maimemo Token and private batch material stay device-local and must not enter Git/logs/review artifacts;
-- 429 is a stop/rate-limit signal, not permission to replay a mutation.
-
-## Agent-family routing
-
-Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard current task/tool constraint requires another family. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
-
-## Handoff rule
-
-Fresh Chat takeover should read:
-
-```text
-CHAT_HANDOFF.md
--> this file
--> Issue #161 metadata/body
--> exact PR #177 metadata/head
--> exact Issue #161 repair authority comments 5558626632 + 5558647248 + Return Bridge 5558663073
--> Issue #71 latest release status only when release work resumes
--> live Owner collaboration preferences
--> live agent-skills JIT routing only when dispatching
--> latest explicit Owner instruction
-```
-
-Do not fetch full historical Issue threads merely to reconstruct current truth.
+After takeover, if live evidence is unchanged, do **not** wait for another procedural `继续`: JIT-read the applicable prompt-release/workspace/model/Return-Bridge Skills and prepare/release exactly one bounded Capture Gate Test Substrate Repair task. Stop at that dispatch checkpoint and wait for its returned result.
