@@ -253,6 +253,24 @@ final class QueryCoreTests: XCTestCase {
         )
     }
 
+    /// A resolver MISS is not proof of a self-added word, so its label states
+    /// the provider capability boundary without asserting the cause; the other
+    /// two reasons keep their existing wording.
+    func testInabilityReasonLabels() {
+        XCTAssertEqual(
+            QueryInabilityReason.targetNotFound.label,
+            "当前 Open API 无法解析该词条"
+        )
+        XCTAssertEqual(
+            QueryInabilityReason.targetMatchAnomaly.label,
+            "词条目标匹配异常"
+        )
+        XCTAssertEqual(
+            QueryInabilityReason.responseNotSafelyReadable.label,
+            "返回内容无法安全读取"
+        )
+    }
+
     // MARK: - Filter
 
     func testDimensionsCombineWithAND() {

@@ -451,11 +451,7 @@ private struct QueryRowView: View {
 
     private var columnLayout: some View {
         HStack(spacing: 0) {
-            Text(row.spelling)
-                .font(Theme.row)
-                .foregroundStyle(Theme.ink)
-                .lineLimit(2)
-                .truncationMode(.middle)
+            spellingColumn
                 .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(QueryContentFamily.allCases, id: \.self) { family in
                 QueryCellView(state: row.cell(family)).frame(width: 52)
@@ -469,10 +465,7 @@ private struct QueryRowView: View {
 
     private var twoTierLayout: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(row.spelling)
-                .font(Theme.row)
-                .foregroundStyle(Theme.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            spellingColumn
             HStack(spacing: Theme.gapM) {
                 ForEach(QueryContentFamily.allCases, id: \.self) { family in
                     HStack(spacing: 4) {
@@ -483,6 +476,25 @@ private struct QueryRowView: View {
                     }
                 }
                 Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// The row-level reason sits next to the spelling itself, so an unreadable
+    /// row explains why in place instead of repeating a generic cell label.
+    private var spellingColumn: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(row.spelling)
+                .font(Theme.row)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+            if let reason = row.rowInability {
+                Text(reason.label)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.alert)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -791,9 +803,21 @@ struct QueryDetailView: View {
 
     /// A target-unavailable row explains what is known without fake counts.
     private func reasonPage(_ reason: QueryInabilityReason) -> some View {
-        VStack(alignment: .leading, spacing: Theme.gapM) {
+        let known: String
+        let action: String
+        switch reason {
+        case .targetNotFound:
+            known = "当前 Open API 无法解析该词条，因此 App 无法取得安全稳定的词条 ID；"
+                + "这不代表墨墨里没有这个词或没有内容。"
+            action = "若这是你在墨墨里自添加的词，当前公开 Open API 暂不支持 App 获取所需稳定词条 ID；"
+                + "若不是，请确认拼写与墨墨中的词条一致后重新查阅。"
+        default:
+            known = "原因：\(reason.label)。这是读取范围的限制，不代表墨墨里没有内容。"
+            action = "确认拼写是否与墨墨中的词条一致，或稍后重新查阅。"
+        }
+        return VStack(alignment: .leading, spacing: Theme.gapM) {
             GroupedCard(title: "已知") {
-                CaptionLine(text: "原因：\(reason.label)。这是读取范围的限制，不代表墨墨里没有内容。")
+                CaptionLine(text: known)
                     .padding(Theme.rowPaddingH)
             }
             GroupedCard(title: "未知") {
@@ -801,7 +825,7 @@ struct QueryDetailView: View {
                     .padding(Theme.rowPaddingH)
             }
             GroupedCard(title: "可做") {
-                CaptionLine(text: "确认拼写是否与墨墨中的词条一致，或稍后重新查阅。")
+                CaptionLine(text: action)
                     .padding(Theme.rowPaddingH)
             }
         }

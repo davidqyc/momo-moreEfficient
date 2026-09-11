@@ -29,7 +29,7 @@ enum QueryInabilityReason: String, CaseIterable, Equatable, Sendable {
 
     var label: String {
         switch self {
-        case .targetNotFound: return "未找到可读取的词条目标"
+        case .targetNotFound: return "当前 Open API 无法解析该词条"
         case .targetMatchAnomaly: return "词条目标匹配异常"
         case .responseNotSafelyReadable: return "返回内容无法安全读取"
         }

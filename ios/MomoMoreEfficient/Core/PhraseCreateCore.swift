@@ -216,7 +216,7 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
         case "READ_FAILED":
             return "无法安全读取例句状态"
         case "VOCABULARY_NOT_FOUND":
-            return "未读取到可用词条目标"
+            return "当前 Open API 无法解析该词条；若为自添加词，当前暂不支持"
         case "VOCABULARY_MATCH_ANOMALY":
             return "词条目标匹配异常"
         case .none:

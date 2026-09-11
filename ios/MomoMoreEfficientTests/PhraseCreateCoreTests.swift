@@ -458,6 +458,10 @@ final class PhraseCreateCoreTests: XCTestCase {
 
         XCTAssertEqual(snapshot.items.map(\.classification), [.blocked, .create])
         XCTAssertEqual(snapshot.items[0].reason, "VOCABULARY_NOT_FOUND")
+        XCTAssertEqual(
+            snapshot.presentation.rows[0].blockedReason,
+            "当前 Open API 无法解析该词条；若为自添加词，当前暂不支持"
+        )
         XCTAssertNil(snapshot.items[0].vocabularyID)
         XCTAssertEqual(snapshot.items[1].vocabularyID, "INVALID_VOC_ACQUISITION")
         XCTAssertEqual(transport.readCount, 2, "no unresolved entry costs a content read")

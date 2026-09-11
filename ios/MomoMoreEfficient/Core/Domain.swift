@@ -287,7 +287,7 @@ struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
         guard classification == .blocked else { return nil }
         switch reason {
         case "AMBIGUOUS": return "存在多条自建释义"
-        case "VOCABULARY_NOT_FOUND": return "未读取到可用词条目标"
+        case "VOCABULARY_NOT_FOUND": return "当前 Open API 无法解析该词条；若为自添加词，当前暂不支持"
         case "VOCABULARY_MATCH_ANOMALY": return "词条目标匹配异常"
         default: return "其他无法安全读取"
         }
