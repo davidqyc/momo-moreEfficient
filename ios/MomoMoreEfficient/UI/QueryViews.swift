@@ -451,7 +451,7 @@ private struct QueryRowView: View {
 
     private var columnLayout: some View {
         HStack(spacing: 0) {
-            spellingColumn
+            spellingColumn(allowsFullSpelling: false)
                 .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(QueryContentFamily.allCases, id: \.self) { family in
                 QueryCellView(state: row.cell(family)).frame(width: 52)
@@ -465,7 +465,7 @@ private struct QueryRowView: View {
 
     private var twoTierLayout: some View {
         VStack(alignment: .leading, spacing: 6) {
-            spellingColumn
+            spellingColumn(allowsFullSpelling: true)
             HStack(spacing: Theme.gapM) {
                 ForEach(QueryContentFamily.allCases, id: \.self) { family in
                     HStack(spacing: 4) {
@@ -482,12 +482,17 @@ private struct QueryRowView: View {
 
     /// The row-level reason sits next to the spelling itself, so an unreadable
     /// row explains why in place instead of repeating a generic cell label.
-    private var spellingColumn: some View {
+    ///
+    /// Only the normal column layout caps the spelling at two lines with middle
+    /// truncation; the accessibility two-tier layout exists to avoid truncating,
+    /// so it passes `allowsFullSpelling: true` and may wrap to as many lines as
+    /// the text needs.
+    private func spellingColumn(allowsFullSpelling: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(row.spelling)
                 .font(Theme.row)
                 .foregroundStyle(Theme.ink)
-                .lineLimit(2)
+                .lineLimit(allowsFullSpelling ? nil : 2)
                 .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
             if let reason = row.rowInability {
