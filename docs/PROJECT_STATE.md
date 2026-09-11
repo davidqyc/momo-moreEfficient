@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-08
-sourceMainSha=39b464641910f781173de4deb730f631678f334c
+updatedAt=2026-09-12
+sourceMainSha=f9bbc8d1166ee02158391289bccdd4f094a8785f
 sourceMainShaIsSnapshotOnly=true
 
 > Current truth only. Live default branch + current Issue/PR/WIP + latest explicit Owner instruction outrank this snapshot. Historical accepted detail remains in the owning Issues/PRs/git history and should be read only when the current task needs it.
@@ -16,143 +16,126 @@ PUBLIC_REPOSITORY=true
 
 CURRENT_PRIMARY_ISSUE=#161
 CURRENT_PRIMARY_PR=#177
-CURRENT_PRIMARY_PR_HEAD=4dc2a53522a3b9dd4ec9e88a5b6e295872229734
+CURRENT_PRIMARY_PR_HEAD=f3c8f33215d965ff381ee674b1c5668808df7dd2
 CURRENT_PRIMARY_PR_STATUS=OPEN_DRAFT_UNMERGED
 
-CONNECTION_LIFECYCLE_REPAIR=COMPLETE_ON_CURRENT_PR_LINE
-TEST_ISOLATION_REPAIR=COMPLETE_ON_CURRENT_PR_HEAD
-LATEST_TEST_ISOLATION_COMMIT=4dc2a53522a3b9dd4ec9e88a5b6e295872229734
-LATEST_TEST_ISOLATION_COMMIT_SCOPE=TEST_ONLY
+SELF_ADDED_VOCABULARY_PROVIDER_RESEARCH=CLOSED_FOR_NOW
+MORE_PROVIDER_CLARIFICATION=no
+MORE_PROVIDER_CANARY=no
+MORE_RESOLVER_ROUTE_HUNTING=no
+PRIVATE_OR_UNDOCUMENTED_API=no
+GUESSED_IDS=no
 
-NORMAL_TESTS_CI=PASS
-iOS_CAPTURE_RELEASE_GATE=FAIL
-CAPTURE_GATE_RUN_ID=34130642290
-CAPTURE_GATE_RERUN_ATTEMPT=2
+PROVIDER_LIMITATION_MARKER=COMPLETE_ON_CURRENT_PR_HEAD
+PROVIDER_LIMITATION_MARKER_BASE=39f424e7bd0fa9c5d31fb0e6158b4bcbbce7d438
+PROVIDER_LIMITATION_MARKER_IMPL_COMMIT=19f4924ca130502a6df107981ed9969fad2fd2ed
+ACCESSIBILITY_REPAIR_COMMIT=f3c8f33215d965ff381ee674b1c5668808df7dd2
+COORDINATOR_FINAL_ADJUDICATION_COMMENT=5641278587
 
-CURRENT_GATE=CAPTURE_GATE_OBSERVATION_SUBSTRATE_REPAIR
-TEST_SUBSTRATE_FAILURE_STRONGLY_SUSPECTED=yes
-PRODUCT_REGRESSION_ESTABLISHED=no
-PRODUCT_REGRESSION_EXCLUDED=no
-CURRENT_UNIQUE_NEXT=release exactly one bounded Capture Gate Test Substrate Repair Builder task after fresh-chat JIT prompt preflight, then adjudicate the returned diff/evidence
+QUERY_TRUTH_INVARIANT=UNAVAILABLE_NE_0
+RESOLVER_TAXONOMY_CHANGED=no
+SECOND_RESOLVER_ADDED=no
 
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
-NEXT_CAPTURE_GATE_TASK_DISPATCHED=no
-CURRENT_CAPTURE_GATE_RETURN_BRIDGE=none_until_actual_prompt_release
-
-CURRENT_ROLLOVER_ADJUDICATION_COMMENT=5573587756
-PREVIOUS_CI_TRIAGE_COMMENT=5572405173
+CURRENT_UNIQUE_NEXT=wait for Owner's next concrete real-use bug/usability defect; do not invent a roadmap item or automatically reopen provider research
 ```
 
-## 2. What is already proven on the current PR line
+## 2. Provider limitation marker now closed
 
-The latest completed `【XHN】#161 PR177 Test Isolation Repair` changed test isolation only. Its returned evidence was admitted before this rollover:
+The Owner obtained direct official-provider confirmation that the currently supported public Maimemo Open API does not provide the stable `voc_id` path required by this app for user self-added/custom vocabulary.
+
+The product response is intentionally narrow:
 
 ```text
-TARGETED_TESTS=126_PASS
-FULL_TEST_SUITE=425_OF_425_PASS
-FULL_SUITE_REPEAT_COUNT=5
-FULL_SUITE_CRASHES=0
-REMOTE_PR_HEAD_PUSHED=yes
-PR_REMAINS_DRAFT_OPEN_UNMERGED=yes
+ordinary public-resolver MISS
+!= proof that the spelling is self-added
 ```
 
-This closes the shared-`UserDefaults.standard` test-state contamination problem strongly enough to move on. It does **not** make the Capture Release Gate green.
+Therefore the app does **not** invent a causal `selfAddedUnsupported` resolver state. Instead it keeps the existing safe MISS / UNAVAILABLE semantics and makes the current public-API capability boundary explicit to the user.
 
-The current capture failure is narrower:
+At PR #177 head `f3c8f332...`:
+
+- interpretation Preview maps `VOCABULARY_NOT_FOUND` to an explicit Open API limitation message;
+- phrase Preview uses the same truthful message;
+- Query `targetNotFound` says the current Open API cannot resolve the entry;
+- Query result rows surface the row-level reason inline instead of forcing the user to infer it from repeated generic unavailable cells;
+- Query detail explains that unresolved does not prove absence in Maimemo, and conditionally states the self-added-word limitation;
+- resolver lookup route, target identity contract and failure taxonomy are unchanged;
+- resolver MISS remains `UNAVAILABLE`, never numeric `0`.
+
+## 3. Accessibility correction
+
+The first implementation commit `19f4924...` accidentally carried the normal two-line spelling truncation into the accessibility Dynamic Type layout through a shared helper.
+
+The bounded repair `f3c8f332...` restores the intended split:
 
 ```text
-real system Share Sheet opens
-→ 小黑鸟伴侣 Share Extension is found
-→ extension is tapped
-→ UI test then waits for Button "保存"
-→ host-app-rooted XCUIApplication never observes that button
-→ gate fails
+normal layout
+→ at most 2 spelling lines + middle truncation
+
+accessibility two-tier layout
+→ unlimited vertical spelling wrapping
 ```
 
-The same-head Capture Gate was rerun exactly once and failed again. Ordinary tests remain green.
+The row-level inability reason remains visible in both layouts.
 
-## 3. Current adjudication of the red Capture Gate
-
-Fresh external increment and rollover adjudication are frozen in Issue #161 comment `5573587756`.
-
-Apple's current app-extension model makes the existing observation route structurally suspect: the extension is invoked through extension context / separate extension execution, while the current gate continues querying the host-app `XCUIApplication` after entering the Share Extension.
-
-Therefore current classification is deliberately narrower than the prior Chat's wording:
+Builder-reported verification for the final repair:
 
 ```text
-TEST_SUBSTRATE_FAILURE_STRONGLY_SUSPECTED=yes
-PRODUCT_REGRESSION_ESTABLISHED=no
-PRODUCT_REGRESSION_EXCLUDED=no
-```
-
-Do **not** mutate production code merely to make the gate green. First reproduce/classify the extension observation boundary. Production code may be touched only if direct evidence establishes a product defect.
-
-The latest isolation commit being test-only is useful scope evidence, but it is not by itself causal proof: the last known-green Capture Gate predates both the preceding connection-lifecycle production repair and the isolation commit.
-
-## 4. Next Builder contract shape
-
-The next task is one bounded Builder round:
-
-```text
-TASK_CLASS=CAPTURE_GATE_TEST_SUBSTRATE_REPAIR
-PRIMARY_SCOPE=UI_TEST / TEST_OBSERVATION_SUBSTRATE
-REPRODUCE_AND_CLASSIFY_BEFORE_MUTATION=yes
-PREFER_PROVIDER_NATIVE_XCUITEST_OBSERVATION=yes
-MINIMUM_SAFE_TEST_HOOK_ONLY_IF_NEEDED=yes
-PRODUCTION_CODE=only_if_direct_product_defect_is_proven
+MomoMoreEfficientTests=426/426 PASS
 MERGE=no
+TESTFLIGHT=no
+REAL_MAIMEMO_MUTATION=0
 ```
 
-The repair must preserve the original release proof chain:
+Coordinator exact source readback accepted the repair. No separate SwiftUI inspection harness was added because the modifier difference is now explicit in the code and a new private-view harness would be disproportionate for this bounded UI correction.
+
+## 4. Current product route
+
+The provider limitation is no longer the main line.
+
+Owner's current route is:
 
 ```text
-real system Share Sheet
-→ actual 小黑鸟伴侣 Share Extension
-→ deterministic text saved through the extension
-→ main app receives the real result
-→ Capture Review appears
-→ exact payload equality proven
+one real-use defect
+→ smallest truthful/safe repair
+→ proportionate verification
+→ next real-use defect
 ```
 
-Forbidden shortcut:
+Do not auto-select parked roadmap features merely because they are open. In particular, do not automatically start #155 / #157 / #153 / #152 or resume old provider research without a newer Owner instruction.
+
+The older Capture Gate investigation on PR #177 remains historical unresolved PR context, but it is **not** the automatic current next after the Owner explicitly redirected the project to mark the provider limitation and then fix the next real-world defect. If a future Owner instruction returns to release/capture gating, re-read the live Issue/PR evidence at that time rather than relying on the older state text.
+
+## 5. Stable #161 product baseline
 
 ```text
-make CI green by bypassing the real Share Sheet / actual Share Extension / post-save main-app exact-payload proof
+HOME=首页乙
+VISUAL_FAMILY=方案一「墨与米」
+SETTINGS_OWNS_ACCOUNT_MANAGEMENT=yes
+WORK_SURFACE_ACCOUNT_COPY=连接状态
+CONTEXTUAL_HISTORY=释义历史 / 例句历史
+
+QUERY_MODEL=neutral numeric 释义/例句/助记 status inspector
+QUERY_FILTER=user-composed AND predicates
+QUERY_HISTORY_V1=no
+
+CAPTURE_DIRECT_DESTINATIONS=转到释义编辑 / 转到例句编辑
 ```
 
-### External-Agent routing
+Publication remains:
 
 ```text
-LAST_OWNER_SELECTED_AGENT_FAMILY=Claude
-NEXT_TASK_AGENT_FAMILY=Claude_unless_hard_current_constraint_requires_switch
-MODEL_EFFORT_SPEED_TOPOLOGY=JIT_UNRESOLVED
-TARGET_WORKSPACE_CONTINUITY=/Users/david/Documents/GitHub/momo-moreEfficient
+公开=PUBLISHED
+未发布=UNPUBLISHED
+DO_NOT_LABEL_UNPUBLISHED_AS_PRIVATE=true
+PHRASE_OR_NOTE_PUBLICATION_SELECTOR_V1=no
 ```
 
-Fresh Chat must live-read current `agent-skills` before release, prove workspace identity/freshness, establish exactly one Return Bridge, and return one Owner-relay dispatch. Do not inherit a previous Claude model/effort mechanically.
+Do not reopen these frozen product decisions while repairing unrelated real-use defects.
 
-## 5. Product-value route after the gate
-
-If the repaired candidate restores a green Capture Release Gate without weakening the proof:
-
-```text
-PR_177_CANDIDATE_CONFIRMED_FOR_DEVICE_USE
-→ Development install to Owner iPhone
-→ Owner real-use smoke / daily use
-→ later merge/release decisions from actual evidence
-```
-
-Do not let low-value deferred evidence block this device-use step:
-
-```text
-D-03=DEFERRED_LOW_PRIORITY
-UNPUBLISHED_REAL_ACCOUNT_EVIDENCE=NOT_A_BLOCKER_FOR_DEVELOPMENT_INSTALL
-```
-
-The current route does **not** require iPhone Mirroring. If a future task ever proposes Mirroring, notify Owner before launching it and re-evaluate whether a shorter manual check is cheaper.
-
-## 6. Stable safety / non-authorization boundaries
+## 6. Safety / authorization boundaries
 
 ```text
 MERGE_AUTHORIZED_BY_THIS_STATE=false
@@ -179,62 +162,15 @@ Stable product write floor remains:
 - personal Maimemo Token and private batch material stay device-local and out of Git/logs/review artifacts;
 - 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
-## 7. Accepted historical anchors still relevant
+## 7. External-Agent routing
 
-### Capture / Share baseline
+No Builder/Reviewer/Agent task is currently running.
 
-Issue #105 previously closed the original capture workflow with a real system Share Sheet and Share Extension physical gate. That historical proof remains relevant as a baseline, but it does not override the current failing PR #177 Capture Release Gate.
+For the next substantive coding round, JIT-read `docs/AGENT_SKILLS_CONNECTOR.md` and live `davidqyc/agent-skills@main`; do not inherit GLM / Claude / Codex model or reasoning depth mechanically from the last round.
 
-### TestFlight build 4
+The most recent GLM/ZCode experiment is portfolio routing evidence, not a sticky momo-specific family preference.
 
-TestFlight `1.0 (4)` was uploaded and accepted previously. Do not re-upload build 4 merely because PR #177 is under repair.
-
-### #161 Design/product baseline
-
-The accepted #161 product shape remains:
-
-```text
-HOME=首页乙
-VISUAL_FAMILY=方案一「墨与米」
-SETTINGS_OWNS_ACCOUNT_MANAGEMENT=yes
-WORK_SURFACE_ACCOUNT_COPY=连接状态
-CONTEXTUAL_HISTORY=释义历史 / 例句历史
-QUERY_MODEL=neutral numeric 释义/例句/助记 status inspector
-QUERY_FILTER=user-composed AND predicates
-QUERY_HISTORY_V1=no
-CAPTURE_DIRECT_DESTINATIONS=转到释义编辑 / 转到例句编辑
-```
-
-Publication preference remains interpretations-only:
-
-```text
-公开=PUBLISHED
-未发布=UNPUBLISHED
-DO_NOT_LABEL_UNPUBLISHED_AS_PRIVATE=true
-PHRASE_OR_NOTE_PUBLICATION_SELECTOR_V1=no
-```
-
-Do not reopen these during the Capture Gate repair.
-
-## 8. Active sequence
-
-```text
-#161 / PR #177:
-implementation
-→ connection-lifecycle repair
-→ test-isolation repair at 4dc2a535... PASS
-→ normal tests green
-→ Capture Release Gate red after one same-head rerun
-→ bounded Capture Gate Test Substrate Repair   <-- CURRENT
-→ Coordinator exact-diff/evidence adjudication
-→ green Capture Gate
-→ Development install to Owner iPhone
-→ real-use evidence
-```
-
-No new Builder/Reviewer/Agent task is currently running at this snapshot.
-
-## 9. Handoff rule
+## 8. Handoff rule
 
 Fresh Chat takeover should read only:
 
@@ -244,13 +180,10 @@ live main
 → this file
 → Issue #161 metadata/body
 → exact PR #177 metadata/head
-→ Issue #161 comment 5573587756
-→ Issue #161 comment 5572405173 only if CI-history context is needed
-→ live Owner collaboration preferences
-→ live fresh-chat preference application policy
+→ Issue #161 comment 5641278587
 → latest explicit Owner instruction
 ```
 
 Do not fetch the full Issue #161 history during takeover.
 
-After takeover, if live evidence is unchanged, do **not** wait for another procedural `继续`: JIT-read the applicable prompt-release/workspace/model/Return-Bridge Skills and prepare/release exactly one bounded Capture Gate Test Substrate Repair task. Stop at that dispatch checkpoint and wait for its returned result.
+If the Owner supplies the next screenshot / bug / usability defect, that becomes the immediate next task. If no new defect has been supplied, stop at this natural checkpoint rather than inventing work.
