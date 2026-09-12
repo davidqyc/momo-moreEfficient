@@ -329,7 +329,7 @@ struct PhraseExecutionSummary: Equatable, Sendable {
             let message: String
             switch error {
             case .globalHTTPFailure: message = "墨墨拒绝了本次例句请求；已停止后续新建。"
-            case .blocked: message = "已创建的例句已计入数量；当前超过安全上限 5 条，已停止后续新建。"
+            case .blocked: message = "已创建的例句已计入数量；已达到或超过安全上限 5 条，已停止后续新建。"
             case .responseRejected, .itemResponseRejected: message = "例句返回内容无法安全读取；已停止后续新建。"
             default: message = error.description
             }
@@ -824,21 +824,28 @@ struct PhraseWriteExecutor {
                 let confirmation = await confirmPhrase(item: item, control: control)
                 control.finishPostResolution()
                 var pendingVisibility = false
-                var overCapacity = false
+                var capacityRequiresStop = false
                 if let records = confirmation.records {
                     if let proven { pendingVisibility = !records.contains { $0.id == proven.id } }
                     if safetyError == nil {
                         do {
                             let pending = try journal.pending(accountFingerprint: plan.credentialFingerprint,
                                                               vocabularyID: item.vocabularyID, visible: records)
-                            overCapacity = records.filter { $0.status == CompanionConstants.status }.count + pending.count > 5
+                            let effectiveCount = records.filter { $0.status == CompanionConstants.status }.count + pending.count
+                            let remainingSameVocabularyCreate = plan.items.dropFirst(index + 1).contains {
+                                $0.vocabularyID == item.vocabularyID
+                            }
+                            // A valid fifth CREATE stays successful, but cannot be
+                            // followed by another CREATE for this vocabulary.
+                            capacityRequiresStop = effectiveCount > 5
+                                || (effectiveCount >= 5 && remainingSameVocabularyCreate)
                         } catch { safetyError = error as? CompanionError ?? .phraseJournalUnavailable }
                     }
                 }
                 let matched = proven ?? confirmation.matchedRecord
                 let postError = dispatch.phraseFailure
                 let stopError = safetyError ?? confirmation.terminalError
-                    ?? (overCapacity ? .blocked : nil)
+                    ?? (capacityRequiresStop ? .blocked : nil)
                     ?? ((matched == nil || postError == .authenticationRejected || postError == .rateLimited) ? postError : nil)
                     ?? ((proven != nil && confirmation.attempts.last?.category != .success
                          && confirmation.attempts.last?.category != .targetNotVisible) ? .itemResponseRejected : nil)

@@ -340,6 +340,103 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertEqual(transport.postCount, 1)
     }
 
+    func testFreshReviewSixthActiveCreateAfterLocallyVisibleFive() async throws {
+        let journal = makeTestPhraseJournal()
+        let first = otherEntry(ordinal: 2)
+        let second = otherEntry(ordinal: 3)
+        func raw(_ e: PhraseBatchEntry, id: String) -> [String: Any] {
+            ["id": id, "phrase": e.english, "interpretation": e.chinese,
+             "tags": [String](), "origin": "", "status": "PUBLISHED"]
+        }
+
+        // Preflight sees three active phrases, so the planner reserves two CREATEs
+        // (3 + 2 == 5, which is exactly the ceiling and therefore admissible).
+        let baseline = otherRecords(3)
+        let shown = try await snapshot(entries: [first, second], journal: journal, visible: baseline)
+        XCTAssertEqual(shown.items.map(\.classification), [.create, .create])
+
+        let createdFirst = raw(first, id: "CREATED_FIRST")
+        // One unit of drift between the fresh preflight read and the first readback.
+        // Sources: the Owner adding a phrase on another device, or an earlier create
+        // whose response was not verifiable (D-020's declared uncovered window) finally
+        // becoming visible. Either way the app now *correctly* reads five active phrases.
+        let lateExternal: [String: Any] = ["id": "LATE_EXTERNAL", "phrase": "Late external sample.",
+            "interpretation": "合成旧句。", "tags": [String](), "origin": "", "status": "PUBLISHED"]
+        let fiveVisible = baseline + [createdFirst, lateExternal]
+        let createdSecond = raw(second, id: "CREATED_SECOND")
+
+        let transport = FakeHTTPTransport([
+            vocabulary(),
+            jsonResponse(["phrases": baseline]),          // fresh preflight, row 1
+            jsonResponse(["phrases": baseline]),          // fresh preflight, row 2
+            jsonResponse(["phrase": createdFirst], status: 201),   // row 1 POST, response-proven
+            jsonResponse(["phrases": fiveVisible]),       // row 1 readback: FIVE active, row 1 visible
+            jsonResponse(["phrase": createdSecond], status: 201),  // row 2 POST  <-- the sixth
+            jsonResponse(["phrases": fiveVisible + [createdSecond]]),
+        ])
+        let result = try await execute(shown, journal: journal, transport: transport)
+
+        XCTAssertEqual(transport.postCount, 1,
+            "a sixth active CREATE must not be dispatched once local evidence already shows five active phrases")
+        XCTAssertEqual(result.succeeded, 1)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertEqual(result.results.map(\.outcome), [.confirmed])
+        XCTAssertEqual(result.terminalError, .blocked)
+        XCTAssertTrue(result.feedbackMessage?.contains("已达到或超过安全上限 5 条") == true)
+        let receipt = ExecutionReceipt(selectedSpellings: [first.spelling, second.spelling], result: result)
+        XCTAssertEqual(receipt.succeeded, 1)
+        XCTAssertEqual(receipt.notAttempted, 1)
+        XCTAssertTrue(receipt.stopped)
+    }
+
+    func testFifthPhraseWithoutRemainingCreateStaysSuccessful() async throws {
+        let journal = makeTestPhraseJournal()
+        let baseline = otherRecords(4)
+        let shown = try await snapshot(journal: journal, visible: baseline)
+        XCTAssertEqual(shown.items.map(\.classification), [.create])
+        let transport = FakeHTTPTransport([
+            vocabulary(), jsonResponse(["phrases": baseline]),
+            createResponse(), jsonResponse(["phrases": baseline + [rawRecord()]])
+        ])
+        let result = try await execute(shown, journal: journal, transport: transport)
+        XCTAssertEqual(result.succeeded, 1)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertNil(result.terminalError)
+        XCTAssertNil(result.feedbackMessage)
+        XCTAssertTrue(result.isFullSuccess)
+        XCTAssertEqual(transport.postCount, 1)
+    }
+
+    func testFifthPhraseDoesNotBlockRemainingDifferentVocabularyCreate() async throws {
+        let journal = makeTestPhraseJournal()
+        let second = PhraseBatchEntry(ordinal: 2, spelling: "another", normalizedSpelling: "another",
+            english: "Another synthetic example.", chinese: "另一合成例句。", source: nil)
+        let secondID = "ANOTHER_VOCABULARY"
+        let resolver = vocabularyQueryResponse([(id: vocID, spelling: entry.spelling), (id: secondID, spelling: second.spelling)])
+        let baseline = otherRecords(4)
+        let lease = try credentialLease(); defer { lease.clear() }
+        let previewTransport = FakeHTTPTransport([resolver, jsonResponse(["phrases": baseline]), empty()])
+        let shown = try await PhrasePreflightPlanner(journal: journal,
+            api: MaimemoTransport(transport: previewTransport, credential: lease, sleeper: RecordingSleeper()))
+            .buildSnapshot(entries: [entry, second], tags: [], credentialFingerprint: lease.fingerprint)
+        XCTAssertEqual(shown.items.map(\.classification), [.create, .create])
+        XCTAssertEqual(shown.items.map(\.vocabularyID), [vocID, secondID])
+        let createdSecond: [String: Any] = ["id": "ANOTHER_CREATED", "phrase": second.english,
+            "interpretation": second.chinese, "origin": "", "tags": [String](), "status": "PUBLISHED"]
+        let transport = FakeHTTPTransport([
+            resolver, jsonResponse(["phrases": baseline]), empty(),
+            createResponse(), jsonResponse(["phrases": baseline + [rawRecord()]]),
+            jsonResponse(["phrase": createdSecond], status: 201), jsonResponse(["phrases": [createdSecond]])
+        ])
+        let result = try await execute(shown, journal: journal, transport: transport)
+        XCTAssertEqual(result.succeeded, 2)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertNil(result.terminalError)
+        XCTAssertNil(result.feedbackMessage)
+        XCTAssertTrue(result.isFullSuccess)
+        XCTAssertEqual(transport.postCount, 2)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
