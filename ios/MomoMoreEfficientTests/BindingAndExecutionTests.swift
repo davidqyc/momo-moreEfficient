@@ -424,7 +424,10 @@ final class BindingAndExecutionTests: XCTestCase {
             }),
             Set(["UI/QueryViews.swift"])
         )
-        for (path, contents) in sources where path != "Core/ExecutionHistory.swift" {
+        // D-020 / Owner B explicitly authorizes this one separate support file;
+        // every other production source still has no file persistence authority.
+        let approvedSupportFiles: Set<String> = ["Core/ExecutionHistory.swift", "Core/PhraseSafetyJournal.swift"]
+        for (path, contents) in sources where !approvedSupportFiles.contains(path) {
             XCTAssertFalse(contents.contains("FileManager.default"), path)
             XCTAssertFalse(contents.contains("write(to:"), path)
         }

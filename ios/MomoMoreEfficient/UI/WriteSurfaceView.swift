@@ -336,6 +336,12 @@ struct WriteSurfaceView: View {
                     .foregroundStyle(Theme.alert)
             }
 
+            if row.observations.contains(.listVisibilityPending) {
+                Text("已创建；墨墨列表暂未同步，请勿重复提交")
+                    .font(Theme.label)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
             if viewModel.expandedRowIDs.contains(row.id) {
                 VStack(alignment: .leading, spacing: 10) {
                     detailLabel("英文", row.english)

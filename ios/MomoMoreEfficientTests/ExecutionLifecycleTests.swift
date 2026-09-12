@@ -595,7 +595,7 @@ final class ExecutionLifecycleTests: XCTestCase {
         preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: historyStore,
             transportFactory: factory.make,
@@ -616,7 +616,7 @@ final class ExecutionLifecycleTests: XCTestCase {
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         var remaining = transports
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: historyStore,
             transportFactory: { remaining.removeFirst() },

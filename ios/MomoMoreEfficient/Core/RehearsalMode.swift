@@ -63,6 +63,7 @@ extension CompanionViewModel {
     ) -> CompanionViewModel {
         let transport = RehearsalTransport(perRequestDelaySeconds: perRequestDelaySeconds)
         return CompanionViewModel(
+            phraseSafetyJournal: PhraseSafetyJournal(store: RehearsalPhraseJournalStore()),
             tokenStore: RehearsalTokenStore(),
             // Never FileHistoryStore: rehearsal receipts must not reach the
             // Owner's real local History.
@@ -72,6 +73,12 @@ extension CompanionViewModel {
             backgroundAssertionFactory: backgroundAssertionFactory
         )
     }
+}
+
+final class RehearsalPhraseJournalStore: PhraseSafetyJournalStore {
+    private var entries: [PhraseSafetyEntry] = []
+    func load() throws -> [PhraseSafetyEntry] { entries }
+    func save(_ entries: [PhraseSafetyEntry]) throws { self.entries = entries }
 }
 
 /// History for a rehearsal run: fully in memory, so the History screen behaves

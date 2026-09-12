@@ -164,6 +164,8 @@ enum CompanionError: String, Error, Codable, Equatable, Sendable, CustomStringCo
     case previewInterrupted
     case credentialStorageUnavailable
     case remainingPhaseChanged
+    case phraseJournalUnavailable
+    case phraseJournalProtectionFailed
 
     var description: String {
         switch self {
@@ -203,6 +205,10 @@ enum CompanionError: String, Error, Codable, Equatable, Sendable, CustomStringCo
             return "预览被系统中断；未写入任何数据，可重新预览。"
         case .credentialStorageUnavailable:
             return "无法安全访问设备上的 Token；请解锁设备后重试。"
+        case .phraseJournalUnavailable:
+            return "本机例句安全记录无法读取或保存；已停止例句新建，未发送新的写请求。"
+        case .phraseJournalProtectionFailed:
+            return "例句已创建，但本机防重复保护未能保存；请勿重复提交。本次打开 App 期间已停止后续例句新建。"
         case .remainingPhaseChanged:
             return "后续阶段的服务器状态已变化；该阶段未发送任何写请求，请重新预览。"
         }
@@ -505,11 +511,25 @@ struct ReadbackAttemptDiagnostic: Codable, Equatable, Sendable {
 /// The one shared, intentionally small write diagnostic used by phrase and
 /// interpretation executors. Receipt-level data supplies content kind,
 /// operation, timestamp and build metadata.
+enum PhraseCreateResponseCategory: String, Codable, Equatable, Sendable {
+    case proven, malformed, mismatching
+}
+
 struct WriteAttemptDiagnostic: Codable, Equatable, Sendable {
     let ordinal: Int
     let postDispatch: PostDispatchCategory
     let readbackAttempts: [ReadbackAttemptDiagnostic]
     let terminalErrorCategory: CompanionError?
+    let phraseCreateResponse: PhraseCreateResponseCategory?
+
+    init(ordinal: Int, postDispatch: PostDispatchCategory, readbackAttempts: [ReadbackAttemptDiagnostic],
+         terminalErrorCategory: CompanionError?, phraseCreateResponse: PhraseCreateResponseCategory? = nil) {
+        self.ordinal = ordinal
+        self.postDispatch = postDispatch
+        self.readbackAttempts = readbackAttempts
+        self.terminalErrorCategory = terminalErrorCategory
+        self.phraseCreateResponse = phraseCreateResponse
+    }
 }
 
 struct ItemExecutionResult: Equatable, Sendable {

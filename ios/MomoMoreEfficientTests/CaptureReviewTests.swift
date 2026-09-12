@@ -107,7 +107,7 @@ final class CaptureReviewTests: XCTestCase {
             vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]),
             interpretationsResponse([]),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
@@ -148,7 +148,7 @@ final class CaptureReviewTests: XCTestCase {
         guard #available(iOS 26.0, *) else { throw XCTSkip("App Intent requires iOS 26") }
         let tokenStore = CountingTokenStore(token: fakeToken)
         let transport = FakeHTTPTransport([])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
@@ -175,7 +175,7 @@ final class CaptureReviewTests: XCTestCase {
     func testDeferredCaptureLaunchCannotRestoreCredentialBeforeReviewHandoff() async {
         let tokenStore = CountingTokenStore(token: fakeToken)
         let transport = FakeHTTPTransport([vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")])])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
@@ -223,7 +223,7 @@ final class CaptureReviewTests: XCTestCase {
         let transport = FakeHTTPTransport([
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },

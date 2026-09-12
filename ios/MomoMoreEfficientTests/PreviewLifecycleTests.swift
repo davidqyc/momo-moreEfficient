@@ -231,7 +231,7 @@ final class PreviewLifecycleTests: XCTestCase {
         // Only the first run is gated; the retry must not block on a spent gate.
         var sleepers: [RequestSleeper] = [gate]
         let assertion = FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
@@ -318,7 +318,7 @@ final class PreviewLifecycleTests: XCTestCase {
         let gate = FirstPauseGateSleeper()
         // Only the Preview is gated; execution must run to completion unblocked.
         var sleepers: [RequestSleeper] = [gate]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
@@ -430,7 +430,7 @@ final class PreviewLifecycleTests: XCTestCase {
         preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },

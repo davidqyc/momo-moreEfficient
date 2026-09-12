@@ -680,3 +680,25 @@ actor PausingPOSTTransport: HTTPTransport {
     var getCount: Int { requests.filter { $0.route.method == .get }.count }
     var readCount: Int { requests.filter { !$0.route.isMutating }.count }
 }
+
+
+final class TestPhraseJournalStore: PhraseSafetyJournalStore {
+    var entries: [PhraseSafetyEntry] = []
+    var failLoad = false
+    var failSave = false
+    var failSaveNumber: Int?
+    private(set) var saveCount = 0
+    func load() throws -> [PhraseSafetyEntry] {
+        if failLoad { throw CompanionError.phraseJournalUnavailable }
+        return entries
+    }
+    func save(_ entries: [PhraseSafetyEntry]) throws {
+        saveCount += 1
+        if failSave || failSaveNumber == saveCount { throw CompanionError.phraseJournalUnavailable }
+        self.entries = entries
+    }
+}
+
+func makeTestPhraseJournal() -> PhraseSafetyJournal {
+    PhraseSafetyJournal(store: TestPhraseJournalStore())
+}

@@ -104,12 +104,12 @@ final class ExecutionHistoryTests: XCTestCase {
         let newer = receipt(at: 200, spelling: "newer")
         try store.saveReceipts([older, newer])
 
-        let first = CompanionViewModel(
+        let first = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: store,
             preferenceDefaults: isolatedPreferenceDefaults()
         )
-        let reconstructed = CompanionViewModel(
+        let reconstructed = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: FileHistoryStore(applicationSupportDirectory: root),
             preferenceDefaults: isolatedPreferenceDefaults()

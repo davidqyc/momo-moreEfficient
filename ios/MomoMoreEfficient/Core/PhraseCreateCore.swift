@@ -43,6 +43,7 @@ enum PhraseObservation: String, Equatable, Sendable {
     case highlightEmpty = "highlight-empty"
     case highlightOtherReviewedRange = "highlight-other-reviewed-range"
     case chineseRangeUnavailable = "chinese-range-unavailable"
+    case listVisibilityPending = "list-visibility-pending"
 }
 
 struct PhraseRecord: Equatable, Sendable {
@@ -132,6 +133,7 @@ struct PhrasePreflightItem: Equatable, Sendable {
     let reason: String?
 
     func observations(tags: [String]) -> [PhraseObservation] {
+        if reason == "CREATED_LIST_PENDING" { return [.listVisibilityPending] }
         guard classification == .alreadyMatching, sameEnglishBaseline.count == 1 else {
             return []
         }
@@ -213,6 +215,12 @@ struct PhrasePreviewSnapshot: Equatable, Sendable {
             return "已达到当前安全上限 5 条，请先在墨墨中编辑或删除一条旧例句后重新预览"
         case "ACTIVE_CAPACITY_EXCEEDED":
             return "当前例句数量超过安全上限 5 条，无法安全新建"
+        case "JOURNAL_UNAVAILABLE":
+            return CompanionError.phraseJournalUnavailable.description
+        case "JOURNAL_PROTECTION_FAILED":
+            return CompanionError.phraseJournalProtectionFailed.description
+        case "DUPLICATE_PLANNED_ENGLISH":
+            return "本批次包含相同英文例句，请保留一条后重新预览"
         case "READ_FAILED":
             return "无法安全读取例句状态"
         case "VOCABULARY_NOT_FOUND":
@@ -312,10 +320,33 @@ struct PhraseExecutionSummary: Equatable, Sendable {
         )
     }
 
+    var feedbackMessage: String? {
+        if stalePreview { return CompanionError.stalePreview.description }
+        let unconfirmed = results.contains { $0.outcome == .notVerified && $0.diagnostic?.postDispatch.wasDispatched == true }
+        let unknown = "结果仍无法确认，请勿重复提交；稍后重新预览。"
+        if let error = terminalError {
+            if error == .phraseJournalProtectionFailed { return error.description }
+            let message: String
+            switch error {
+            case .globalHTTPFailure: message = "墨墨拒绝了本次例句请求；已停止后续新建。"
+            case .blocked: message = "已创建的例句已计入数量；当前超过安全上限 5 条，已停止后续新建。"
+            case .responseRejected, .itemResponseRejected: message = "例句返回内容无法安全读取；已停止后续新建。"
+            default: message = error.description
+            }
+            return unconfirmed ? message + "\n" + unknown : message
+        }
+        if failed > 0 {
+            let category = results.last?.diagnostic?.phraseCreateResponse
+            return (category == .malformed || category == .mismatching ? "创建响应无法安全确认。" : "") + unknown
+        }
+        return cancelled ? CompanionError.cancelled.description : nil
+    }
+
     var isFullSuccess: Bool {
         !stalePreview
             && !cancelled
             && failed == 0
+            && terminalError == nil
             && !results.isEmpty
             && succeeded == results.count
             && results.allSatisfy { $0.outcome == .confirmed || $0.outcome == .recovered }
@@ -324,6 +355,12 @@ struct PhraseExecutionSummary: Equatable, Sendable {
 
 struct PhrasePreflightPlanner {
     let api: MaimemoTransport
+    let journal: PhraseSafetyJournal
+
+    init(journal: PhraseSafetyJournal = .shared, api: MaimemoTransport) {
+        self.api = api
+        self.journal = journal
+    }
 
     func buildSnapshot(
         entries: [PhraseBatchEntry],
@@ -333,6 +370,7 @@ struct PhrasePreflightPlanner {
         onEntryStarted: (@Sendable (_ entry: Int, _ total: Int) -> Void)? = nil
     ) async throws -> PhrasePreviewSnapshot {
         guard !entries.isEmpty,
+              credentialFingerprint == api.credentialFingerprint,
               (try? WriteTagPreference.canonicalized(tags)) == tags
         else {
             throw CompanionError.inputRejected
@@ -346,6 +384,8 @@ struct PhrasePreflightPlanner {
         )
 
         var planned: [PhrasePreflightItem] = []
+        var reserved: [String: Int] = [:]
+        var plannedEnglish: [String: Set<String>] = [:]
         for (index, entry) in entries.enumerated() {
             onEntryStarted?(entry.ordinal, entries.count)
             let outcome = resolution.outcomes[index]
@@ -367,60 +407,46 @@ struct PhrasePreflightPlanner {
                     control: control
                 )
                 let active = records.filter { $0.status == CompanionConstants.status }
+                let pending = try journal.pending(accountFingerprint: credentialFingerprint,
+                                                  vocabularyID: vocabularyID, visible: records)
+                let englishDigest = try PhraseSafetyEntry.digest("english", [entry.english])
+                let hiddenSameEnglish = pending.filter { $0.englishDigest == englishDigest }
                 let sameEnglish = active.filter { $0.phrase == entry.english }
-                if sameEnglish.count == 1, sameEnglish[0].hardMatches(entry) {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .alreadyMatching,
-                            vocabularyID: vocabularyID,
-                            sameEnglishBaseline: sameEnglish,
-                            reason: nil
-                        )
-                    )
-                } else if active.count > 5 {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .blocked,
-                            vocabularyID: vocabularyID,
-                            sameEnglishBaseline: sameEnglish,
-                            reason: "ACTIVE_CAPACITY_EXCEEDED"
-                        )
-                    )
-                } else if !sameEnglish.isEmpty {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .blocked,
-                            vocabularyID: vocabularyID,
-                            sameEnglishBaseline: sameEnglish,
-                            reason: sameEnglish.count == 1
-                                ? "CONFLICTING_SAME_ENGLISH"
-                                : "AMBIGUOUS_SAME_ENGLISH"
-                        )
-                    )
-                } else if active.count == 5 {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .blocked,
-                            vocabularyID: vocabularyID,
-                            sameEnglishBaseline: [],
-                            reason: "ACTIVE_CAPACITY_REACHED"
-                        )
-                    )
+                let sameEnglishCount = sameEnglish.count + hiddenSameEnglish.count
+                let effectiveCount = active.count + pending.count
+                let classification: PhrasePreviewClassification
+                let reason: String?
+                if sameEnglishCount == 1, sameEnglish.first?.hardMatches(entry) == true {
+                    classification = .alreadyMatching
+                    reason = nil
+                } else if sameEnglishCount == 1, let hidden = hiddenSameEnglish.first, try hidden.matches(entry) {
+                    classification = .alreadyMatching
+                    reason = "CREATED_LIST_PENDING"
+                } else if effectiveCount > 5 {
+                    classification = .blocked
+                    reason = "ACTIVE_CAPACITY_EXCEEDED"
+                } else if sameEnglishCount > 0 {
+                    classification = .blocked
+                    reason = sameEnglishCount == 1 ? "CONFLICTING_SAME_ENGLISH" : "AMBIGUOUS_SAME_ENGLISH"
+                } else if plannedEnglish[vocabularyID, default: []].contains(englishDigest) {
+                    classification = .blocked
+                    reason = "DUPLICATE_PLANNED_ENGLISH"
+                } else if effectiveCount + reserved[vocabularyID, default: 0] >= 5 {
+                    classification = .blocked
+                    reason = "ACTIVE_CAPACITY_REACHED"
                 } else {
-                    planned.append(
-                        PhrasePreflightItem(
-                            entry: entry,
-                            classification: .create,
-                            vocabularyID: vocabularyID,
-                            sameEnglishBaseline: [],
-                            reason: nil
-                        )
-                    )
+                    classification = .create
+                    reason = nil
+                    reserved[vocabularyID, default: 0] += 1
+                    plannedEnglish[vocabularyID, default: []].insert(englishDigest)
                 }
+                planned.append(PhrasePreflightItem(entry: entry, classification: classification,
+                                                  vocabularyID: vocabularyID, sameEnglishBaseline: sameEnglish,
+                                                  reason: reason))
+            } catch let error as CompanionError where error == .phraseJournalUnavailable || error == .phraseJournalProtectionFailed {
+                planned.append(PhrasePreflightItem(entry: entry, classification: .blocked,
+                    vocabularyID: vocabularyID, sameEnglishBaseline: [],
+                    reason: error == .phraseJournalUnavailable ? "JOURNAL_UNAVAILABLE" : "JOURNAL_PROTECTION_FAILED"))
             } catch CompanionError.cancelled {
                 throw CompanionError.cancelled
             } catch let error as CompanionError where error.abortsReadPlan {
@@ -670,6 +696,12 @@ enum PhraseCreateBinding {
 
 struct PhraseWriteExecutor {
     let api: MaimemoTransport
+    let journal: PhraseSafetyJournal
+
+    init(journal: PhraseSafetyJournal = .shared, api: MaimemoTransport) {
+        self.api = api
+        self.journal = journal
+    }
 
     /// The first readback remains immediate. Two further paced GETs tolerate the
     /// observed short visibility lag while keeping total latency and API pressure
@@ -688,19 +720,25 @@ struct PhraseWriteExecutor {
                 return .stale
             }
 
+            try journal.prepareForCreate()
             progress?.report(.securing)
-            let fresh = try await PhrasePreflightPlanner(api: api).buildSnapshot(
+            let fresh = try await PhrasePreflightPlanner(journal: journal, api: api).buildSnapshot(
                 entries: displayedSnapshot.items.map(\.entry),
                 tags: displayedSnapshot.bindingContext.tags,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
+            if fresh.items.contains(where: { $0.reason == "JOURNAL_UNAVAILABLE" || $0.reason == "JOURNAL_PROTECTION_FAILED" }) {
+                return .globalFailure(.phraseJournalUnavailable)
+            }
             guard try PhraseCreateBinding.snapshotIdentity(fresh) == approval.snapshotIdentity else {
                 return .stale
             }
             let plan = try PhraseCreateBinding.makePlan(snapshot: fresh)
             guard plan.bindingDigest == approval.bindingDigest else { return .stale }
             return await perform(plan: plan, control: control, progress: progress)
+        } catch let error as CompanionError where error == .phraseJournalUnavailable || error == .phraseJournalProtectionFailed {
+            return .globalFailure(error)
         } catch CompanionError.cancelled {
             return PhraseExecutionSummary(
                 succeeded: 0,
@@ -751,7 +789,9 @@ struct PhraseWriteExecutor {
 
             do {
                 let body = try PhraseCreateBinding.requestData(item, tags: plan.tags)
-                let dispatch = await api.post(route: .createPhrase, body: body, control: control)
+                try journal.prepareForCreate()
+                let create = await api.createPhrase(body: body, control: control)
+                let dispatch = create.dispatch
                 guard dispatch != .notDispatched else {
                     results.append(
                         PhraseItemExecutionResult(
@@ -769,61 +809,63 @@ struct PhraseWriteExecutor {
                     break
                 }
 
-                let confirmation = await confirmPhrase(
-                    item: item,
-                    control: control
-                )
+                let proven = create.phrase.flatMap { $0.hardMatches(item.entry) ? $0 : nil }
+                let responseCategory: PhraseCreateResponseCategory? = dispatch.isClean2xx
+                    ? (proven != nil ? .proven : (create.phrase == nil ? .malformed : .mismatching)) : nil
+                var safetyError: CompanionError?
+                if let proven {
+                    do {
+                        try journal.recordCreated(proven, accountFingerprint: plan.credentialFingerprint,
+                                                  vocabularyID: item.vocabularyID)
+                    } catch { safetyError = .phraseJournalProtectionFailed }
+                }
+                // Even an unexpected journal save failure cannot skip the required
+                // authenticated GET or cause another mutating POST.
+                let confirmation = await confirmPhrase(item: item, control: control)
                 control.finishPostResolution()
+                var pendingVisibility = false
+                var overCapacity = false
+                if let records = confirmation.records {
+                    if let proven { pendingVisibility = !records.contains { $0.id == proven.id } }
+                    if safetyError == nil {
+                        do {
+                            let pending = try journal.pending(accountFingerprint: plan.credentialFingerprint,
+                                                              vocabularyID: item.vocabularyID, visible: records)
+                            overCapacity = records.filter { $0.status == CompanionConstants.status }.count + pending.count > 5
+                        } catch { safetyError = error as? CompanionError ?? .phraseJournalUnavailable }
+                    }
+                }
+                let matched = proven ?? confirmation.matchedRecord
+                let postError = dispatch.phraseFailure
+                let stopError = safetyError ?? confirmation.terminalError
+                    ?? (overCapacity ? .blocked : nil)
+                    ?? ((matched == nil || postError == .authenticationRejected || postError == .rateLimited) ? postError : nil)
+                    ?? ((proven != nil && confirmation.attempts.last?.category != .success
+                         && confirmation.attempts.last?.category != .targetNotVisible) ? .itemResponseRejected : nil)
                 let diagnostic = WriteAttemptDiagnostic(
-                    ordinal: item.entry.ordinal,
-                    postDispatch: dispatch.diagnosticCategory,
-                    readbackAttempts: confirmation.attempts,
-                    terminalErrorCategory: confirmation.terminalError
+                    ordinal: item.entry.ordinal, postDispatch: dispatch.diagnosticCategory,
+                    readbackAttempts: confirmation.attempts, terminalErrorCategory: stopError,
+                    phraseCreateResponse: responseCategory
                 )
-
-                if confirmation.terminalError == .authenticationRejected {
-                    failed += 1
-                    terminalError = .authenticationRejected
-                    results.append(
-                        PhraseItemExecutionResult(
-                            spelling: item.entry.spelling,
-                            outcome: .notVerified,
-                            observations: [],
-                            diagnostic: diagnostic
-                        )
-                    )
-                    break
-                }
-
-                guard let matched = confirmation.matchedRecord else {
-                    failed += 1
-                    results.append(
-                        PhraseItemExecutionResult(
-                            spelling: item.entry.spelling,
-                            outcome: .notVerified,
-                            observations: [],
-                            diagnostic: diagnostic
-                        )
-                    )
-                    break
-                }
-
-                succeeded += 1
-                results.append(
-                    PhraseItemExecutionResult(
-                        spelling: item.entry.spelling,
+                if let matched {
+                    succeeded += 1
+                    var observations = matched.observations(for: item.entry, tags: plan.tags)
+                    if pendingVisibility { observations.append(.listVisibilityPending) }
+                    results.append(PhraseItemExecutionResult(spelling: item.entry.spelling,
                         outcome: dispatch.isClean2xx ? .confirmed : .recovered,
-                        observations: matched.observations(
-                            for: item.entry,
-                            tags: plan.tags
-                        ),
-                        diagnostic: diagnostic
-                    )
-                )
+                        observations: observations, diagnostic: diagnostic))
+                } else {
+                    failed += 1
+                    results.append(PhraseItemExecutionResult(spelling: item.entry.spelling, outcome: .notVerified,
+                                                            observations: [], diagnostic: diagnostic))
+                }
+                terminalError = stopError
+                if matched == nil || stopError != nil { break }
             } catch {
                 if control.allowsInFlightReadback() { control.finishPostResolution() }
                 failed += 1
                 let companionError = error as? CompanionError ?? .responseRejected
+                terminalError = companionError
                 results.append(
                     PhraseItemExecutionResult(
                         spelling: item.entry.spelling,
@@ -855,6 +897,7 @@ struct PhraseWriteExecutor {
         let matchedRecord: PhraseRecord?
         let attempts: [ReadbackAttemptDiagnostic]
         let terminalError: CompanionError?
+        let records: [PhraseRecord]?
     }
 
     private func confirmPhrase(
@@ -862,6 +905,7 @@ struct PhraseWriteExecutor {
         control: ExecutionControl
     ) async -> ConfirmationResult {
         var attempts: [ReadbackAttemptDiagnostic] = []
+        var lastRecords: [PhraseRecord]?
         var terminalError: CompanionError?
 
         for attemptNumber in 1...Self.maximumReadbackAttempts {
@@ -872,13 +916,15 @@ struct PhraseWriteExecutor {
                     readback: true
                 )
                 terminalError = nil
+                lastRecords = records
                 let evaluation = evaluatePhraseReadback(records, expected: item.entry)
                 attempts.append(evaluation.diagnostic)
                 if let matched = evaluation.matchedRecord {
                     return ConfirmationResult(
                         matchedRecord: matched,
                         attempts: attempts,
-                        terminalError: nil
+                        terminalError: nil,
+                        records: records
                     )
                 }
                 guard evaluation.diagnostic.category.isRetryablePhraseConfirmationFailure,
@@ -902,7 +948,8 @@ struct PhraseWriteExecutor {
         return ConfirmationResult(
             matchedRecord: nil,
             attempts: attempts,
-            terminalError: terminalError
+            terminalError: terminalError,
+            records: lastRecords
         )
     }
 

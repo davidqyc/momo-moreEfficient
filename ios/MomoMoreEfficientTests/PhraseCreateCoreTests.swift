@@ -480,7 +480,7 @@ final class PhraseCreateCoreTests: XCTestCase {
             let lease = try credentialLease()
             defer { lease.clear() }
             do {
-                _ = try await PhrasePreflightPlanner(
+                _ = try await PhrasePreflightPlanner(journal: makeTestPhraseJournal(),
                     api: MaimemoTransport(
                         transport: transport,
                         credential: lease,
@@ -1227,7 +1227,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         let sleeper = RecordingSleeper()
         let lease = try credentialLease(token)
         let api = MaimemoTransport(transport: transport, credential: lease, sleeper: sleeper)
-        let snapshot = try await PhrasePreflightPlanner(api: api).buildSnapshot(
+        let snapshot = try await PhrasePreflightPlanner(journal: makeTestPhraseJournal(), api: api).buildSnapshot(
             entries: entries,
             tags: tags,
             credentialFingerprint: lease.fingerprint
@@ -1266,7 +1266,7 @@ final class PhraseCreateCoreTests: XCTestCase {
         sleeper: RecordingSleeper = RecordingSleeper()
     ) async throws -> PhraseExecutionSummary {
         let lease = try credentialLease()
-        let executor = PhraseWriteExecutor(
+        let executor = PhraseWriteExecutor(journal: makeTestPhraseJournal(),
             api: MaimemoTransport(
                 transport: transport,
                 credential: lease,

@@ -28,7 +28,7 @@ final class RetrofitCharacterizationTests: XCTestCase {
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
             jsonResponse(["error": "unauthorized"], status: 401),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -61,7 +61,7 @@ final class RetrofitCharacterizationTests: XCTestCase {
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -119,7 +119,7 @@ final class RetrofitCharacterizationTests: XCTestCase {
             makeReceipt(kind: .interpretation, spelling: "merchandise"),
             makeReceipt(kind: .phrase, spelling: "take into account"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: store,
             credentialValidationTransportFactory: { successfulCredentialValidationTransport() },

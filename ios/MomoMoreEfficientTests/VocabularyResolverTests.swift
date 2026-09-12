@@ -503,7 +503,7 @@ final class PreflightThroughputTests: XCTestCase {
             )
             let lease = try credentialLease()
             defer { lease.clear() }
-            let snapshot = try await PhrasePreflightPlanner(
+            let snapshot = try await PhrasePreflightPlanner(journal: makeTestPhraseJournal(),
                 api: MaimemoTransport(
                     transport: transport,
                     credential: lease,

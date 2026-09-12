@@ -72,7 +72,7 @@ final class ProviderOperationLaneTests: XCTestCase {
         let gated = GatedHTTPTransport(
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple")
         )
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { gated },
@@ -127,7 +127,7 @@ final class ProviderOperationLaneTests: XCTestCase {
     }
 
     func testQueryIsRefusedWhenThereIsNoConnection() {
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { FakeHTTPTransport([]) },
@@ -147,7 +147,7 @@ final class ProviderOperationLaneTests: XCTestCase {
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -172,7 +172,7 @@ final class ProviderOperationLaneTests: XCTestCase {
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
             jsonResponse(["error": "unauthorized"], status: 401),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -191,7 +191,7 @@ final class ProviderOperationLaneTests: XCTestCase {
 
     func testAFailedRemovalLeavesTheIdentityAndConnectionIntact() async {
         let store = FakeTokenStore()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { successfulCredentialValidationTransport() },
@@ -212,7 +212,7 @@ final class ProviderOperationLaneTests: XCTestCase {
     }
 
     func testAQueryAuthenticationRejectionDisconnectsWithoutChangingIdentity() async {
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { successfulCredentialValidationTransport() },
@@ -237,7 +237,7 @@ final class ProviderOperationLaneTests: XCTestCase {
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -546,7 +546,7 @@ final class ProviderOperationLaneTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeConnectedModel(transport: HTTPTransport) -> CompanionViewModel {
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },

@@ -71,7 +71,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         XCTAssertEqual(
             model.errorMessage,
             CompanionError.authenticationRejected.description + "\n"
-                + CompanionError.uncertainWriteOutcome.description
+                + "结果仍无法确认，请勿重复提交；稍后重新预览。"
         )
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
         XCTAssertEqual(model.history.count, 1)
@@ -196,7 +196,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
     func testPhraseRehearsalRunsParserApprovalCreateReadbackAndPreservesInterpretationDraft() async {
         let history = RehearsalHistoryStore()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: RehearsalTokenStore(),
             historyStore: history,
             transportFactory: { RehearsalTransport(perRequestDelaySeconds: 0) },
@@ -322,7 +322,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
             await MainActor.run { assertion.expire() }
         }
         var transports: [HTTPTransport] = [FakeHTTPTransport(preview), executionTransport]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transports.removeFirst() },
@@ -531,7 +531,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         var remaining = transports
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
@@ -549,7 +549,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         factory: SequencedTransportFactory,
         preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: factory.make,

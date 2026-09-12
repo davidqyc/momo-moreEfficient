@@ -131,7 +131,7 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
                 && $0.diagnostic?.postDispatch.wasDispatched != true
         }
         notAttempted = items.count { $0.finalOutcome == .notAttempted }
-        stopped = result.cancelled || result.stalePreview || failed > 0
+        stopped = result.cancelled || result.stalePreview || result.terminalError != nil || failed > 0
             || unconfirmed > 0 || notAttempted > 0
     }
 
@@ -224,6 +224,9 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
             lines.append(
                 "POST：\(diagnostic.postDispatch.displayLabel) [\(diagnostic.postDispatch.diagnosticCode)]"
             )
+            if let response = diagnostic.phraseCreateResponse {
+                lines.append("创建响应：\(response.rawValue)")
+            }
             lines.append("回读次数：\(diagnostic.readbackAttempts.count)")
             for (attemptIndex, attempt) in diagnostic.readbackAttempts.enumerated() {
                 var detail = "回读 \(attemptIndex + 1)：\(attempt.category.displayLabel) [\(attempt.category.rawValue)]"

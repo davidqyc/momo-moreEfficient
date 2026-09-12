@@ -9,7 +9,7 @@ final class CompanionViewModelTests: XCTestCase {
         let rejectedTransport = FakeHTTPTransport([
             jsonResponse(["error": "unauthorized"], status: 401),
         ])
-        let rejected = CompanionViewModel(
+        let rejected = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: rejectedStore,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { rejectedTransport },
@@ -30,7 +30,7 @@ final class CompanionViewModelTests: XCTestCase {
         let validTransport = FakeHTTPTransport([
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let valid = CompanionViewModel(
+        let valid = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: validStore,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { validTransport },
@@ -52,7 +52,7 @@ final class CompanionViewModelTests: XCTestCase {
         let transport = GatedHTTPTransport(
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple")
         )
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -89,7 +89,7 @@ final class CompanionViewModelTests: XCTestCase {
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
         var validationTransports: [HTTPTransport] = [rejectedTransport, restoreTransport]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { validationTransports.removeFirst() },
@@ -124,7 +124,7 @@ final class CompanionViewModelTests: XCTestCase {
         let validTransport = FakeHTTPTransport([
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { validTransport },
@@ -149,7 +149,7 @@ final class CompanionViewModelTests: XCTestCase {
         let transport = FakeHTTPTransport([
             vocabularyResponse("INVALID_VALIDATION_VOC", "apple"),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -265,7 +265,7 @@ final class CompanionViewModelTests: XCTestCase {
     func testMalformedAuthenticatedValidationIsNotRelabeledInvalidToken() async {
         let store = FakeTokenStore()
         let transport = FakeHTTPTransport([jsonResponse(["unexpected": []])])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: { transport },
@@ -294,7 +294,7 @@ final class CompanionViewModelTests: XCTestCase {
         let (defaults, suite) = isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        let first = CompanionViewModel(
+        let first = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: defaults
@@ -311,7 +311,7 @@ final class CompanionViewModelTests: XCTestCase {
         first.toggleTag("SAT")
         XCTAssertEqual(first.selectedTags, ["MBA", "BEC", "GMAT"])
 
-        let reconstructed = CompanionViewModel(
+        let reconstructed = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: defaults
@@ -332,12 +332,12 @@ final class CompanionViewModelTests: XCTestCase {
         let (sharedDefaults, sharedSuite) = isolatedDefaults()
         defer { sharedDefaults.removePersistentDomain(forName: sharedSuite) }
 
-        let sharedFirst = CompanionViewModel(
+        let sharedFirst = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: sharedDefaults
         )
-        let sharedSecond = CompanionViewModel(
+        let sharedSecond = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: sharedDefaults
@@ -351,12 +351,12 @@ final class CompanionViewModelTests: XCTestCase {
             .unpublished
         )
 
-        let isolatedA = CompanionViewModel(
+        let isolatedA = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: isolatedPreferenceDefaults()
         )
-        let isolatedB = CompanionViewModel(
+        let isolatedB = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: isolatedPreferenceDefaults()
@@ -372,7 +372,7 @@ final class CompanionViewModelTests: XCTestCase {
         XCTAssertEqual(isolatedB.publicationPreference, .published)
         // ...nor does a freshly-isolated construction made afterward, which
         // is exactly what every `connectedModel` helper's default now does.
-        let isolatedC = CompanionViewModel(
+        let isolatedC = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: isolatedPreferenceDefaults()
@@ -409,7 +409,7 @@ final class CompanionViewModelTests: XCTestCase {
         let transport = FakeHTTPTransport([
             vocabularyQueryResponse([(id: "INVALID_VOC", spelling: "word")]), interpretationsResponse([]),
         ])
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: historyStore,
             transportFactory: { transport },
@@ -440,10 +440,10 @@ final class CompanionViewModelTests: XCTestCase {
         let store = FakeTokenStore()
         var draft = fakeToken
         let historyStore = InMemoryHistoryStore()
-        let first = CompanionViewModel(tokenStore: store, historyStore: historyStore, preferenceDefaults: isolatedPreferenceDefaults())
+        let first = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(), tokenStore: store, historyStore: historyStore, preferenceDefaults: isolatedPreferenceDefaults())
         first.installVerifiedCredentialForTesting(token: &draft)
 
-        let reconstructed = CompanionViewModel(
+        let reconstructed = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: historyStore,
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
@@ -461,7 +461,7 @@ final class CompanionViewModelTests: XCTestCase {
 
     func testBackgroundKeepsPersistedTokenAndForegroundRestoresConnection() async {
         let store = FakeTokenStore()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: store,
             historyStore: InMemoryHistoryStore(),
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
@@ -483,7 +483,7 @@ final class CompanionViewModelTests: XCTestCase {
     }
 
     func testLocalParseAcknowledgementReportsCountAndEndpoints() {
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             preferenceDefaults: isolatedPreferenceDefaults()
@@ -507,7 +507,7 @@ final class CompanionViewModelTests: XCTestCase {
         ])
         let gate = FirstPauseGateSleeper()
         let assertion = FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
@@ -778,7 +778,7 @@ final class CompanionViewModelTests: XCTestCase {
         ])
         let gate = FirstPauseGateSleeper()
         let assertion = FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
@@ -1405,7 +1405,7 @@ final class CompanionViewModelTests: XCTestCase {
         )
         let historyStore = InMemoryHistoryStore(receipts: [receipt])
         let tokenStore = FakeTokenStore(token: fakeToken)
-        let model = CompanionViewModel(tokenStore: tokenStore, historyStore: historyStore, preferenceDefaults: isolatedPreferenceDefaults())
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(), tokenStore: tokenStore, historyStore: historyStore, preferenceDefaults: isolatedPreferenceDefaults())
         model.sourceText = "draft\nn. 草稿"
 
         model.clearHistory()
@@ -1469,7 +1469,7 @@ final class CompanionViewModelTests: XCTestCase {
         preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: historyStore,
             transportFactory: factory.make,
@@ -1492,7 +1492,7 @@ final class CompanionViewModelTests: XCTestCase {
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
         var remaining = transports
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: historyStore,
             transportFactory: { remaining.removeFirst() },

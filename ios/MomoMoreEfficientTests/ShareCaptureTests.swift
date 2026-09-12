@@ -272,7 +272,7 @@ final class ShareCaptureTests: XCTestCase {
         var transports: [HTTPTransport] = [previewTransport, executionTransport]
         let executionGate = FirstPauseGateSleeper()
         var sleepers: [RequestSleeper] = [RecordingSleeper(), executionGate]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transports.removeFirst() },
@@ -474,7 +474,7 @@ final class ShareCaptureTests: XCTestCase {
         tokenStore: TokenStore,
         transport: FakeHTTPTransport
     ) -> CompanionViewModel {
-        CompanionViewModel(
+        CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },

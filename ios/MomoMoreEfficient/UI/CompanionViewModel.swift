@@ -67,6 +67,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
+    private let phraseSafetyJournal: PhraseSafetyJournal
     private let historyStore: HistoryStore
     private let transportFactory: () -> HTTPTransport
     private let credentialValidationTransportFactory: () -> HTTPTransport
@@ -173,6 +174,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             api: MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
                 sleeper: sleeperFactory(),
                 scheduler: windowScheduler
             ),
@@ -240,6 +242,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     init(
+        phraseSafetyJournal: PhraseSafetyJournal = .shared,
         tokenStore: TokenStore = KeychainTokenStore(),
         historyStore: HistoryStore = FileHistoryStore(),
         transportFactory: @escaping () -> HTTPTransport = { URLSessionHTTPTransport() },
@@ -251,6 +254,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         dateProvider: @escaping () -> Date = Date.init,
         preferenceDefaults: UserDefaults = .standard
     ) {
+        self.phraseSafetyJournal = phraseSafetyJournal
         self.tokenStore = tokenStore
         self.historyStore = historyStore
         self.transportFactory = transportFactory
@@ -497,6 +501,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
                 sleeper: sleeperFactory(),
                 scheduler: windowScheduler
             )
@@ -528,7 +533,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 )
             } else {
                 let entries = try PhraseBatchParser.parse(document)
-                let built = try await PhrasePreflightPlanner(api: api).buildSnapshot(
+                let built = try await PhrasePreflightPlanner(journal: phraseSafetyJournal, api: api).buildSnapshot(
                     entries: entries,
                     tags: tags,
                     credentialFingerprint: lease.fingerprint,
@@ -662,6 +667,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
               !isPreviewStale
         else { return }
         do {
+            try phraseSafetyJournal.prepareForCreate()
             let plan = try PhraseCreateBinding.makePlan(snapshot: phraseSnapshot)
             armedPhraseApproval = ArmedPhraseApprovalIntent(
                 approval: try PhraseCreateBinding.makeApproval(snapshot: phraseSnapshot),
@@ -750,38 +756,22 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
                 sleeper: sleeperFactory(),
                 scheduler: windowScheduler
             )
-            let result = await PhraseWriteExecutor(api: api).execute(
+            let result = await PhraseWriteExecutor(journal: phraseSafetyJournal, api: api).execute(
                 displayedSnapshot: displayed,
                 approval: intent.approval,
                 control: control,
                 progress: progress
             )
-            if let terminalError = result.terminalError {
-                if !result.results.isEmpty {
-                    receipt = appendPhraseReceipt(displayed: displayed, result: result)
-                }
-                handleSessionFailure(terminalError)
-                errorMessage = terminalWriteMessage(
-                    terminalError,
-                    containsUnconfirmedWrite: result.results.contains {
-                        $0.outcome == .notVerified
-                            && $0.diagnostic?.postDispatch.wasDispatched == true
-                    }
-                )
-            } else if result.stalePreview {
-                errorMessage = CompanionError.stalePreview.description
-            } else {
+            errorMessage = result.feedbackMessage
+            if let terminalError = result.terminalError { handleSessionFailure(terminalError) }
+            if !result.stalePreview && (!result.results.isEmpty || result.terminalError == nil) {
                 receipt = appendPhraseReceipt(displayed: displayed, result: result)
                 observations = result.results.flatMap(\.observations)
                 fullySucceeded = result.isFullSuccess
-                if result.failed > 0 {
-                    errorMessage = CompanionError.uncertainWriteOutcome.description
-                } else if result.cancelled {
-                    errorMessage = CompanionError.cancelled.description
-                }
             }
         } catch let error as CompanionError {
             errorMessage = error.description
@@ -804,6 +794,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             phraseObservationMessage = phraseObservationSummary(observations)
             historyErrorMessage = localHistoryError
         } else if let receipt {
+            phraseObservationMessage = phraseObservationSummary(observations)
             hasExecutionFeedback = true
             finalSummary = FinalSummary(
                 created: receipt.succeeded,
@@ -897,6 +888,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
                 sleeper: sleeperFactory(),
                 scheduler: windowScheduler
             )
@@ -1176,6 +1168,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let api = MaimemoTransport(
                 transport: transportFactory(),
                 credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
                 sleeper: sleeperFactory(),
                 scheduler: windowScheduler
             )
@@ -1678,6 +1671,7 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         // every distinct closed observation prevents one successful item from
         // hiding another item's missing or differing tags/highlight.
         let ordered: [(PhraseObservation, String)] = [
+            (.listVisibilityPending, "已创建；墨墨列表暂未同步，请勿重复提交"),
             (.tagsDiffer, "标签与请求不同"),
             (.tagsMissing, "标签未返回"),
             (.tagsMatchRequested, "标签已匹配"),

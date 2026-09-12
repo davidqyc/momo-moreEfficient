@@ -21,6 +21,25 @@ enum PostDispatchResult: Equatable {
         return false
     }
 
+    var phraseFailure: CompanionError? {
+        switch self {
+        case let .httpRejected(status):
+            switch status {
+            case 401: return .authenticationRejected
+            case 429: return .rateLimited
+            case 500...599: return .serverFailure
+            default: return .globalHTTPFailure
+            }
+        case let .transportFailure(category):
+            switch category {
+            case .credential: return .credentialStorageUnavailable
+            case .responseRejected: return .responseRejected
+            default: return .transport
+            }
+        case .notDispatched, .clean2xx: return nil
+        }
+    }
+
     var diagnosticCategory: PostDispatchCategory {
         switch self {
         case .notDispatched: return .notDispatched
@@ -32,23 +51,34 @@ enum PostDispatchResult: Equatable {
     }
 }
 
+struct PhraseCreateDispatchResult {
+    let dispatch: PostDispatchResult
+    /// Safely decoded only; the executor still checks intended hard-match truth.
+    let phrase: PhraseRecord?
+}
+
 final class MaimemoTransport {
     private let transport: HTTPTransport
     private let credential: OperationCredentialLease
+    private let phraseSafetyJournal: PhraseSafetyJournal?
     private let sleeper: RequestSleeper
     private let scheduler: RequestWindowScheduler
 
     init(
         transport: HTTPTransport,
         credential: OperationCredentialLease,
+        phraseSafetyJournal: PhraseSafetyJournal? = nil,
         sleeper: RequestSleeper = ProductionRequestSleeper(),
         scheduler: RequestWindowScheduler = RequestWindowScheduler()
     ) {
         self.transport = transport
         self.credential = credential
+        self.phraseSafetyJournal = phraseSafetyJournal
         self.sleeper = sleeper
         self.scheduler = scheduler
     }
+
+    var credentialFingerprint: String { credential.fingerprint }
 
     /// Reuse the production-proven vocabulary route and decoder. "apple" is a
     /// stable probe only for credential validation; no second route/schema exists.
@@ -225,34 +255,58 @@ final class MaimemoTransport {
         }
 
         var seen = Set<String>()
-        return try values.map { value in
-            guard let id = value["id"] as? String,
-                  isSafeIdentifier(id),
-                  seen.insert(id).inserted,
-                  let phrase = safeSingleLine(
-                    value["phrase"],
-                    maximumCharacters: CompanionConstants.maxInterpretationCharacters
-                  ),
-                  let interpretation = safeSingleLine(
-                    value["interpretation"],
-                    maximumCharacters: CompanionConstants.maxInterpretationCharacters
-                  ),
-                  let origin = safeOrigin(value["origin"]),
-                  let status = value["status"] as? String,
-                  reviewedPhraseStatuses.contains(status)
-            else {
-                throw CompanionError.itemResponseRejected
-            }
-            return PhraseRecord(
-                id: id,
-                phrase: phrase,
-                interpretation: interpretation,
-                tags: try phraseTags(value),
-                origin: origin,
-                status: status,
-                highlight: try phraseHighlight(value, phraseLength: phrase.unicodeScalars.count)
-            )
+        let records = try values.map { value in
+            let record = try decodePhrase(value)
+            guard seen.insert(record.id).inserted else { throw CompanionError.itemResponseRejected }
+            return record
         }
+        // Read-only Query may opportunistically retire visible pending IDs too.
+        // Journal failure never converts a truthful authenticated read into a
+        // Query failure; the CREATE planner/executor enforce journal health.
+        _ = try? phraseSafetyJournal?.pending(accountFingerprint: credential.fingerprint,
+                                             vocabularyID: vocabularyID, visible: records)
+        return records
+    }
+
+    private func decodePhrase(_ value: [String: Any]) throws -> PhraseRecord {
+        guard let id = value["id"] as? String, isSafeIdentifier(id),
+              let phrase = safeSingleLine(value["phrase"], maximumCharacters: CompanionConstants.maxInterpretationCharacters),
+              let interpretation = safeSingleLine(value["interpretation"], maximumCharacters: CompanionConstants.maxInterpretationCharacters),
+              let origin = safeOrigin(value["origin"]),
+              let status = value["status"] as? String, reviewedPhraseStatuses.contains(status)
+        else { throw CompanionError.itemResponseRejected }
+        return PhraseRecord(id: id, phrase: phrase, interpretation: interpretation,
+                            tags: try phraseTags(value), origin: origin, status: status,
+                            highlight: try phraseHighlight(value, phraseLength: phrase.unicodeScalars.count))
+    }
+
+    func createPhrase(body: Data, control: ExecutionControl) async -> PhraseCreateDispatchResult {
+        let result = await dispatchPost(route: .createPhrase, body: body, control: control)
+        guard result.dispatch.isClean2xx, let body = result.body else {
+            return PhraseCreateDispatchResult(dispatch: result.dispatch, phrase: nil)
+        }
+        let phrase: PhraseRecord?
+        do {
+            let object = try jsonObject(body)
+            // Accept exactly the documented object or its one-level data wrapper.
+            // Contradictory success envelopes and multiple phrase locations cannot
+            // provide creation proof; GET-only recovery remains available.
+            if let success = object["success"] {
+                guard let value = success as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID(), value.boolValue
+                else { throw CompanionError.responseRejected }
+            }
+            if let errors = object["errors"] {
+                guard let values = errors as? [Any], values.isEmpty else { throw CompanionError.responseRejected }
+            }
+            let wrapped = object["data"] as? [String: Any]
+            guard !(object["phrase"] != nil && wrapped?["phrase"] != nil) else {
+                throw CompanionError.responseRejected
+            }
+            let container = object["phrase"] != nil ? object : wrapped
+            guard let value = container?["phrase"] as? [String: Any] else { throw CompanionError.responseRejected }
+            phrase = try decodePhrase(value)
+        } catch { phrase = nil }
+        return PhraseCreateDispatchResult(dispatch: result.dispatch, phrase: phrase)
     }
 
     /// The strict read-only notes list used by batch Query (#161).
@@ -304,38 +358,42 @@ final class MaimemoTransport {
         }
     }
 
-    func post(
+    func post(route: InterpretationRoute, body: Data, control: ExecutionControl) async -> PostDispatchResult {
+        await dispatchPost(route: route, body: body, control: control).dispatch
+    }
+
+    private func dispatchPost(
         route: InterpretationRoute,
         body: Data,
         control: ExecutionControl
-    ) async -> PostDispatchResult {
+    ) async -> (dispatch: PostDispatchResult, body: Data?) {
         do {
             // Mutation semantics, not the HTTP verb: a read-semantic POST such
             // as the batch vocabulary query must never reach one-POST-per-item
             // accounting, approval authorization or write retry policy.
-            guard route.isMutating else { return .notDispatched }
+            guard route.isMutating else { return (.notDispatched, nil) }
             let ticket = try await pace { control.isCancellationRequested }
             // Every exit below this point must resolve `ticket`: `confirmDispatch`
             // right before the real send, or (via this defer) `cancelReservation`
             // for any path that ends up not dispatching after all.
             var dispatched = false
             defer { if !dispatched { scheduler.cancelReservation(ticket) } }
-            guard control.beginPostIfAllowed() else { return .notDispatched }
+            guard control.beginPostIfAllowed() else { return (.notDispatched, nil) }
             let request = try TransportRequest(route: route, body: body)
             dispatched = true
             scheduler.confirmDispatch(ticket)
             do {
                 let response = try await transport.send(request, credential: credential)
                 return (200..<300).contains(response.status)
-                    ? .clean2xx(status: response.status)
-                    : .httpRejected(status: response.status)
+                    ? (.clean2xx(status: response.status), response.body)
+                    : (.httpRejected(status: response.status), nil)
             } catch {
-                return .transportFailure(
+                return (.transportFailure(
                     errorCategory: PostSendFailureCategory(error: error)
-                )
+                ), nil)
             }
         } catch {
-            return .notDispatched
+            return (.notDispatched, nil)
         }
     }
 
