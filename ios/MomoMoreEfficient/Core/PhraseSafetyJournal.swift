@@ -17,20 +17,32 @@ struct PhraseSafetyEntry: Codable, Equatable, Sendable {
     }
 
     init(record: PhraseRecord, accountFingerprint: String, vocabularyID: String, createdAt: Date) throws {
+        // New evidence must also suppress the reverse/mixed-apostrophe response
+        // after restart. Raw+canonical lookup alone cannot recover a curly hash
+        // from a straight expected string. Existing v1 entries stay untouched.
+        let english = PhraseEnglishIdentity.canonical(record.phrase)
         accountScopeDigest = try Self.digest("account", [accountFingerprint])
         vocabularyDigest = try Self.digest("vocabulary", [vocabularyID])
-        phraseIdentityDigest = try Self.digest("phrase", [record.phrase, record.interpretation, record.origin])
-        sourceIndependentPhraseDigest = try Self.digest("phrase-no-source", [record.phrase, record.interpretation])
-        englishDigest = try Self.digest("english", [record.phrase])
+        phraseIdentityDigest = try Self.digest("phrase", [english, record.interpretation, record.origin])
+        sourceIndependentPhraseDigest = try Self.digest("phrase-no-source", [english, record.interpretation])
+        englishDigest = try Self.digest("english", [english])
         providerPhraseIDDigest = try Self.digest("provider-id", [record.id])
         self.createdAt = createdAt
     }
 
-    func matches(_ entry: PhraseBatchEntry) throws -> Bool {
-        if let source = entry.source {
-            return phraseIdentityDigest == (try Self.digest("phrase", [entry.english, entry.chinese, source]))
+    func matchesEnglish(_ english: String) throws -> Bool {
+        try PhraseEnglishIdentity.journalCandidates(english).contains {
+            englishDigest == (try Self.digest("english", [$0]))
         }
-        return sourceIndependentPhraseDigest == (try Self.digest("phrase-no-source", [entry.english, entry.chinese]))
+    }
+
+    func matches(_ entry: PhraseBatchEntry) throws -> Bool {
+        try PhraseEnglishIdentity.journalCandidates(entry.english).contains { english in
+            if let source = entry.source {
+                return phraseIdentityDigest == (try Self.digest("phrase", [english, entry.chinese, source]))
+            }
+            return sourceIndependentPhraseDigest == (try Self.digest("phrase-no-source", [english, entry.chinese]))
+        }
     }
 
     var isValid: Bool {
@@ -160,7 +172,9 @@ final class PhraseSafetyJournal: @unchecked Sendable {
                 $0.accountScopeDigest == entry.accountScopeDigest && $0.vocabularyDigest == entry.vocabularyDigest
                     && $0.providerPhraseIDDigest == entry.providerPhraseIDDigest
             }) {
-                guard existing.phraseIdentityDigest == entry.phraseIdentityDigest else {
+                let rawIdentity = try PhraseSafetyEntry.digest("phrase", [record.phrase, record.interpretation, record.origin])
+                guard existing.phraseIdentityDigest == entry.phraseIdentityDigest
+                        || existing.phraseIdentityDigest == rawIdentity else {
                     throw CompanionError.phraseJournalUnavailable
                 }
             } else { entries.append(entry) }

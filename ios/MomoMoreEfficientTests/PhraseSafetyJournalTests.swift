@@ -613,6 +613,201 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertEqual(transport.postCount, 1)
     }
 
+    // MARK: - Narrow provider apostrophe identity (#161)
+
+    func testApostropheHardIdentityIsSymmetricAndDoesNotFoldOtherScalarsOrFields() {
+        for (expected, returned) in [("A sample isn’t empty.", "A sample isn't empty."),
+                                     ("A sample isn't empty.", "A sample isn’t empty.")] {
+            let intended = apostropheEntry(expected)
+            let provider = apostropheRecord(returned)
+            XCTAssertTrue(provider.hardMatches(intended))
+            XCTAssertEqual(provider.hardMismatchKeys(intended), [])
+        }
+        let straight = "A sample isn't empty."
+        for different in ["A sample isn‘t empty.", "A sample isnʼt empty.",
+                          "A sample  isn't empty.", "a sample isn't empty.",
+                          "A sample-isn't empty.", "A sample isn't empty…", "Ａ sample isn't empty."] {
+            XCTAssertFalse(apostropheRecord(different).hardMatches(apostropheEntry(straight)))
+            XCTAssertEqual(apostropheRecord(different).hardMismatchKeys(apostropheEntry(straight)), [.english])
+        }
+        XCTAssertFalse(PhraseEnglishIdentity.equivalent("é", "e\u{0301}"), "no implicit NFC equality")
+        let intended = apostropheEntry("A sample isn’t empty.", chinese: "ZH’", source: "SOURCE’")
+        let provider = PhraseRecord(id: providerID, phrase: straight, interpretation: "ZH'",
+            tags: [], origin: "SOURCE'", status: "DELETED", highlight: .missing)
+        XCTAssertEqual(provider.hardMismatchKeys(intended), [.chinese, .source, .status])
+    }
+
+    func testApostropheResponseProofPersistsAcrossRestartHistoryClearAndLaterVisibility() async throws {
+        // Both directions, including mixed apostrophes, must remain protected
+        // after a provider response is accepted but the list omits the record.
+        for (expected, returned) in [("A sample isn’t empty.", "A sample isn't empty."),
+                                     ("A sample isn't empty.", "A sample isn’t empty."),
+                                     ("A sample isn't empty; it’s fine.", "A sample isn’t empty; it's fine.")] {
+            let intended = apostropheEntry(expected)
+            let directory = temporaryDirectory()
+            let store = FilePhraseSafetyJournalStore(applicationSupportDirectory: directory)
+            let journal = PhraseSafetyJournal(store: store)
+            let shown = try await snapshot(entries: [intended], journal: journal)
+            let transport = ObservingPhraseTransport(replies: executionReplies(
+                post: jsonResponse(["phrase": apostropheRawRecord(returned)], status: 201), reads: [[], [], []])) {
+                XCTAssertEqual(try store.load().count, 1, "persist BEFORE the first authenticated GET")
+            }
+            let result = try await execute(shown, journal: journal, transport: transport)
+            XCTAssertEqual(result.succeeded, 1)
+            XCTAssertEqual(result.failed, 0)
+            XCTAssertEqual(result.results.map(\.outcome), [.confirmed])
+            XCTAssertTrue(result.isFullSuccess)
+            XCTAssertNil(result.feedbackMessage)
+            XCTAssertEqual(result.results[0].diagnostic?.phraseCreateResponse, .proven)
+            XCTAssertNil(result.results[0].diagnostic?.phraseCreateMismatchKeys)
+            XCTAssertNil(result.results[0].diagnostic?.phraseEnglishScalarDiff)
+            XCTAssertEqual(result.results[0].diagnostic?.readbackAttempts.map(\.category),
+                           [.targetNotVisible, .targetNotVisible, .targetNotVisible])
+            XCTAssertTrue(result.results[0].observations.contains(.listVisibilityPending))
+            XCTAssertEqual(transport.base.postCount, 1)
+            XCTAssertTrue(transport.base.requests.suffix(3).allSatisfy { !$0.route.isMutating })
+            let sent = try XCTUnwrap(transport.base.requests.first { $0.route.isMutating }?.body)
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: sent) as? [String: Any])
+            let sentPhrase = try XCTUnwrap((body["phrase"] as? [String: Any])?["phrase"] as? String)
+            XCTAssertEqual(Array(sentPhrase.unicodeScalars), Array(expected.unicodeScalars), "exact approved payload")
+
+            let history = FileHistoryStore(applicationSupportDirectory: directory)
+            try history.saveReceipts([ExecutionReceipt(selectedSpellings: [entry.spelling], result: result)])
+            let restarted = PhraseSafetyJournal(store: FilePhraseSafetyJournalStore(applicationSupportDirectory: directory))
+            let model = model(journal: restarted, history: history)
+            model.sourceText = "sample\n\(expected)\n\(entry.chinese)\n\(entry.source!)"
+            model.clearHistory()
+            XCTAssertTrue(try history.loadReceipts().isEmpty)
+            await model.previewCurrentInput()
+            XCTAssertEqual(model.phrasePreview?.alreadyMatchingCount, 1)
+            XCTAssertFalse(model.canExecutePhrase)
+            XCTAssertEqual(try store.load().count, 1)
+            let hidden = try await snapshot(entries: [intended], journal: restarted)
+            XCTAssertEqual(hidden.items[0].classification, .alreadyMatching)
+            XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: hidden))
+            let retryTransport = FakeHTTPTransport([vocabulary(), empty()])
+            let stale = try await execute(shown, journal: restarted, transport: retryTransport)
+            XCTAssertTrue(stale.stalePreview || stale.terminalError != nil)
+            XCTAssertEqual(retryTransport.postCount, 0)
+
+            // Four others plus the now-visible pending record are five, not six.
+            let visible = [apostropheRawRecord(returned)] + otherRecords(4)
+            let later = try await snapshot(entries: [intended, otherEntry(ordinal: 2)], journal: restarted, visible: visible)
+            XCTAssertEqual(later.items.map(\.classification), [.alreadyMatching, .blocked])
+            XCTAssertEqual(later.items[1].reason, "ACTIVE_CAPACITY_REACHED")
+            XCTAssertTrue(try store.load().isEmpty, "retire the pending resource by ID")
+        }
+    }
+
+    func testApostropheVisiblePreviewConflictsAmbiguityAndBatchReservations() async throws {
+        let curly = apostropheEntry("A sample isn’t empty.")
+        let straight = apostropheEntry("A sample isn't empty.", ordinal: 2)
+        for (intended, returned) in [(curly, straight.english), (straight, curly.english)] {
+            let shown = try await snapshot(entries: [intended], journal: makeTestPhraseJournal(),
+                                           visible: [apostropheRawRecord(returned)])
+            XCTAssertEqual(shown.items[0].classification, .alreadyMatching)
+        }
+        for changedField in ["interpretation", "origin"] {
+            var raw = apostropheRawRecord(straight.english)
+            raw[changedField] = "DIFFERENT_SYNTHETIC_VALUE"
+            let shown = try await snapshot(entries: [curly], journal: makeTestPhraseJournal(), visible: [raw])
+            XCTAssertEqual(shown.items[0].reason, "CONFLICTING_SAME_ENGLISH")
+        }
+        var secondRecord = apostropheRawRecord(curly.english); secondRecord["id"] = "SECOND_SYNTHETIC_ID"
+        let ambiguous = try await snapshot(entries: [curly], journal: makeTestPhraseJournal(),
+            visible: [apostropheRawRecord(straight.english), secondRecord])
+        XCTAssertEqual(ambiguous.items[0].reason, "AMBIGUOUS_SAME_ENGLISH")
+        for entries in [[curly, straight], [straight, curly]] {
+            let shown = try await snapshot(entries: entries, journal: makeTestPhraseJournal())
+            XCTAssertEqual(shown.items.map(\.classification), [.create, .blocked])
+            XCTAssertEqual(shown.items[1].reason, "DUPLICATE_PLANNED_ENGLISH")
+        }
+        XCTAssertNotEqual(try PhraseCreateBinding.sourceIdentity([curly]), try PhraseCreateBinding.sourceIdentity([
+            apostropheEntry(straight.english)]), "approval must still bind raw English")
+    }
+
+    func testApostropheReadbackUsesSameIdentityForActiveAndDeletedRecords() async throws {
+        let intended = apostropheEntry("A sample isn’t empty.")
+        for status in ["PUBLISHED", "DELETED"] {
+            let journal = makeTestPhraseJournal()
+            let shown = try await snapshot(entries: [intended], journal: journal)
+            var raw = apostropheRawRecord("A sample isn't empty."); raw["status"] = status
+            // An uncertain POST must still depend entirely on authenticated GET.
+            let reads = status == "PUBLISHED" ? [[raw]] : [[raw], [raw], [raw]]
+            let transport = FakeHTTPTransport(executionReplies(post: .failure(.transport), reads: reads))
+            let result = try await execute(shown, journal: journal, transport: transport)
+            XCTAssertEqual(transport.postCount, 1)
+            XCTAssertEqual(result.results[0].outcome, status == "PUBLISHED" ? .recovered : .notVerified)
+            XCTAssertEqual(result.results[0].diagnostic?.readbackAttempts.last?.category,
+                           status == "PUBLISHED" ? .success : .targetNotVisible)
+            XCTAssertEqual(result.results[0].diagnostic?.readbackAttempts.last?.phraseFacts?.mismatchKeys,
+                           status == "PUBLISHED" ? [] : [.status])
+        }
+    }
+
+    func testLegacyRawJournalCandidatesKeepExactAndCanonicalMatchesWithoutMigration() async throws {
+        for (storedEnglish, expectedEnglish) in [("A sample isn’t empty.", "A sample isn’t empty."),
+                                                ("A sample isn't empty.", "A sample isn’t empty.")] {
+            let directory = temporaryDirectory()
+            let store = FilePhraseSafetyJournalStore(applicationSupportDirectory: directory)
+            // Construct the OLD raw v1 shape explicitly, independent of today's initializer.
+            let old: [String: Any] = [
+                "accountScopeDigest": try PhraseSafetyEntry.digest("account", [fingerprint()]),
+                "vocabularyDigest": try PhraseSafetyEntry.digest("vocabulary", [vocID]),
+                "phraseIdentityDigest": try PhraseSafetyEntry.digest("phrase", [storedEnglish, entry.chinese, entry.source!]),
+                "sourceIndependentPhraseDigest": try PhraseSafetyEntry.digest("phrase-no-source", [storedEnglish, entry.chinese]),
+                "englishDigest": try PhraseSafetyEntry.digest("english", [storedEnglish]),
+                "providerPhraseIDDigest": try PhraseSafetyEntry.digest("provider-id", [providerID]),
+                "createdAt": 0
+            ]
+            let legacy = try JSONDecoder().decode(PhraseSafetyEntry.self, from: JSONSerialization.data(withJSONObject: old))
+            try store.save([legacy])
+            let before = try Data(contentsOf: journalURL(directory))
+            let journal = PhraseSafetyJournal(store: store)
+            for source in [entry.source, nil] {
+                let expected = apostropheEntry(expectedEnglish, source: source)
+                let shown = try await snapshot(entries: [expected], journal: journal)
+                XCTAssertEqual(shown.items[0].classification, .alreadyMatching)
+                XCTAssertTrue(try legacy.matches(expected))
+            }
+            XCTAssertFalse(try legacy.matches(apostropheEntry(expectedEnglish, chinese: "CHANGED_ZH")))
+            XCTAssertFalse(try legacy.matches(apostropheEntry(expectedEnglish, source: "CHANGED_SOURCE")))
+            let conflict = try await snapshot(entries: [apostropheEntry(expectedEnglish, chinese: "CHANGED_ZH")], journal: journal)
+            XCTAssertEqual(conflict.items[0].reason, "CONFLICTING_SAME_ENGLISH")
+            XCTAssertEqual(try Data(contentsOf: journalURL(directory)), before, "lookup must not rewrite v1 files")
+            try journal.recordCreated(apostropheRecord(storedEnglish), accountFingerprint: fingerprint(), vocabularyID: vocID)
+            XCTAssertEqual(try Data(contentsOf: journalURL(directory)), before, "reobserving a legacy ID keeps its raw evidence")
+        }
+    }
+
+    func testNewApostropheJournalDigestsAreCanonicalButContainNoPhrasePayload() throws {
+        let raw = apostropheRecord("A sample isn’t empty; it’s synthetic.")
+        let safety = try PhraseSafetyEntry(record: raw, accountFingerprint: fingerprint(), vocabularyID: vocID, createdAt: Date())
+        let canonical = "A sample isn't empty; it's synthetic."
+        XCTAssertEqual(safety.englishDigest, try PhraseSafetyEntry.digest("english", [canonical]))
+        XCTAssertTrue(try safety.matches(apostropheEntry(canonical)))
+        XCTAssertTrue(try safety.matches(apostropheEntry(canonical, source: nil)))
+        let encoded = String(decoding: try JSONEncoder().encode(safety), as: UTF8.self)
+        for value in [raw.phrase, canonical, raw.interpretation, raw.origin, fakeToken, providerID, vocID, try fingerprint()] {
+            XCTAssertFalse(encoded.contains(value))
+        }
+    }
+
+    private func apostropheEntry(_ english: String, chinese: String = "合成中文ZH_SENTINEL。",
+                                 source: String? = "SOURCE_SENTINEL", ordinal: Int = 1) -> PhraseBatchEntry {
+        PhraseBatchEntry(ordinal: ordinal, spelling: entry.spelling, normalizedSpelling: entry.normalizedSpelling,
+                         english: english, chinese: chinese, source: source)
+    }
+
+    private func apostropheRecord(_ english: String) -> PhraseRecord {
+        PhraseRecord(id: providerID, phrase: english, interpretation: entry.chinese, tags: [],
+                     origin: entry.source!, status: "PUBLISHED", highlight: .missing)
+    }
+
+    private func apostropheRawRecord(_ english: String) -> [String: Any] {
+        var raw = rawRecord(); raw["phrase"] = english; return raw
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

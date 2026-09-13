@@ -46,6 +46,28 @@ enum PhraseObservation: String, Equatable, Sendable {
     case listVisibilityPending = "list-visibility-pending"
 }
 
+/// Provider-state English identity only. Approved input and request bindings
+/// retain their original scalars; no other punctuation or Unicode folding.
+enum PhraseEnglishIdentity {
+    static func canonical(_ english: String) -> String {
+        String(String.UnicodeScalarView(english.unicodeScalars.map {
+            $0.value == 0x2019 ? Unicode.Scalar(0x0027)! : $0
+        }))
+    }
+
+    static func equivalent(_ lhs: String, _ rhs: String) -> Bool {
+        canonical(lhs).unicodeScalars.elementsEqual(canonical(rhs).unicodeScalars)
+    }
+
+    /// Old v1 receipts hashed raw English; also accept the provider's straight
+    /// apostrophe form without rewriting old files or changing the schema.
+    static func journalCandidates(_ english: String) -> [String] {
+        let canonical = canonical(english)
+        return english.unicodeScalars.elementsEqual(canonical.unicodeScalars)
+            ? [english] : [english, canonical]
+    }
+}
+
 struct PhraseRecord: Equatable, Sendable {
     let id: String
     let phrase: String
@@ -56,7 +78,7 @@ struct PhraseRecord: Equatable, Sendable {
     let highlight: PhraseHighlight
 
     func hardMatches(_ entry: PhraseBatchEntry) -> Bool {
-        phrase == entry.english
+        PhraseEnglishIdentity.equivalent(phrase, entry.english)
             && interpretation == entry.chinese
             && (entry.source.map { origin == $0 } ?? true)
             && status == CompanionConstants.status
@@ -64,7 +86,7 @@ struct PhraseRecord: Equatable, Sendable {
 
     func hardMismatchKeys(_ entry: PhraseBatchEntry) -> [PhraseMismatchKey] {
         var keys: [PhraseMismatchKey] = []
-        if phrase != entry.english { keys.append(.english) }
+        if !PhraseEnglishIdentity.equivalent(phrase, entry.english) { keys.append(.english) }
         if interpretation != entry.chinese { keys.append(.chinese) }
         if let source = entry.source, origin != source { keys.append(.source) }
         if status != CompanionConstants.status { keys.append(.status) }
@@ -416,9 +438,9 @@ struct PhrasePreflightPlanner {
                 let active = records.filter { $0.status == CompanionConstants.status }
                 let pending = try journal.pending(accountFingerprint: credentialFingerprint,
                                                   vocabularyID: vocabularyID, visible: records)
-                let englishDigest = try PhraseSafetyEntry.digest("english", [entry.english])
-                let hiddenSameEnglish = pending.filter { $0.englishDigest == englishDigest }
-                let sameEnglish = active.filter { $0.phrase == entry.english }
+                let englishDigest = try PhraseSafetyEntry.digest("english", [PhraseEnglishIdentity.canonical(entry.english)])
+                let hiddenSameEnglish = try pending.filter { try $0.matchesEnglish(entry.english) }
+                let sameEnglish = active.filter { PhraseEnglishIdentity.equivalent($0.phrase, entry.english) }
                 let sameEnglishCount = sameEnglish.count + hiddenSameEnglish.count
                 let effectiveCount = active.count + pending.count
                 let classification: PhrasePreviewClassification
@@ -987,7 +1009,7 @@ struct PhraseWriteExecutor {
         expected entry: PhraseBatchEntry
     ) -> (matchedRecord: PhraseRecord?, diagnostic: ReadbackAttemptDiagnostic) {
         let active = records.filter { $0.status == CompanionConstants.status }
-        let sameEnglish = active.filter { $0.phrase == entry.english }
+        let sameEnglish = active.filter { PhraseEnglishIdentity.equivalent($0.phrase, entry.english) }
         var mismatchKeys: [PhraseMismatchKey] = []
 
         let category: ReadbackCategory
@@ -1008,7 +1030,7 @@ struct PhraseWriteExecutor {
             // A deleted same-English tombstone may be visible before the new
             // active record. Retain only the safe status mismatch fact, but keep
             // treating the target as temporarily not visible inside the window.
-            let inactiveSameEnglish = records.filter { $0.phrase == entry.english }
+            let inactiveSameEnglish = records.filter { PhraseEnglishIdentity.equivalent($0.phrase, entry.english) }
             if inactiveSameEnglish.count == 1 {
                 mismatchKeys = inactiveSameEnglish[0].hardMismatchKeys(entry)
             }
