@@ -521,14 +521,23 @@ struct WriteAttemptDiagnostic: Codable, Equatable, Sendable {
     let readbackAttempts: [ReadbackAttemptDiagnostic]
     let terminalErrorCategory: CompanionError?
     let phraseCreateResponse: PhraseCreateResponseCategory?
+    let phraseCreateMismatchKeys: [PhraseMismatchKey]?
 
     init(ordinal: Int, postDispatch: PostDispatchCategory, readbackAttempts: [ReadbackAttemptDiagnostic],
-         terminalErrorCategory: CompanionError?, phraseCreateResponse: PhraseCreateResponseCategory? = nil) {
+         terminalErrorCategory: CompanionError?, phraseCreateResponse: PhraseCreateResponseCategory? = nil,
+         phraseCreateMismatchKeys: [PhraseMismatchKey]? = nil) {
         self.ordinal = ordinal
         self.postDispatch = postDispatch
         self.readbackAttempts = readbackAttempts
         self.terminalErrorCategory = terminalErrorCategory
         self.phraseCreateResponse = phraseCreateResponse
+        self.phraseCreateMismatchKeys = phraseCreateMismatchKeys
+    }
+
+    var phraseCreateMismatchFieldList: String? {
+        guard phraseCreateResponse == .mismatching,
+              let keys = phraseCreateMismatchKeys, !keys.isEmpty else { return nil }
+        return keys.map(\.rawValue).joined(separator: ",")
     }
 }
 

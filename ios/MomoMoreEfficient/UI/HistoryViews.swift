@@ -173,6 +173,14 @@ struct HistoryDetailView: View {
                     ForEach(Array(receipt.items.enumerated()), id: \.offset) { index, item in
                         if index > 0 { RowDivider() }
                         detailRow(item.spelling, item.outcomeDisplayLabel)
+                            .contextMenu {
+                                Button("复制", systemImage: "doc.on.doc") {
+                                    UIPasteboard.general.string = item.spelling
+                                }
+                            }
+                            .accessibilityAction(named: Text("复制")) {
+                                UIPasteboard.general.string = item.spelling
+                            }
                     }
                 }
 
@@ -217,6 +225,9 @@ struct HistoryDetailView: View {
                 .font(Theme.body.weight(.semibold))
                 .foregroundStyle(Theme.ink)
             Text("POST：\(diagnostic.postDispatch.displayLabel)")
+            if let fields = diagnostic.phraseCreateMismatchFieldList {
+                Text("创建响应不一致字段：\(fields)")
+            }
             Text(
                 "回读：" + (diagnostic.readbackAttempts.isEmpty
                     ? "0 次"

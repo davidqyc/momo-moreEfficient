@@ -415,14 +415,13 @@ final class BindingAndExecutionTests: XCTestCase {
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
         }
-        // #161's 复制当前 N 项 is the app's only clipboard write, and it copies
-        // nothing but the Owner's own matched spellings. Keep it confined to the
-        // Query results view so no other surface can start exporting data.
+        // Owner-authorized spelling copy is confined to Query results and
+        // individual History receipt rows; no other clipboard export surface.
         XCTAssertEqual(
             Set(sources.compactMap { path, contents in
                 contents.contains("UIPasteboard") ? path : nil
             }),
-            Set(["UI/QueryViews.swift"])
+            Set(["UI/QueryViews.swift", "UI/HistoryViews.swift"])
         )
         // D-020 / Owner B explicitly authorizes this one separate support file;
         // every other production source still has no file persistence authority.

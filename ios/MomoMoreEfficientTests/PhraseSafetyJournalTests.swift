@@ -437,6 +437,98 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertEqual(transport.postCount, 2)
     }
 
+    func testCreateMismatchKeysAreClosedStablePrivateAndStopAfterOnePOST() async throws {
+        let changes: [([String: String], [PhraseMismatchKey])] = [
+            (["phrase": "RESPONSE_EN_SENTINEL"], [.english]),
+            (["interpretation": "RESPONSE_ZH_SENTINEL"], [.chinese]),
+            (["origin": "RESPONSE_SOURCE_SENTINEL"], [.source]),
+            (["status": "DELETED"], [.status]),
+            (["phrase": "RESPONSE_EN_SENTINEL", "interpretation": "RESPONSE_ZH_SENTINEL",
+              "origin": "RESPONSE_SOURCE_SENTINEL", "status": "DELETED"], [.english, .chinese, .source, .status])
+        ]
+        for (fields, keys) in changes {
+            let journal = makeTestPhraseJournal()
+            let shown = try await snapshot(entries: [entry, otherEntry(ordinal: 2)], journal: journal)
+            var response = rawRecord()
+            for (field, value) in fields { response[field] = value }
+            let transport = FakeHTTPTransport([vocabulary(), empty(), empty(),
+                jsonResponse(["phrase": response], status: 201), empty(), empty(), empty()])
+            let result = try await execute(shown, journal: journal, transport: transport)
+            XCTAssertEqual(result.results.first?.diagnostic?.phraseCreateResponse, .mismatching)
+            XCTAssertEqual(result.results.first?.diagnostic?.phraseCreateMismatchKeys, keys)
+            XCTAssertEqual(result.results.map(\.outcome), [.notVerified])
+            XCTAssertEqual(result.succeeded, 0)
+            XCTAssertEqual(result.failed, 1)
+            XCTAssertEqual(transport.postCount, 1)
+            XCTAssertEqual(result.results.first?.diagnostic?.readbackAttempts.count, 3)
+            let fieldList = keys.map(\.rawValue).joined(separator: ",")
+            XCTAssertTrue(result.feedbackMessage?.contains("字段：" + fieldList) == true)
+            XCTAssertTrue(result.feedbackMessage?.contains("已停止后续新建") == true)
+            XCTAssertTrue(result.feedbackMessage?.contains("请勿重复提交") == true)
+            let receipt = ExecutionReceipt(selectedSpellings: shown.items.map { $0.entry.spelling }, result: result)
+            XCTAssertEqual(receipt.notAttempted, 1)
+            let data = try JSONEncoder().encode(receipt)
+            let decoded = try JSONDecoder().decode(ExecutionReceipt.self, from: data)
+            XCTAssertEqual(decoded.items[0].diagnostic?.phraseCreateMismatchKeys, keys)
+            let text = decoded.sanitizedDiagnosticText
+            XCTAssertTrue(text.contains("创建响应不一致字段：" + fieldList))
+            for forbidden in [fakeToken, providerID, vocID, try fingerprint(), entry.english, entry.chinese,
+                              entry.source!, "RESPONSE_EN_SENTINEL", "RESPONSE_ZH_SENTINEL", "RESPONSE_SOURCE_SENTINEL",
+                              "DELETED", "Authorization", "\"phrase\":"] {
+                XCTAssertFalse(text.contains(forbidden), forbidden)
+                XCTAssertFalse(String(decoding: data, as: UTF8.self).contains(forbidden), forbidden)
+                XCTAssertFalse(result.feedbackMessage?.contains(forbidden) == true, forbidden)
+            }
+            let pending = try journal.pending(accountFingerprint: fingerprint(), vocabularyID: vocID, visible: [])
+            XCTAssertTrue(pending.isEmpty)
+        }
+    }
+
+    func testProvenMalformedAndLegacyCreateDiagnosticsDoNotInventMismatchKeys() async throws {
+        for (response, category) in [(createResponse(), PhraseCreateResponseCategory.proven),
+                                     (jsonResponse([:], status: 201), .malformed)] {
+            let journal = makeTestPhraseJournal()
+            let shown = try await snapshot(journal: journal)
+            let transport = FakeHTTPTransport(executionReplies(post: response, reads: [[], [], []]))
+            let result = try await execute(shown, journal: journal, transport: transport)
+            XCTAssertEqual(result.results[0].diagnostic?.phraseCreateResponse, category)
+            XCTAssertNil(result.results[0].diagnostic?.phraseCreateMismatchKeys)
+            let receipt = ExecutionReceipt(selectedSpellings: [entry.spelling], result: result)
+            XCTAssertFalse(receipt.sanitizedDiagnosticText.contains("创建响应不一致字段"))
+            XCTAssertEqual(result.succeeded, category == .proven ? 1 : 0)
+            XCTAssertEqual(transport.postCount, 1)
+        }
+        // Exact pre-change diagnostic shape: no newly introduced optional key.
+        let legacy = Data(#"{"ordinal":1,"postDispatch":{"clean2xx":{"status":201}},"readbackAttempts":[],"phraseCreateResponse":"mismatching"}"#.utf8)
+        let diagnostic = try JSONDecoder().decode(WriteAttemptDiagnostic.self, from: legacy)
+        XCTAssertNil(diagnostic.phraseCreateMismatchKeys)
+        let summary = PhraseExecutionSummary(succeeded: 0, failed: 1, cancelled: false, stalePreview: false,
+            results: [PhraseItemExecutionResult(spelling: "sample", outcome: .notVerified, observations: [], diagnostic: diagnostic)])
+        XCTAssertTrue(summary.feedbackMessage?.contains("创建响应与输入不一致") == true)
+        XCTAssertTrue(summary.feedbackMessage?.contains("请勿重复提交") == true)
+        XCTAssertFalse(summary.feedbackMessage?.contains("字段：") == true)
+        let receipt = ExecutionReceipt(selectedSpellings: ["sample"], result: summary)
+        XCTAssertFalse(receipt.sanitizedDiagnosticText.contains("创建响应不一致字段"))
+    }
+
+    func testViewModelMismatchFeedbackAndHistoryPreserveClosedFields() async throws {
+        var response = rawRecord(); response["phrase"] = "RESPONSE_EN_SENTINEL"; response["origin"] = "RESPONSE_SOURCE_SENTINEL"
+        let journal = makeTestPhraseJournal()
+        let transport = FakeHTTPTransport([vocabulary(), empty()] + executionReplies(
+            post: jsonResponse(["phrase": response], status: 201), reads: [[], [], []]))
+        let model = model(journal: journal, transport: transport)
+        await model.previewCurrentInput()
+        model.askToExecutePhrase()
+        await model.executeConfirmedPhrase()?.value
+        XCTAssertTrue(model.errorMessage?.contains("字段：english,source") == true)
+        XCTAssertTrue(model.errorMessage?.contains("请勿重复提交") == true)
+        XCTAssertNil(model.completionAcknowledgement)
+        XCTAssertEqual(model.history.first?.items.first?.diagnostic?.phraseCreateMismatchKeys, [.english, .source])
+        XCTAssertEqual(model.history.first?.unconfirmed, 1)
+        XCTAssertEqual(model.history.first?.stopped, true)
+        XCTAssertEqual(transport.postCount, 1)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

@@ -210,6 +210,49 @@ final class ShellNavigationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["已选 0 / 3"].waitForExistence(timeout: 3))
     }
 
+    func testHistoryItemContextMenuCopiesExactSpelling() {
+        // Existing DEBUG-only rehearsal supplies the fake credential, transport
+        // and in-memory History; this exercises the real receipt UI offline.
+        let app = XCUIApplication()
+        app.launchArguments += ["-MomoRehearsalMode"]
+        app.launch()
+        let spelling = "copy sample"
+        app.buttons["例句录入"].tap()
+        let editor = app.textViews["批次例句输入"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.tap()
+        editor.typeText("## " + spelling + "\nEN: A synthetic copy sample.\nZH: Synthetic translation.\nSOURCE: Offline fixture")
+        app.buttons["预览 1 条"].tap()
+        let create = app.buttons["新建 1 条例句"]
+        XCTAssertTrue(create.waitForExistence(timeout: 20))
+        create.tap()
+        app.buttons["确认新建 1 条例句"].tap()
+        XCTAssertTrue(app.staticTexts["已完成 1 条例句 · 新建 1"].waitForExistence(timeout: 30))
+        app.buttons["例句历史"].tap()
+        let receipt = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", spelling)).firstMatch
+        XCTAssertTrue(receipt.waitForExistence(timeout: 5))
+        receipt.tap()
+        let item = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", spelling)).firstMatch
+        for _ in 0..<5 {
+            if item.exists && item.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(item.isHittable)
+        item.press(forDuration: 1)
+        let copy = app.buttons["复制"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        copy.tap()
+        back(app) // receipt -> History
+        back(app) // History -> cleared phrase editor
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.press(forDuration: 1)
+        let paste = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label IN %@", ["粘贴", "Paste"])).firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        XCTAssertEqual(editor.value as? String, spelling)
+    }
+
     // MARK: - Helpers
 
     private func launch(contentSize: String? = nil) -> XCUIApplication {

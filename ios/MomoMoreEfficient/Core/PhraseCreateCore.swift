@@ -324,6 +324,12 @@ struct PhraseExecutionSummary: Equatable, Sendable {
         if stalePreview { return CompanionError.stalePreview.description }
         let unconfirmed = results.contains { $0.outcome == .notVerified && $0.diagnostic?.postDispatch.wasDispatched == true }
         let unknown = "结果仍无法确认，请勿重复提交；稍后重新预览。"
+        let diagnostic = results.last(where: { $0.outcome == .notVerified })?.diagnostic
+        let mismatchWarning: String? = diagnostic?.phraseCreateResponse == .mismatching
+            ? "创建响应与输入不一致"
+                + (diagnostic?.phraseCreateMismatchFieldList.map { "（字段：\($0)）" } ?? "")
+                + "；已停止后续新建。" + unknown
+            : nil
         if let error = terminalError {
             if error == .phraseJournalProtectionFailed { return error.description }
             let message: String
@@ -333,9 +339,10 @@ struct PhraseExecutionSummary: Equatable, Sendable {
             case .responseRejected, .itemResponseRejected: message = "例句返回内容无法安全读取；已停止后续新建。"
             default: message = error.description
             }
-            return unconfirmed ? message + "\n" + unknown : message
+            return unconfirmed ? message + "\n" + (mismatchWarning ?? unknown) : message
         }
         if failed > 0 {
+            if let mismatchWarning { return mismatchWarning }
             let category = results.last?.diagnostic?.phraseCreateResponse
             return (category == .malformed || category == .mismatching ? "创建响应无法安全确认。" : "") + unknown
         }
@@ -812,6 +819,8 @@ struct PhraseWriteExecutor {
                 let proven = create.phrase.flatMap { $0.hardMatches(item.entry) ? $0 : nil }
                 let responseCategory: PhraseCreateResponseCategory? = dispatch.isClean2xx
                     ? (proven != nil ? .proven : (create.phrase == nil ? .malformed : .mismatching)) : nil
+                let responseMismatchKeys = responseCategory == .mismatching
+                    ? create.phrase?.hardMismatchKeys(item.entry) : nil
                 var safetyError: CompanionError?
                 if let proven {
                     do {
@@ -852,7 +861,8 @@ struct PhraseWriteExecutor {
                 let diagnostic = WriteAttemptDiagnostic(
                     ordinal: item.entry.ordinal, postDispatch: dispatch.diagnosticCategory,
                     readbackAttempts: confirmation.attempts, terminalErrorCategory: stopError,
-                    phraseCreateResponse: responseCategory
+                    phraseCreateResponse: responseCategory,
+                    phraseCreateMismatchKeys: responseMismatchKeys
                 )
                 if let matched {
                     succeeded += 1
