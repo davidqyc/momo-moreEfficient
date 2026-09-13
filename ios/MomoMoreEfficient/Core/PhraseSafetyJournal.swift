@@ -16,11 +16,20 @@ struct PhraseSafetyEntry: Codable, Equatable, Sendable {
         try ConfirmationBinding.digest(["domain": "phrase-safety-v1/" + domain, "values": values])
     }
 
-    init(record: PhraseRecord, accountFingerprint: String, vocabularyID: String, createdAt: Date) throws {
+    init(record: PhraseRecord, accountFingerprint: String, vocabularyID: String, createdAt: Date,
+         approvedEnglish: String? = nil) throws {
+        // Hash the approved spelling after semantic response proof: an NFC/NFD
+        // provider echo must not lose protection for that same input on restart.
+        // No Unicode normalization, stored field, or legacy migration is added.
+        if let approvedEnglish {
+            guard PhraseEnglishIdentity.equivalent(record.phrase, approvedEnglish) else {
+                throw CompanionError.phraseJournalUnavailable
+            }
+        }
         // New evidence must also suppress the reverse/mixed-apostrophe response
         // after restart. Raw+canonical lookup alone cannot recover a curly hash
         // from a straight expected string. Existing v1 entries stay untouched.
-        let english = PhraseEnglishIdentity.canonical(record.phrase)
+        let english = PhraseEnglishIdentity.canonical(approvedEnglish ?? record.phrase)
         accountScopeDigest = try Self.digest("account", [accountFingerprint])
         vocabularyDigest = try Self.digest("vocabulary", [vocabularyID])
         phraseIdentityDigest = try Self.digest("phrase", [english, record.interpretation, record.origin])
@@ -158,7 +167,8 @@ final class PhraseSafetyJournal: @unchecked Sendable {
         catch { throw CompanionError.phraseJournalUnavailable }
     }
 
-    func recordCreated(_ record: PhraseRecord, accountFingerprint: String, vocabularyID: String) throws {
+    func recordCreated(_ record: PhraseRecord, accountFingerprint: String, vocabularyID: String,
+                       approvedEnglish: String? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
         do {
@@ -166,7 +176,7 @@ final class PhraseSafetyJournal: @unchecked Sendable {
                 throw CompanionError.phraseJournalUnavailable
             }
             let entry = try PhraseSafetyEntry(record: record, accountFingerprint: accountFingerprint,
-                                              vocabularyID: vocabularyID, createdAt: Date())
+                                              vocabularyID: vocabularyID, createdAt: Date(), approvedEnglish: approvedEnglish)
             var entries = try loaded()
             if let existing = entries.first(where: {
                 $0.accountScopeDigest == entry.accountScopeDigest && $0.vocabularyDigest == entry.vocabularyDigest

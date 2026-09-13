@@ -47,7 +47,8 @@ enum PhraseObservation: String, Equatable, Sendable {
 }
 
 /// Provider-state English identity only. Approved input and request bindings
-/// retain their original scalars; no other punctuation or Unicode folding.
+/// retain their original scalars. Only apostrophes are mapped; comparison keeps
+/// Swift's pre-existing Unicode canonical equality, not compatibility folding.
 enum PhraseEnglishIdentity {
     static func canonical(_ english: String) -> String {
         String(String.UnicodeScalarView(english.unicodeScalars.map {
@@ -56,7 +57,7 @@ enum PhraseEnglishIdentity {
     }
 
     static func equivalent(_ lhs: String, _ rhs: String) -> Bool {
-        canonical(lhs).unicodeScalars.elementsEqual(canonical(rhs).unicodeScalars)
+        canonical(lhs) == canonical(rhs)
     }
 
     /// Old v1 receipts hashed raw English; also accept the provider's straight
@@ -858,7 +859,7 @@ struct PhraseWriteExecutor {
                 if let proven {
                     do {
                         try journal.recordCreated(proven, accountFingerprint: plan.credentialFingerprint,
-                                                  vocabularyID: item.vocabularyID)
+                                                  vocabularyID: item.vocabularyID, approvedEnglish: item.entry.english)
                     } catch { safetyError = .phraseJournalProtectionFailed }
                 }
                 // Even an unexpected journal save failure cannot skip the required
