@@ -201,6 +201,7 @@ final class RetrofitCharacterizationTests: XCTestCase {
             phrase.items[1].diagnostic?.postDispatch,
             .transportFailure(errorCategory: .transport)
         )
+        XCTAssertTrue(phrase.items.allSatisfy { $0.diagnostic?.phraseEnglishScalarDiff == nil })
 
         // The whole archive round-trips through the sanitized export without
         // throwing, which is the only place receipts leave the device.

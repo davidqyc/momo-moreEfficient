@@ -228,6 +228,9 @@ struct HistoryDetailView: View {
             if let fields = diagnostic.phraseCreateMismatchFieldList {
                 Text("创建响应不一致字段：\(fields)")
             }
+            if let diff = diagnostic.phraseEnglishScalarDiff {
+                Text("english差异：\(diff.compactDescription)")
+            }
             Text(
                 "回读：" + (diagnostic.readbackAttempts.isEmpty
                     ? "0 次"

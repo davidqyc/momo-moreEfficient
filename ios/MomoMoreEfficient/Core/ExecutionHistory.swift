@@ -230,6 +230,9 @@ struct ExecutionReceipt: Codable, Equatable, Identifiable, Sendable {
             if let fields = diagnostic.phraseCreateMismatchFieldList {
                 lines.append("创建响应不一致字段：\(fields)")
             }
+            if let diff = diagnostic.phraseEnglishScalarDiff {
+                lines.append("english差异：\(diff.compactDescription)")
+            }
             lines.append("回读次数：\(diagnostic.readbackAttempts.count)")
             for (attemptIndex, attempt) in diagnostic.readbackAttempts.enumerated() {
                 var detail = "回读 \(attemptIndex + 1)：\(attempt.category.displayLabel) [\(attempt.category.rawValue)]"

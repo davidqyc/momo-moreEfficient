@@ -11,6 +11,79 @@ final class PhraseSafetyJournalTests: XCTestCase {
                          english: "A synthetic sample EN_SENTINEL.", chinese: "合成中文ZH_SENTINEL。", source: "SOURCE_SENTINEL")
     }
 
+    func testEnglishScalarDiffSubstitutionAndEndInsertionDeletion() {
+        let substitution = PhraseEnglishScalarDiff(expected: "abc", returned: "axc")
+        XCTAssertEqual(substitution.expectedScalarCount, 3)
+        XCTAssertEqual(substitution.returnedScalarCount, 3)
+        XCTAssertEqual(substitution.commonPrefixScalarCount, 1)
+        XCTAssertEqual(substitution.commonSuffixScalarCount, 1)
+        XCTAssertEqual(substitution.expectedFirstDifferenceScalar, 0x0062)
+        XCTAssertEqual(substitution.returnedFirstDifferenceScalar, 0x0078)
+        XCTAssertEqual(
+            substitution.compactDescription,
+            "expectedLen=3 returnedLen=3 prefix=1 suffix=1 expected=U+0062 returned=U+0078"
+        )
+
+        let insertion = PhraseEnglishScalarDiff(expected: "ab", returned: "abX")
+        XCTAssertEqual(insertion.expectedScalarCount, 2)
+        XCTAssertEqual(insertion.returnedScalarCount, 3)
+        XCTAssertEqual(insertion.commonPrefixScalarCount, 2)
+        XCTAssertEqual(insertion.commonSuffixScalarCount, 0)
+        XCTAssertNil(insertion.expectedFirstDifferenceScalar)
+        XCTAssertEqual(insertion.returnedFirstDifferenceScalar, 0x0058)
+        XCTAssertTrue(insertion.compactDescription.contains("expected=none returned=U+0058"))
+
+        let deletion = PhraseEnglishScalarDiff(expected: "abX", returned: "ab")
+        XCTAssertEqual(deletion.expectedScalarCount, 3)
+        XCTAssertEqual(deletion.returnedScalarCount, 2)
+        XCTAssertEqual(deletion.commonPrefixScalarCount, 2)
+        XCTAssertEqual(deletion.commonSuffixScalarCount, 0)
+        XCTAssertEqual(deletion.expectedFirstDifferenceScalar, 0x0058)
+        XCTAssertNil(deletion.returnedFirstDifferenceScalar)
+        XCTAssertTrue(deletion.compactDescription.contains("expected=U+0058 returned=none"))
+    }
+
+    func testEnglishScalarDiffMiddleChangesKeepNonoverlappingSuffix() {
+        let insertion = PhraseEnglishScalarDiff(expected: "abc", returned: "abXc")
+        XCTAssertEqual(insertion.commonPrefixScalarCount, 2)
+        XCTAssertEqual(insertion.commonSuffixScalarCount, 1)
+        XCTAssertEqual(insertion.expectedFirstDifferenceScalar, 0x0063)
+        XCTAssertEqual(insertion.returnedFirstDifferenceScalar, 0x0058)
+
+        let deletion = PhraseEnglishScalarDiff(expected: "abXc", returned: "abc")
+        XCTAssertEqual(deletion.commonPrefixScalarCount, 2)
+        XCTAssertEqual(deletion.commonSuffixScalarCount, 1)
+        XCTAssertEqual(deletion.expectedFirstDifferenceScalar, 0x0058)
+        XCTAssertEqual(deletion.returnedFirstDifferenceScalar, 0x0063)
+    }
+
+    func testEnglishScalarDiffDoesNotNormalizeApostrophesUnicodeOrWhitespace() {
+        let apostrophe = PhraseEnglishScalarDiff(expected: "can't", returned: "can’t")
+        XCTAssertEqual(apostrophe.expectedFirstDifferenceScalar, 0x0027)
+        XCTAssertEqual(apostrophe.returnedFirstDifferenceScalar, 0x2019)
+        XCTAssertTrue(apostrophe.compactDescription.contains("expected=U+0027 returned=U+2019"))
+
+        let canonical = PhraseEnglishScalarDiff(expected: "\u{00E9}", returned: "e\u{0301}")
+        XCTAssertEqual(canonical.expectedScalarCount, 1)
+        XCTAssertEqual(canonical.returnedScalarCount, 2)
+        XCTAssertEqual(canonical.expectedFirstDifferenceScalar, 0x00E9)
+        XCTAssertEqual(canonical.returnedFirstDifferenceScalar, 0x0065)
+
+        let leadingSpace = PhraseEnglishScalarDiff(expected: "abc", returned: " abc")
+        XCTAssertEqual(leadingSpace.commonPrefixScalarCount, 0)
+        XCTAssertEqual(leadingSpace.commonSuffixScalarCount, 3)
+        XCTAssertEqual(leadingSpace.returnedFirstDifferenceScalar, 0x0020)
+
+        let trailingSpace = PhraseEnglishScalarDiff(expected: "abc", returned: "abc ")
+        XCTAssertEqual(trailingSpace.commonPrefixScalarCount, 3)
+        XCTAssertEqual(trailingSpace.commonSuffixScalarCount, 0)
+        XCTAssertNil(trailingSpace.expectedFirstDifferenceScalar)
+        XCTAssertEqual(trailingSpace.returnedFirstDifferenceScalar, 0x0020)
+
+        let nonBMP = PhraseEnglishScalarDiff(expected: "a", returned: "😀")
+        XCTAssertTrue(nonBMP.compactDescription.contains("returned=U+1F600"))
+    }
+
     func testResponseProofPersistsBeforeReadbackAndSurvivesFreshStoreAndPreview() async throws {
         let directory = temporaryDirectory()
         let store = FilePhraseSafetyJournalStore(applicationSupportDirectory: directory)
@@ -456,6 +529,11 @@ final class PhraseSafetyJournalTests: XCTestCase {
             let result = try await execute(shown, journal: journal, transport: transport)
             XCTAssertEqual(result.results.first?.diagnostic?.phraseCreateResponse, .mismatching)
             XCTAssertEqual(result.results.first?.diagnostic?.phraseCreateMismatchKeys, keys)
+            let scalarDiff = result.results.first?.diagnostic?.phraseEnglishScalarDiff
+            let expectedScalarDiff = keys.contains(.english)
+                ? PhraseEnglishScalarDiff(expected: entry.english, returned: "RESPONSE_EN_SENTINEL")
+                : nil
+            XCTAssertEqual(scalarDiff, expectedScalarDiff)
             XCTAssertEqual(result.results.map(\.outcome), [.notVerified])
             XCTAssertEqual(result.succeeded, 0)
             XCTAssertEqual(result.failed, 1)
@@ -470,8 +548,10 @@ final class PhraseSafetyJournalTests: XCTestCase {
             let data = try JSONEncoder().encode(receipt)
             let decoded = try JSONDecoder().decode(ExecutionReceipt.self, from: data)
             XCTAssertEqual(decoded.items[0].diagnostic?.phraseCreateMismatchKeys, keys)
+            XCTAssertEqual(decoded.items[0].diagnostic?.phraseEnglishScalarDiff, scalarDiff)
             let text = decoded.sanitizedDiagnosticText
             XCTAssertTrue(text.contains("创建响应不一致字段：" + fieldList))
+            XCTAssertEqual(text.contains("english差异："), keys.contains(.english))
             for forbidden in [fakeToken, providerID, vocID, try fingerprint(), entry.english, entry.chinese,
                               entry.source!, "RESPONSE_EN_SENTINEL", "RESPONSE_ZH_SENTINEL", "RESPONSE_SOURCE_SENTINEL",
                               "DELETED", "Authorization", "\"phrase\":"] {
@@ -493,6 +573,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
             let result = try await execute(shown, journal: journal, transport: transport)
             XCTAssertEqual(result.results[0].diagnostic?.phraseCreateResponse, category)
             XCTAssertNil(result.results[0].diagnostic?.phraseCreateMismatchKeys)
+            XCTAssertNil(result.results[0].diagnostic?.phraseEnglishScalarDiff)
             let receipt = ExecutionReceipt(selectedSpellings: [entry.spelling], result: result)
             XCTAssertFalse(receipt.sanitizedDiagnosticText.contains("创建响应不一致字段"))
             XCTAssertEqual(result.succeeded, category == .proven ? 1 : 0)
@@ -502,6 +583,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
         let legacy = Data(#"{"ordinal":1,"postDispatch":{"clean2xx":{"status":201}},"readbackAttempts":[],"phraseCreateResponse":"mismatching"}"#.utf8)
         let diagnostic = try JSONDecoder().decode(WriteAttemptDiagnostic.self, from: legacy)
         XCTAssertNil(diagnostic.phraseCreateMismatchKeys)
+        XCTAssertNil(diagnostic.phraseEnglishScalarDiff)
         let summary = PhraseExecutionSummary(succeeded: 0, failed: 1, cancelled: false, stalePreview: false,
             results: [PhraseItemExecutionResult(spelling: "sample", outcome: .notVerified, observations: [], diagnostic: diagnostic)])
         XCTAssertTrue(summary.feedbackMessage?.contains("创建响应与输入不一致") == true)
@@ -509,6 +591,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertFalse(summary.feedbackMessage?.contains("字段：") == true)
         let receipt = ExecutionReceipt(selectedSpellings: ["sample"], result: summary)
         XCTAssertFalse(receipt.sanitizedDiagnosticText.contains("创建响应不一致字段"))
+        XCTAssertFalse(receipt.sanitizedDiagnosticText.contains("english差异"))
     }
 
     func testViewModelMismatchFeedbackAndHistoryPreserveClosedFields() async throws {
@@ -524,6 +607,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertTrue(model.errorMessage?.contains("请勿重复提交") == true)
         XCTAssertNil(model.completionAcknowledgement)
         XCTAssertEqual(model.history.first?.items.first?.diagnostic?.phraseCreateMismatchKeys, [.english, .source])
+        XCTAssertNotNil(model.history.first?.items.first?.diagnostic?.phraseEnglishScalarDiff)
         XCTAssertEqual(model.history.first?.unconfirmed, 1)
         XCTAssertEqual(model.history.first?.stopped, true)
         XCTAssertEqual(transport.postCount, 1)

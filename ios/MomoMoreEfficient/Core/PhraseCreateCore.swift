@@ -821,6 +821,17 @@ struct PhraseWriteExecutor {
                     ? (proven != nil ? .proven : (create.phrase == nil ? .malformed : .mismatching)) : nil
                 let responseMismatchKeys = responseCategory == .mismatching
                     ? create.phrase?.hardMismatchKeys(item.entry) : nil
+                let responseEnglishScalarDiff: PhraseEnglishScalarDiff?
+                if responseCategory == .mismatching,
+                   responseMismatchKeys?.contains(.english) == true,
+                   let returnedEnglish = create.phrase?.phrase {
+                    responseEnglishScalarDiff = PhraseEnglishScalarDiff(
+                        expected: item.entry.english,
+                        returned: returnedEnglish
+                    )
+                } else {
+                    responseEnglishScalarDiff = nil
+                }
                 var safetyError: CompanionError?
                 if let proven {
                     do {
@@ -862,7 +873,8 @@ struct PhraseWriteExecutor {
                     ordinal: item.entry.ordinal, postDispatch: dispatch.diagnosticCategory,
                     readbackAttempts: confirmation.attempts, terminalErrorCategory: stopError,
                     phraseCreateResponse: responseCategory,
-                    phraseCreateMismatchKeys: responseMismatchKeys
+                    phraseCreateMismatchKeys: responseMismatchKeys,
+                    phraseEnglishScalarDiff: responseEnglishScalarDiff
                 )
                 if let matched {
                     succeeded += 1

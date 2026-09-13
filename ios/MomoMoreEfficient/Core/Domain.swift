@@ -515,6 +515,59 @@ enum PhraseCreateResponseCategory: String, Codable, Equatable, Sendable {
     case proven, malformed, mismatching
 }
 
+/// A closed fingerprint of an English CREATE-response mismatch. It deliberately
+/// stores Unicode-scalar counts and code points only, never either source string.
+struct PhraseEnglishScalarDiff: Codable, Equatable, Sendable {
+    let expectedScalarCount: Int
+    let returnedScalarCount: Int
+    let commonPrefixScalarCount: Int
+    let commonSuffixScalarCount: Int
+    let expectedFirstDifferenceScalar: UInt32?
+    let returnedFirstDifferenceScalar: UInt32?
+
+    init(expected: String, returned: String) {
+        let expectedScalars = expected.unicodeScalars.map(\.value)
+        let returnedScalars = returned.unicodeScalars.map(\.value)
+        let sharedCount = min(expectedScalars.count, returnedScalars.count)
+
+        var prefixCount = 0
+        while prefixCount < sharedCount,
+              expectedScalars[prefixCount] == returnedScalars[prefixCount] {
+            prefixCount += 1
+        }
+
+        var suffixCount = 0
+        let maximumSuffixCount = sharedCount - prefixCount
+        while suffixCount < maximumSuffixCount,
+              expectedScalars[expectedScalars.count - suffixCount - 1]
+                == returnedScalars[returnedScalars.count - suffixCount - 1] {
+            suffixCount += 1
+        }
+
+        expectedScalarCount = expectedScalars.count
+        returnedScalarCount = returnedScalars.count
+        commonPrefixScalarCount = prefixCount
+        commonSuffixScalarCount = suffixCount
+        expectedFirstDifferenceScalar = prefixCount < expectedScalars.count
+            ? expectedScalars[prefixCount]
+            : nil
+        returnedFirstDifferenceScalar = prefixCount < returnedScalars.count
+            ? returnedScalars[prefixCount]
+            : nil
+    }
+
+    var compactDescription: String {
+        "expectedLen=\(expectedScalarCount) returnedLen=\(returnedScalarCount) "
+            + "prefix=\(commonPrefixScalarCount) suffix=\(commonSuffixScalarCount) "
+            + "expected=\(Self.format(expectedFirstDifferenceScalar)) "
+            + "returned=\(Self.format(returnedFirstDifferenceScalar))"
+    }
+
+    private static func format(_ scalar: UInt32?) -> String {
+        scalar.map { String(format: "U+%04X", $0) } ?? "none"
+    }
+}
+
 struct WriteAttemptDiagnostic: Codable, Equatable, Sendable {
     let ordinal: Int
     let postDispatch: PostDispatchCategory
@@ -522,16 +575,19 @@ struct WriteAttemptDiagnostic: Codable, Equatable, Sendable {
     let terminalErrorCategory: CompanionError?
     let phraseCreateResponse: PhraseCreateResponseCategory?
     let phraseCreateMismatchKeys: [PhraseMismatchKey]?
+    let phraseEnglishScalarDiff: PhraseEnglishScalarDiff?
 
     init(ordinal: Int, postDispatch: PostDispatchCategory, readbackAttempts: [ReadbackAttemptDiagnostic],
          terminalErrorCategory: CompanionError?, phraseCreateResponse: PhraseCreateResponseCategory? = nil,
-         phraseCreateMismatchKeys: [PhraseMismatchKey]? = nil) {
+         phraseCreateMismatchKeys: [PhraseMismatchKey]? = nil,
+         phraseEnglishScalarDiff: PhraseEnglishScalarDiff? = nil) {
         self.ordinal = ordinal
         self.postDispatch = postDispatch
         self.readbackAttempts = readbackAttempts
         self.terminalErrorCategory = terminalErrorCategory
         self.phraseCreateResponse = phraseCreateResponse
         self.phraseCreateMismatchKeys = phraseCreateMismatchKeys
+        self.phraseEnglishScalarDiff = phraseEnglishScalarDiff
     }
 
     var phraseCreateMismatchFieldList: String? {
