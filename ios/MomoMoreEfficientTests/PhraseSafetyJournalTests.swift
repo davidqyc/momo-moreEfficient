@@ -613,7 +613,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertEqual(transport.postCount, 1)
     }
 
-    // MARK: - Narrow provider apostrophe identity (#161)
+    // MARK: - Narrow provider smart-quote identity (#161)
 
     func testApostropheHardIdentityIsSymmetricAndDoesNotFoldOtherScalarsOrFields() {
         for (expected, returned) in [("A sample isn’t empty.", "A sample isn't empty."),
@@ -624,7 +624,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
             XCTAssertEqual(provider.hardMismatchKeys(intended), [])
         }
         let straight = "A sample isn't empty."
-        for different in ["A sample isn‘t empty.", "A sample isnʼt empty.",
+        for different in ["A sample isnʼt empty.",
                           "A sample isn′t empty.", "A sample isn＇t empty.",
                           "A sample  isn't empty.", "a sample isn't empty.",
                           " A sample isn't empty.", "A sample isn't empty. ",
@@ -645,7 +645,7 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertEqual(provider.hardMismatchKeys(intended), [.chinese, .source, .status])
     }
 
-    func testApostropheAndCanonicalResponseProofPersistsAcrossRestartHistoryClearAndLaterVisibility() async throws {
+    func testSmartQuoteAndCanonicalResponseProofPersistsAcrossRestartHistoryClearAndLaterVisibility() async throws {
         // Both directions, including mixed apostrophes, must remain protected
         // after a provider response is accepted but the list omits the record.
         for (expected, returned) in [("A sample isn’t empty.", "A sample isn't empty."),
@@ -654,7 +654,13 @@ final class PhraseSafetyJournalTests: XCTestCase {
                                      ("The café EN_SENTINEL is open.", "The cafe\u{0301} EN_SENTINEL is open."),
                                      ("The cafe\u{0301} EN_SENTINEL is open.", "The café EN_SENTINEL is open."),
                                      ("The café EN_SENTINEL isn’t empty.", "The cafe\u{0301} EN_SENTINEL isn't empty."),
-                                     ("The cafe\u{0301} EN_SENTINEL isn't empty.", "The café EN_SENTINEL isn’t empty.")] {
+                                     ("The cafe\u{0301} EN_SENTINEL isn't empty.", "The café EN_SENTINEL isn’t empty."),
+                                     ("The sample says, “It’s fine.”", "The sample says, \"It's fine.\""),
+                                     ("The sample says, \"It's fine.\"", "The sample says, “It’s fine.”"),
+                                     ("The sample says, ‘It’s fine.’", "The sample says, 'It's fine.'"),
+                                     ("The sample says, 'It's fine.'", "The sample says, ‘It’s fine.’"),
+                                     ("The café EN_SENTINEL says, “It’s fine.”", "The cafe\u{0301} EN_SENTINEL says, \"It's fine.\""),
+                                     ("The cafe\u{0301} EN_SENTINEL says, \"It's fine.\"", "The café EN_SENTINEL says, “It’s fine.”")] {
             let intended = apostropheEntry(expected)
             let directory = temporaryDirectory()
             let store = FilePhraseSafetyJournalStore(applicationSupportDirectory: directory)
@@ -799,10 +805,15 @@ final class PhraseSafetyJournalTests: XCTestCase {
 
     func testLegacyRawJournalCandidatesKeepExactAndCanonicalMatchesWithoutMigration() async throws {
         for (storedEnglish, expectedEnglish) in [("A sample isn’t empty.", "A sample isn’t empty."),
-                                                ("A sample isn't empty.", "A sample isn’t empty.")] {
+                                                ("A sample isn't empty.", "A sample isn’t empty."),
+                                                ("The sample says, “Fine.”", "The sample says, “Fine.”"),
+                                                ("The sample says, \"Fine.\"", "The sample says, “Fine.”"),
+                                                ("The sample says, “It's fine.”", "The sample says, “It’s fine.”"),
+                                                ("The sample says, ‘It's fine.'", "The sample says, ‘It’s fine.’")] {
             let directory = temporaryDirectory()
             let store = FilePhraseSafetyJournalStore(applicationSupportDirectory: directory)
-            // Construct the OLD raw v1 shape explicitly, independent of today's initializer.
+            // Construct raw-v1 and d5b59bc apostrophe-only digest preimages
+            // explicitly, independent of today's initializer or canonical helper.
             let old: [String: Any] = [
                 "accountScopeDigest": try PhraseSafetyEntry.digest("account", [fingerprint()]),
                 "vocabularyDigest": try PhraseSafetyEntry.digest("vocabulary", [vocID]),
@@ -868,6 +879,109 @@ final class PhraseSafetyJournalTests: XCTestCase {
         XCTAssertThrowsError(try PhraseSafetyJournal(store: rejectingStore).recordCreated(returned,
             accountFingerprint: fingerprint(), vocabularyID: vocID, approvedEnglish: "DIFFERENT_ENGLISH"))
         XCTAssertTrue(rejectingStore.entries.isEmpty)
+    }
+
+    func testSmartQuoteMappingIsLimitedToFourScalars() {
+        for (smart, ascii) in [("\u{2018}", "'"), ("\u{2019}", "'"),
+                               ("\u{201C}", "\""), ("\u{201D}", "\"")] {
+            for (expected, returned) in [(smart, ascii), (ascii, smart)] {
+                XCTAssertTrue(PhraseEnglishIdentity.equivalent(expected, returned))
+                XCTAssertTrue(apostropheRecord("A sample \(returned)word.").hardMatches(
+                    apostropheEntry("A sample \(expected)word.")))
+                XCTAssertEqual(apostropheRecord("A sample \(returned)word.").hardMismatchKeys(
+                    apostropheEntry("A sample \(expected)word.")), [])
+            }
+            XCTAssertEqual(Array(PhraseEnglishIdentity.canonical(smart).unicodeScalars), Array(ascii.unicodeScalars))
+        }
+        let smart = "The café sample says, “It’s ‘fine’.”"
+        let ascii = "The café sample says, \"It's 'fine'.\""
+        XCTAssertEqual(Array(PhraseEnglishIdentity.canonical(smart).unicodeScalars), Array(ascii.unicodeScalars))
+        XCTAssertEqual(PhraseEnglishIdentity.canonical(ascii), ascii)
+        XCTAssertTrue(PhraseEnglishIdentity.equivalent(smart, "The cafe\u{0301} sample says, \"It's 'fine'.\""))
+        let unchanged = "\u{201A}\u{201B}\u{201E}\u{201F}\u{2032}\u{2033}\u{02BC}\u{FF02}\u{FF07}«»‹›<>\u{0060} ée\u{0301}—…ﬁ"
+        XCTAssertEqual(Array(PhraseEnglishIdentity.canonical(unchanged).unicodeScalars), Array(unchanged.unicodeScalars))
+        for (different, asciiQuote) in excludedQuotePairs {
+            XCTAssertFalse(PhraseEnglishIdentity.equivalent(different, asciiQuote))
+            XCTAssertFalse(PhraseEnglishIdentity.equivalent(asciiQuote, different))
+        }
+        let intended = apostropheEntry("A sample “fine”.", chinese: "ZH“”", source: "SOURCE‘’")
+        let provider = PhraseRecord(id: providerID, phrase: "A sample \"fine\".", interpretation: "ZH\"\"",
+            tags: [], origin: "SOURCE''", status: "DELETED", highlight: .missing)
+        XCTAssertEqual(provider.hardMismatchKeys(intended), [.chinese, .source, .status])
+        XCTAssertFalse(PhraseEnglishIdentity.equivalent("sample:", "sample;"))
+        XCTAssertFalse(PhraseEnglishIdentity.equivalent("sample/a", "sample-a"))
+    }
+
+    func testSmartQuoteVisiblePreviewReservationsAndGETOnlyRecoveryKeepConflicts() async throws {
+        for (smart, ascii) in [("The sample says, “It’s fine.”", "The sample says, \"It's fine.\""),
+                               ("The sample says, ‘It’s fine.’", "The sample says, 'It's fine.'")] {
+            for (expected, returned) in [(smart, ascii), (ascii, smart)] {
+                let intended = apostropheEntry(expected)
+                let variant = apostropheEntry(returned, ordinal: 2)
+                let raw = apostropheRawRecord(returned)
+                let visible = try await snapshot(entries: [intended], journal: makeTestPhraseJournal(), visible: [raw])
+                XCTAssertEqual(visible.items[0].classification, .alreadyMatching)
+                XCTAssertThrowsError(try PhraseCreateBinding.makeApproval(snapshot: visible))
+                let batch = try await snapshot(entries: [intended, variant], journal: makeTestPhraseJournal())
+                XCTAssertEqual(batch.items.map(\.classification), [.create, .blocked])
+                XCTAssertEqual(batch.items[1].reason, "DUPLICATE_PLANNED_ENGLISH")
+                XCTAssertNotEqual(try PhraseCreateBinding.sourceIdentity([intended]),
+                                  try PhraseCreateBinding.sourceIdentity([apostropheEntry(returned)]))
+                for field in ["interpretation", "origin"] {
+                    var conflict = raw; conflict[field] = "DIFFERENT_SYNTHETIC_VALUE"
+                    let shown = try await snapshot(entries: [intended], journal: makeTestPhraseJournal(), visible: [conflict])
+                    XCTAssertEqual(shown.items[0].reason, "CONFLICTING_SAME_ENGLISH")
+                }
+                var duplicate = raw; duplicate["id"] = "SECOND_SYNTHETIC_ID"
+                let ambiguous = try await snapshot(entries: [intended], journal: makeTestPhraseJournal(), visible: [raw, duplicate])
+                XCTAssertEqual(ambiguous.items[0].reason, "AMBIGUOUS_SAME_ENGLISH")
+                for status in ["PUBLISHED", "DELETED"] {
+                    let journal = makeTestPhraseJournal()
+                    let shown = try await snapshot(entries: [intended], journal: journal)
+                    var response = raw; response["status"] = status
+                    let reads = status == "PUBLISHED" ? [[response]] : [[response], [response], [response]]
+                    let transport = FakeHTTPTransport(executionReplies(post: .failure(.transport), reads: reads))
+                    let result = try await execute(shown, journal: journal, transport: transport)
+                    XCTAssertEqual(result.results[0].outcome, status == "PUBLISHED" ? .recovered : .notVerified)
+                    XCTAssertEqual(result.results[0].diagnostic?.readbackAttempts.last?.phraseFacts?.mismatchKeys,
+                                   status == "PUBLISHED" ? [] : [.status])
+                    XCTAssertEqual(transport.postCount, 1)
+                }
+            }
+        }
+    }
+
+    func testNonEquivalentQuoteResponseKeepsScalarDiagnosticAndStopsAfterOnePOST() async throws {
+        for (different, asciiQuote) in excludedQuotePairs {
+            let expected = "The sample says, \(asciiQuote)Fine."
+            let returned = "The sample says, \(different)Fine."
+            let intended = apostropheEntry(expected)
+            let journal = makeTestPhraseJournal()
+            let shown = try await snapshot(entries: [intended, otherEntry(ordinal: 2)], journal: journal)
+            let transport = FakeHTTPTransport([vocabulary(), empty(), empty(),
+                jsonResponse(["phrase": apostropheRawRecord(returned)], status: 201), empty(), empty(), empty()])
+            let result = try await execute(shown, journal: journal, transport: transport)
+            XCTAssertEqual(result.results.map(\.outcome), [.notVerified])
+            XCTAssertEqual(result.results[0].diagnostic?.phraseCreateResponse, .mismatching)
+            XCTAssertEqual(result.results[0].diagnostic?.phraseCreateMismatchKeys, [.english])
+            XCTAssertEqual(result.results[0].diagnostic?.phraseEnglishScalarDiff,
+                           PhraseEnglishScalarDiff(expected: expected, returned: returned))
+            XCTAssertEqual(result.results[0].diagnostic?.readbackAttempts.map(\.category),
+                           [.targetNotVisible, .targetNotVisible, .targetNotVisible])
+            XCTAssertEqual(result.failed, 1)
+            XCTAssertEqual(result.succeeded, 0)
+            XCTAssertEqual(transport.postCount, 1)
+            XCTAssertTrue(result.feedbackMessage?.contains("已停止后续新建") == true)
+            XCTAssertEqual(ExecutionReceipt(selectedSpellings: ["sample", "sample"], result: result).notAttempted, 1)
+            XCTAssertTrue(try journal.pending(accountFingerprint: fingerprint(), vocabularyID: vocID, visible: []).isEmpty)
+        }
+    }
+
+    private var excludedQuotePairs: [(String, String)] {
+        [("\u{201A}", "'"), ("\u{201B}", "'"), ("\u{201E}", "\""), ("\u{201F}", "\""),
+         ("\u{2032}", "'"), ("\u{2033}", "\""), ("\u{02BC}", "'"),
+         ("\u{FF02}", "\""), ("\u{FF07}", "'"), ("«", "\""), ("»", "\""),
+         ("‹", "'"), ("›", "'"), ("<", "\""), (">", "\""), ("\u{0060}", "'")]
     }
 
     private func apostropheEntry(_ english: String, chinese: String = "合成中文ZH_SENTINEL。",

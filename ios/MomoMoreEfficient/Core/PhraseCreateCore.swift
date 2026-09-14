@@ -47,12 +47,16 @@ enum PhraseObservation: String, Equatable, Sendable {
 }
 
 /// Provider-state English identity only. Approved input and request bindings
-/// retain their original scalars. Only apostrophes are mapped; comparison keeps
+/// retain their original scalars. Only English smart quotes are mapped; comparison keeps
 /// Swift's pre-existing Unicode canonical equality, not compatibility folding.
 enum PhraseEnglishIdentity {
     static func canonical(_ english: String) -> String {
         String(String.UnicodeScalarView(english.unicodeScalars.map {
-            $0.value == 0x2019 ? Unicode.Scalar(0x0027)! : $0
+            switch $0.value {
+            case 0x2018, 0x2019: return Unicode.Scalar(0x0027)!
+            case 0x201C, 0x201D: return Unicode.Scalar(0x0022)!
+            default: return $0
+            }
         }))
     }
 
@@ -60,12 +64,13 @@ enum PhraseEnglishIdentity {
         canonical(lhs) == canonical(rhs)
     }
 
-    /// Old v1 receipts hashed raw English; also accept the provider's straight
-    /// apostrophe form without rewriting old files or changing the schema.
+    /// v1 evidence used raw, then U+2019-only, then smart-quote English.
+    /// Keep each historical preimage without rewriting files or changing schema.
     static func journalCandidates(_ english: String) -> [String] {
-        let canonical = canonical(english)
-        return english.unicodeScalars.elementsEqual(canonical.unicodeScalars)
-            ? [english] : [english, canonical]
+        let legacyApostropheOnly = String(String.UnicodeScalarView(english.unicodeScalars.map {
+            $0.value == 0x2019 ? Unicode.Scalar(0x0027)! : $0
+        }))
+        return [english, legacyApostropheOnly, canonical(english)]
     }
 }
 
