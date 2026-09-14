@@ -2,14 +2,16 @@ import SwiftUI
 
 /// 首页乙 — the frozen ivory-dominant Home.
 ///
-/// Exactly four entries and nothing else: no account row, no History summary,
-/// no metrics, no recent activity, no bottom tab bar. Capture never appears
-/// here; it arrives as a modal from the system share sheet.
+/// Three work sections and a settings pill, nothing else: no account row, no
+/// History summary, no metrics, no recent activity, no bottom tab bar.
+/// Capture never appears here; it arrives as a modal from the system share
+/// sheet.
 struct HomeView: View {
     /// The two work tiles select the initial `ContentMode` and then enter the
     /// one `.write` destination — the mode is view-model state, not a route.
     let onEnterWrite: (ContentMode) -> Void
     let onEnterQuery: () -> Void
+    let onEnterStudyExport: () -> Void
     let onOpenSettings: () -> Void
 
     var body: some View {
@@ -42,6 +44,13 @@ struct HomeView: View {
                     title: "查阅 · 只读取，不写入"
                 ) {
                     QueryCard(action: onEnterQuery)
+                }
+
+                section(
+                    marker: .hollow,
+                    title: "导出 · 只读取，不写入"
+                ) {
+                    StudyExportCard(action: onEnterStudyExport)
                 }
 
                 Spacer(minLength: Theme.gapL)
@@ -180,5 +189,40 @@ private struct QueryCard: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("批量查阅")
         .accessibilityValue("一批词各有多少释义 / 例句 / 助记，只读取不写入")
+    }
+}
+
+/// The ivory 单词导出 card (#155) — the compact entry under 查阅.
+private struct StudyExportCard: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: Theme.gapM) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("单词导出")
+                        .font(Theme.tileTitle)
+                        .foregroundStyle(Theme.ink)
+                    Text("今天已学、新添加、忘词等，一键复制或分享")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: Theme.gapS)
+                Image(systemName: "arrow.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Theme.onInk)
+                    .frame(width: 34, height: 34)
+                    .background(Theme.ink, in: Circle())
+            }
+            .padding(Theme.textInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .themedCard(radius: Theme.radiusTile)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("单词导出")
+        .accessibilityValue("今天已学、新添加、忘词等，一键复制或分享")
     }
 }

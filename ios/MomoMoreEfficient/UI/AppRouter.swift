@@ -18,6 +18,7 @@ enum AppRoute: Hashable {
     case receipt(UUID)
     case query
     case queryDetail(Int)
+    case studyExport
     case settings
     case preferences
     case about

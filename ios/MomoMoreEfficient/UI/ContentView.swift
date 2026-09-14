@@ -72,6 +72,7 @@ struct ContentView: View {
     @StateObject private var viewModel: CompanionViewModel
     @StateObject private var router = AppRouter()
     @StateObject private var queryStore = QuerySessionStore()
+    @StateObject private var studyExportStore = StudyExportStore()
     @ObservedObject private var captureReviewStore: CaptureReviewStore
     private let captureInbox: () throws -> PendingCaptureInbox
     @State private var captureInboxErrorMessage: String?
@@ -98,6 +99,7 @@ struct ContentView: View {
                     router.go(.write)
                 },
                 onEnterQuery: { router.go(.query) },
+                onEnterStudyExport: { router.go(.studyExport) },
                 onOpenSettings: { router.go(.settings) }
             )
             .navigationBarHidden(true)
@@ -173,12 +175,15 @@ struct ContentView: View {
             }
         }
         // A real account identity change — a successful connect, replacement or
-        // removal — clears account-derived Query truth while keeping the input.
+        // removal — clears account-derived Query truth while keeping the input,
+        // and clears the memory-only study export result (#155).
         .onChange(of: viewModel.accountIdentity) { _, identity in
             queryStore.handleAccountIdentityChange(to: identity)
+            studyExportStore.handleAccountIdentityChange(to: identity)
         }
         .task {
             queryStore.handleAccountIdentityChange(to: viewModel.accountIdentity)
+            studyExportStore.handleAccountIdentityChange(to: viewModel.accountIdentity)
             await activateCurrentSurface(sceneIsActive: scenePhase == .active)
         }
     }
@@ -202,6 +207,8 @@ struct ContentView: View {
             QueryView(viewModel: viewModel, store: queryStore, router: router)
         case let .queryDetail(rowID):
             QueryDetailView(store: queryStore, rowID: rowID)
+        case .studyExport:
+            StudyExportView(viewModel: viewModel, store: studyExportStore, router: router)
         case .settings:
             SettingsRootView(viewModel: viewModel, router: router)
         case .preferences:
@@ -212,11 +219,16 @@ struct ContentView: View {
     }
 
     /// Back is intercepted only where leaving would silently abandon running
-    /// work: a running Query asks first, and nothing continues in the background.
+    /// work: a running Query asks first, and a running study export simply
+    /// stops (no interrupt ceremony for a one-shot read). Nothing continues in
+    /// the background.
     private func back(from route: AppRoute) {
         if route == .query, queryStore.phase.isRunning {
             queryStore.requestInterrupt(.back)
             return
+        }
+        if route == .studyExport {
+            studyExportStore.stop()
         }
         router.pop()
     }

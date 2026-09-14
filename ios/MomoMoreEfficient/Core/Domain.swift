@@ -10,6 +10,9 @@ enum CompanionConstants {
     /// former artificial product-wide total-batch item cap, so a user batch is
     /// bounded by real input/content/write limits instead.
     static let vocabularyQueryChunkSize = 1_000
+    /// The Study API's documented per-call maximum (#155). A page this size is
+    /// exactly the case where completeness cannot be proven by a short page.
+    static let studyPageSize = 1_000
     static let maxInputBytes = 262_144
     static let maxInterpretationCharacters = 2_000
     static let maxTokenCharacters = 8_192

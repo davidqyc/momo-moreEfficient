@@ -362,6 +362,204 @@ final class MaimemoTransport {
         await dispatchPost(route: route, body: body, control: control).dispatch
     }
 
+    // MARK: - Study (Beta) read-only surface (#155)
+
+    /// The smallest extension of this transport family for the frozen Study
+    /// presets (#155): the same authenticated path, the same shared scheduler,
+    /// the same one-level `data` envelope tolerance, the same fail-closed
+    /// decoding rules. There is no study mutation route in `InterpretationRoute`
+    /// at all — `/study/add_words` and `/study/advance_study` are deliberately
+    /// absent — so nothing here can write.
+
+    /// `POST /study/get_study_progress`. The documented endpoint takes no
+    /// fields; an empty JSON object adds none.
+    func studyProgress(control: ExecutionControl? = nil) async throws -> StudyProgress {
+        let body = try JSONSerialization.data(withJSONObject: [String: Any](), options: [.sortedKeys])
+        let response = try await read(
+            route: .studyProgress,
+            body: body,
+            control: control,
+            readback: false
+        )
+        let object = try jsonObject(response.body)
+        let container = (object["progress"] != nil ? object : object["data"] as? [String: Any])
+        guard let value = container?["progress"] as? [String: Any],
+              let finished = strictInteger(value["finished"]), finished >= 0,
+              let total = strictInteger(value["total"]), total >= 0,
+              let studyTime = strictInteger(value["study_time"]), studyTime >= 0
+        else {
+            throw CompanionError.responseRejected
+        }
+        return StudyProgress(finished: finished, total: total, studyTimeMilliseconds: studyTime)
+    }
+
+    /// `POST /study/get_today_items`. `limit` is always the documented maximum
+    /// 1000; a caller that receives 1000 rows cannot prove completeness and
+    /// must say so — that policy lives in the runner, not here.
+    func studyTodayItems(
+        isFinished: Bool? = nil,
+        isNew: Bool? = nil,
+        control: ExecutionControl? = nil
+    ) async throws -> [StudyTodayItem] {
+        var payload: [String: Any] = ["limit": CompanionConstants.studyPageSize]
+        if let isFinished { payload["is_finished"] = isFinished }
+        if let isNew { payload["is_new"] = isNew }
+        let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        let response = try await read(
+            route: .studyTodayItems,
+            body: body,
+            control: control,
+            readback: false
+        )
+        let object = try jsonObject(response.body)
+        let container = (object["today_items"] != nil ? object : object["data"] as? [String: Any])
+        guard let values = container?["today_items"] as? [Any] else {
+            throw CompanionError.responseRejected
+        }
+        return try values.map { value in
+            guard let record = value as? [String: Any],
+                  let vocabularyID = record["voc_id"] as? String,
+                  isSafeIdentifier(vocabularyID),
+                  let spelling = safeStudySpelling(record["voc_spelling"]),
+                  let order = strictInteger(record["order"]),
+                  let isNew = strictBool(record["is_new"]),
+                  let isFinished = strictBool(record["is_finished"])
+            else {
+                throw CompanionError.itemResponseRejected
+            }
+            return StudyTodayItem(
+                vocabularyID: vocabularyID,
+                spelling: spelling,
+                order: order,
+                firstResponse: try optionalStudyResponse(record["first_response"]),
+                isNew: isNew,
+                isFinished: isFinished
+            )
+        }
+    }
+
+    /// `POST /study/query_study_records`, one page at a time. The sliding
+    /// `next_study_date` pagination strategy, the page ceiling and the
+    /// completeness accounting all belong to the export runner; this method
+    /// only moves one documented page.
+    func studyRecords(
+        nextStudyDateStart: String? = nil,
+        nextStudyDateEnd: String? = nil,
+        asCount: Bool,
+        control: ExecutionControl? = nil
+    ) async throws -> StudyRecordsPage {
+        var payload: [String: Any] = ["limit": CompanionConstants.studyPageSize]
+        if asCount { payload["as_count"] = true }
+        if nextStudyDateStart != nil || nextStudyDateEnd != nil {
+            var range: [String: Any] = [:]
+            if let nextStudyDateStart { range["start"] = nextStudyDateStart }
+            if let nextStudyDateEnd { range["end"] = nextStudyDateEnd }
+            payload["next_study_date"] = range
+        }
+        let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        let response = try await read(
+            route: .studyRecords,
+            body: body,
+            control: control,
+            readback: false
+        )
+        let object = try jsonObject(response.body)
+        let container = (object["records"] != nil || object["count"] != nil
+            ? object
+            : object["data"] as? [String: Any])
+        guard let rawRecords = container?["records"] as? [Any],
+              let count = strictInteger(container?["count"]), count >= 0
+        else {
+            throw CompanionError.responseRejected
+        }
+        let records = try rawRecords.map { value -> StudyRecord in
+            guard let record = value as? [String: Any],
+                  let vocabularyID = record["voc_id"] as? String,
+                  isSafeIdentifier(vocabularyID),
+                  let spelling = safeStudySpelling(record["voc_spelling"]),
+                  let addDateRaw = record["add_date"] as? String,
+                  let addDate = StudyDateParsing.parse(addDateRaw),
+                  let studyCount = strictInteger(record["study_count"])
+            else {
+                throw CompanionError.itemResponseRejected
+            }
+            // Optional documented date. Present-but-malformed is an item
+            // rejection: silently dropping it could both lose a word and
+            // corrupt the pagination boundary.
+            let nextStudyDate: Date?
+            if let raw = try studyOptionalString(record["next_study_date"]) {
+                guard let parsed = StudyDateParsing.parse(raw) else {
+                    throw CompanionError.itemResponseRejected
+                }
+                nextStudyDate = parsed
+            } else {
+                nextStudyDate = nil
+            }
+            return StudyRecord(
+                vocabularyID: vocabularyID,
+                spelling: spelling,
+                addDate: addDate,
+                nextStudyDate: nextStudyDate,
+                studyCount: studyCount,
+                tags: try studyRecordTags(record["tags"])
+            )
+        }
+        return StudyRecordsPage(records: records, count: count)
+    }
+
+    private func safeStudySpelling(_ value: Any?) -> String? {
+        safeSingleLine(value, maximumCharacters: 256)
+    }
+
+    /// An absent key, JSON `null`, and any other "not provided" shape mean the
+    /// field is not present; anything else present must be a non-empty bounded
+    /// single-line string.
+    private func studyOptionalString(_ value: Any?) throws -> String? {
+        if value == nil || value is NSNull { return nil }
+        guard let string = value as? String else {
+            throw CompanionError.itemResponseRejected
+        }
+        return string
+    }
+
+    private func optionalStudyResponse(_ value: Any?) throws -> StudyResponse? {
+        if value == nil || value is NSNull { return nil }
+        guard let raw = value as? String else { throw CompanionError.itemResponseRejected }
+        guard let response = StudyResponse(rawValue: raw) else {
+            throw CompanionError.itemResponseRejected
+        }
+        return response
+    }
+
+    private func studyRecordTags(_ value: Any?) throws -> [StudyRecordTag] {
+        if value is NSNull { return [] }
+        guard let raw = value else { return [] }
+        let elements: [String]
+        if let single = raw as? String {
+            elements = [single]
+        } else if let array = raw as? [String] {
+            elements = array
+        } else {
+            throw CompanionError.itemResponseRejected
+        }
+        return try elements.map { element in
+            guard let tag = StudyRecordTag(rawValue: element) else {
+                throw CompanionError.itemResponseRejected
+            }
+            return tag
+        }
+    }
+
+    private func strictBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID()
+        else {
+            return nil
+        }
+        return number.boolValue
+    }
+
+
     private func dispatchPost(
         route: InterpretationRoute,
         body: Data,

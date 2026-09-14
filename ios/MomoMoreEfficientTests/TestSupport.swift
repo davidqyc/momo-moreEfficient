@@ -702,3 +702,66 @@ final class TestPhraseJournalStore: PhraseSafetyJournalStore {
 func makeTestPhraseJournal() -> PhraseSafetyJournal {
     PhraseSafetyJournal(store: TestPhraseJournalStore())
 }
+
+// MARK: - Study export (#155)
+
+func studyProgressResponse(finished: Int, total: Int, studyTime: Int = 0) -> StubbedResult {
+    jsonResponse(["progress": ["finished": finished, "total": total, "study_time": studyTime]])
+}
+
+func studyTodayItem(
+    id: String,
+    spelling: String,
+    order: Int,
+    firstResponse: String? = nil,
+    isNew: Bool = false,
+    isFinished: Bool = false
+) -> [String: Any] {
+    var record: [String: Any] = [
+        "voc_id": id,
+        "voc_spelling": spelling,
+        "order": order,
+        "is_new": isNew,
+        "is_finished": isFinished,
+    ]
+    if let firstResponse { record["first_response"] = firstResponse }
+    return record
+}
+
+func studyTodayItemsResponse(_ records: [[String: Any]]) -> StubbedResult {
+    jsonResponse(["today_items": records])
+}
+
+func studyRecord(
+    id: String,
+    spelling: String,
+    addDate: String,
+    nextStudyDate: String? = nil,
+    studyCount: Int = 1,
+    tags: Any = [String]()
+) -> [String: Any] {
+    var record: [String: Any] = [
+        "voc_id": id,
+        "voc_spelling": spelling,
+        "add_date": addDate,
+        "study_count": studyCount,
+        "tags": tags,
+    ]
+    if let nextStudyDate { record["next_study_date"] = nextStudyDate }
+    return record
+}
+
+func studyRecordsResponse(_ records: [[String: Any]], count: Int = 0) -> StubbedResult {
+    jsonResponse(["records": records, "count": count])
+}
+
+func studyCountResponse(_ count: Int) -> StubbedResult {
+    jsonResponse(["records": [], "count": count])
+}
+
+/// Parses a fixed UTC instant for deterministic study-day and review-window
+/// assertions.
+func studyFixedDate(_ iso: String) -> Date {
+    let formatter = ISO8601DateFormatter()
+    return formatter.date(from: iso)!
+}

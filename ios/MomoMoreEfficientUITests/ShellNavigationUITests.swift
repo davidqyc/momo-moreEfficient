@@ -19,7 +19,7 @@ final class ShellNavigationUITests: XCTestCase {
         let app = launch()
 
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
-        for entry in ["释义录入", "例句录入", "批量查阅"] {
+        for entry in ["释义录入", "例句录入", "批量查阅", "单词导出"] {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
         XCTAssertTrue(app.buttons["设置"].exists)
@@ -28,6 +28,25 @@ final class ShellNavigationUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["连接状态"].exists)
         XCTAssertFalse(app.buttons["历史"].exists)
         XCTAssertEqual(app.tabBars.count, 0)
+    }
+
+    // MARK: - Study export (#155)
+
+    func testStudyExportEntryReachesPresetListAndDisconnectedGate() {
+        let app = launch()
+        app.buttons["单词导出"].tap()
+
+        XCTAssertTrue(app.staticTexts["单词导出"].waitForExistence(timeout: 5))
+        // The frozen preset list, reachable while disconnected.
+        for preset in ["今天已学", "今天新添加", "今天新学", "今天忘记", "今天模糊", "顽固词", "熟知词", "全部学习词"] {
+            XCTAssertTrue(app.buttons[preset].exists, preset)
+        }
+        XCTAssertTrue(app.buttons["N 天内复习"].exists)
+        // Disconnected: presets are visibly gated with a truthful why-line.
+        XCTAssertTrue(app.staticTexts["连接墨墨账号后可导出"].exists)
+
+        back(app)
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
     }
 
     // MARK: - Settings
@@ -172,7 +191,7 @@ final class ShellNavigationUITests: XCTestCase {
         let app = launch(contentSize: "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge")
 
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
-        for entry in ["释义录入", "例句录入", "批量查阅"] {
+        for entry in ["释义录入", "例句录入", "批量查阅", "单词导出"] {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
 
