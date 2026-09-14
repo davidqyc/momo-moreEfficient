@@ -272,11 +272,12 @@ final class ShareCaptureTests: XCTestCase {
         var transports: [HTTPTransport] = [previewTransport, executionTransport]
         let executionGate = FirstPauseGateSleeper()
         var sleepers: [RequestSleeper] = [RecordingSleeper(), executionGate]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transports.removeFirst() },
-            sleeperFactory: { sleepers.removeFirst() }
+            sleeperFactory: { sleepers.removeFirst() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
@@ -473,12 +474,13 @@ final class ShareCaptureTests: XCTestCase {
         tokenStore: TokenStore,
         transport: FakeHTTPTransport
     ) -> CompanionViewModel {
-        CompanionViewModel(
+        CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             credentialValidationTransportFactory: { transport },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
     }
 }

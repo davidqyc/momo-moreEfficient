@@ -71,7 +71,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
         XCTAssertEqual(
             model.errorMessage,
             CompanionError.authenticationRejected.description + "\n"
-                + CompanionError.uncertainWriteOutcome.description
+                + "结果仍无法确认，请勿重复提交；稍后重新预览。"
         )
         XCTAssertEqual(factory.transports.reduce(0) { $0 + $1.postCount }, 1)
         XCTAssertEqual(model.history.count, 1)
@@ -196,7 +196,7 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
     func testPhraseRehearsalRunsParserApprovalCreateReadbackAndPreservesInterpretationDraft() async {
         let history = RehearsalHistoryStore()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: RehearsalTokenStore(),
             historyStore: history,
             transportFactory: { RehearsalTransport(perRequestDelaySeconds: 0) },
@@ -204,7 +204,8 @@ final class PhraseUIIntegrationTests: XCTestCase {
                 RehearsalTransport(perRequestDelaySeconds: 0)
             },
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         await model.enterForeground()
         model.sourceText = "word\nn. 释义草稿"
@@ -321,12 +322,13 @@ final class PhraseUIIntegrationTests: XCTestCase {
             await MainActor.run { assertion.expire() }
         }
         var transports: [HTTPTransport] = [FakeHTTPTransport(preview), executionTransport]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transports.removeFirst() },
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
@@ -525,30 +527,36 @@ final class PhraseUIIntegrationTests: XCTestCase {
 
     private func connectedModel(
         transports: [HTTPTransport],
-        sleeperFactory: @escaping () -> RequestSleeper = { RecordingSleeper() }
+        sleeperFactory: @escaping () -> RequestSleeper = { RecordingSleeper() },
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         var remaining = transports
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: sleeperFactory,
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: preferenceDefaults
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
         return model
     }
 
-    private func connectedModel(factory: SequencedTransportFactory) -> CompanionViewModel {
-        let model = CompanionViewModel(
+    private func connectedModel(
+        factory: SequencedTransportFactory,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
+    ) -> CompanionViewModel {
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: factory.make,
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { RecordingSleeper() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: preferenceDefaults
         )
         var token = fakeToken
         model.installVerifiedCredentialForTesting(token: &token)
