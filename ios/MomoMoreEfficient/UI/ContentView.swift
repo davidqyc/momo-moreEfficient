@@ -208,7 +208,19 @@ struct ContentView: View {
         case let .queryDetail(rowID):
             QueryDetailView(store: queryStore, rowID: rowID)
         case .studyExport:
-            StudyExportView(viewModel: viewModel, store: studyExportStore, router: router)
+            StudyExportView(
+                viewModel: viewModel,
+                store: studyExportStore,
+                router: router,
+                onOpenInQuery: { words in
+                    // The #155/#161 bridge: exact words into the existing
+                    // app-scoped Query store, then open Query. The handoff is
+                    // memory-only and read-only; Query's own 查阅 N 项 still
+                    // starts every provider read.
+                    guard queryStore.replaceInputFromStudyExport(words) else { return }
+                    router.go(.query)
+                }
+            )
         case .settings:
             SettingsRootView(viewModel: viewModel, router: router)
         case .preferences:

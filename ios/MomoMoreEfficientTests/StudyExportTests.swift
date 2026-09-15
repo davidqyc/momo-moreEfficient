@@ -124,6 +124,104 @@ final class StudyExportTests: XCTestCase {
         }
     }
 
+    // MARK: - 今日待复习
+
+    func testTodayPendingSendsIsFinishedFalseWithoutIsNewAndPreservesOrder() async throws {
+        let (runner, transport) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 6, total: 10),
+            studyTodayItemsResponse([
+                studyTodayItem(id: "VOC_R", spelling: "review", order: 3, isFinished: false),
+                studyTodayItem(id: "VOC_N", spelling: "brand new", order: 4, isNew: true, isFinished: false),
+                // Unfinished today's new words are included, not filtered out.
+                studyTodayItem(id: "VOC_N", spelling: "brand new", order: 4, isNew: true, isFinished: false),
+            ]),
+        ]))
+        let outcome = try await runner.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+
+        XCTAssertEqual(transport.requests.map(\.route), [.studyProgress, .studyTodayItems])
+        let items = try requestBody(transport, index: 1)
+        XCTAssertEqual(items["is_finished"] as? Bool, false)
+        XCTAssertNil(items["is_new"])
+        XCTAssertEqual(items["voc_ids"] as? [String], [])
+        XCTAssertEqual(items["spellings"] as? [String], [])
+        XCTAssertEqual(items["limit"] as? Int, 1000)
+
+        // Unfinished review words AND unfinished new words, provider order,
+        // deduped by voc_id.
+        XCTAssertEqual(outcome.words, ["review", "brand new"])
+        // expected_remaining = 10 - 6 = 4; fetched 3 rows → truthful mismatch.
+        XCTAssertEqual(
+            outcome.completeness,
+            .mismatchedWithRemainingProgress(remaining: 4, read: 3)
+        )
+    }
+
+    func testTodayPendingCompletenessRules() async throws {
+        let unfinished: [[String: Any]] = (0..<3).map {
+            studyTodayItem(id: "VOC_\($0)", spelling: "word\($0)", order: $0, isFinished: false)
+        }
+        // 1. fetched == expected_remaining → complete, including exact 1000.
+        let (equal, _) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 7, total: 10),
+            studyTodayItemsResponse(unfinished),
+        ]))
+        let equalOutcome = try await equal.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(equalOutcome.completeness, .complete)
+
+        let fullPage: [[String: Any]] = (0..<1000).map {
+            studyTodayItem(id: "VOC_\($0)", spelling: "word\($0)", order: $0, isFinished: false)
+        }
+        let (exact1000, _) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 0, total: 1000),
+            studyTodayItemsResponse(fullPage),
+        ]))
+        let exactOutcome = try await exact1000.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(exactOutcome.completeness, .complete)
+
+        // 2. fetched != expected_remaining → mismatch, never complete.
+        let (unequal, _) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 2, total: 10),
+            studyTodayItemsResponse(unfinished),
+        ]))
+        let unequalOutcome = try await unequal.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(
+            unequalOutcome.completeness,
+            .mismatchedWithRemainingProgress(remaining: 8, read: 3)
+        )
+
+        // 3. progress fails + fetched < 1000 → complete from terminal short page.
+        let (noProgress, _) = makeRunner(FakeHTTPTransport([
+            .failure(.transport),
+            studyTodayItemsResponse(unfinished),
+        ]))
+        let noProgressOutcome = try await noProgress.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(noProgressOutcome.completeness, .complete)
+
+        // 4. progress fails + fetched == 1000 → capped.
+        let (noProgressFull, _) = makeRunner(FakeHTTPTransport([
+            .failure(.transport),
+            studyTodayItemsResponse(fullPage),
+        ]))
+        let cappedOutcome = try await noProgressFull.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(cappedOutcome.completeness, .cappedAtSingleCallLimit)
+
+        // 5. impossible progress (finished > total) is unusable: no negative
+        // count, page-size fallback instead.
+        let (impossible, _) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 20, total: 10),
+            studyTodayItemsResponse(unfinished),
+        ]))
+        let impossibleOutcome = try await impossible.run(.todayPending, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(impossibleOutcome.completeness, .complete)
+    }
+
+    func testPresetOrderLeadsWithTodayPresets() {
+        XCTAssertEqual(
+            StudyExportPreset.all.prefix(6).map(\.caseName),
+            ["todayLearned", "todayPending", "todayAdded", "todayNew", "todayForgotten", "todayVague"]
+        )
+    }
+
     // MARK: - Provider request contract
 
     /// The proto-derived official request types make `voc_ids` / `spellings`

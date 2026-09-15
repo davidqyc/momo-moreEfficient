@@ -42,7 +42,7 @@ final class ShellNavigationUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["单词导出"].waitForExistence(timeout: 5))
         // The frozen preset list, reachable while disconnected.
-        for preset in ["今天已学", "今天新添加", "今天新学", "今天忘记", "今天模糊", "顽固词", "熟知词", "全部学习词"] {
+        for preset in ["今天已学", "今日待复习", "今天新添加", "今天新学", "今天忘记", "今天模糊", "顽固词", "熟知词", "全部学习词"] {
             XCTAssertTrue(app.buttons[preset].exists, preset)
         }
         XCTAssertTrue(app.buttons["N 天内复习"].exists)

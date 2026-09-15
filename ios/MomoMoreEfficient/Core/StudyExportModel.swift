@@ -78,6 +78,10 @@ enum StudyExportCompleteness: Equatable, Sendable {
     case cappedAtSingleCallLimit
     /// 今日进度 reports more finished words than the today-items read returned.
     case mismatchedWithProgress(finished: Int, read: Int)
+    /// 今日待复习: today's progress implies a different remaining count than
+    /// the unfinished-items read returned. Uses remaining semantics
+    /// (`total - finished`), never the completed-list wording.
+    case mismatchedWithRemainingProgress(remaining: Int, read: Int)
 }
 
 /// The outcome of one export run: the spellings, in deterministic
@@ -131,6 +135,7 @@ struct StudyRecordDecodeError: Error, Equatable, Sendable {
 /// The frozen v1 preset set. No query language, no arbitrary dates.
 enum StudyExportPreset: Hashable, Sendable {
     case todayLearned
+    case todayPending
     case todayAdded
     case todayNew
     case todayForgotten
@@ -144,13 +149,14 @@ enum StudyExportPreset: Hashable, Sendable {
     static let reviewDayChoices = [1, 3, 7, 30]
 
     static let all: [StudyExportPreset] = [
-        .todayLearned, .todayAdded, .todayNew, .todayForgotten, .todayVague,
-        .sticking, .wellFamiliar, .reviewWithin(days: 1), .allWords,
+        .todayLearned, .todayPending, .todayAdded, .todayNew, .todayForgotten,
+        .todayVague, .sticking, .wellFamiliar, .reviewWithin(days: 1), .allWords,
     ]
 
     var title: String {
         switch self {
         case .todayLearned: return "今天已学"
+        case .todayPending: return "今日待复习"
         case .todayAdded: return "今天新添加"
         case .todayNew: return "今天新学"
         case .todayForgotten: return "今天忘记"
@@ -162,24 +168,10 @@ enum StudyExportPreset: Hashable, Sendable {
         }
     }
 
-    /// Stable, non-sensitive identifier for diagnostics.
-    var caseName: String {
-        switch self {
-        case .todayLearned: return "todayLearned"
-        case .todayAdded: return "todayAdded"
-        case .todayNew: return "todayNew"
-        case .todayForgotten: return "todayForgotten"
-        case .todayVague: return "todayVague"
-        case .sticking: return "sticking"
-        case .wellFamiliar: return "wellFamiliar"
-        case let .reviewWithin(days): return "reviewWithin(\(days))"
-        case .allWords: return "allWords"
-        }
-    }
-
     var subtitle: String {
         switch self {
         case .todayLearned: return "今天已完成的词，按墨墨学习顺序"
+        case .todayPending: return "今天尚未完成的全部单词（含新词）"
         case .todayAdded: return "学习记录里今天新加入的词"
         case .todayNew: return "今天第一次出现的生词"
         case .todayForgotten: return "今天第一次反应为「忘记」的词"
@@ -188,6 +180,22 @@ enum StudyExportPreset: Hashable, Sendable {
         case .wellFamiliar: return "被墨墨标记为熟知的词"
         case let .reviewWithin(days): return "接下来 \(days) 天内要复习的词"
         case .allWords: return "学习计划里的全部词"
+        }
+    }
+
+    /// Stable, non-sensitive identifier for diagnostics.
+    var caseName: String {
+        switch self {
+        case .todayLearned: return "todayLearned"
+        case .todayPending: return "todayPending"
+        case .todayAdded: return "todayAdded"
+        case .todayNew: return "todayNew"
+        case .todayForgotten: return "todayForgotten"
+        case .todayVague: return "todayVague"
+        case .sticking: return "sticking"
+        case .wellFamiliar: return "wellFamiliar"
+        case let .reviewWithin(days): return "reviewWithin(\(days))"
+        case .allWords: return "allWords"
         }
     }
 }

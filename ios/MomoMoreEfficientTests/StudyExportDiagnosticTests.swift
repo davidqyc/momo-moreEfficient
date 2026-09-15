@@ -460,6 +460,39 @@ final class StudyExportDiagnosticTests: XCTestCase {
         XCTAssertFalse(report.contains("FP_SECRET"))
     }
 
+    /// 今日待复习 logs the remaining-semantics completeness decision, and an
+    /// impossible progress (finished > total) is flagged without ever
+    /// computing a negative count.
+    func testTodayPendingLogsRemainingCompletenessAndInconsistentProgress() async throws {
+        let journal = makeJournal(tempJournalURL())
+        let runner = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 20, total: 10),
+            studyTodayItemsResponse((0..<3).map {
+                studyTodayItem(id: "VOC_\($0)", spelling: "word\($0)", order: $0, isFinished: false)
+            }),
+        ]), journal: journal)
+        let outcome = try await runner.run(.todayPending, control: ExecutionControl(), now: fixedNow, runID: "testrun1")
+        XCTAssertEqual(outcome.completeness, .complete)
+
+        let report = journal.formattedReport()
+        XCTAssertTrue(report.contains("progress_ok finished=20 total=10"))
+        XCTAssertTrue(report.contains("progress_inconsistent finished=20 total=10"))
+        XCTAssertTrue(report.contains("today_items_start is_finished=false is_new=nil limit=1000"))
+        XCTAssertTrue(report.contains("today_pending expected_remaining=nil fetched=3 completeness=complete"))
+        XCTAssertFalse(report.contains("expected_remaining=-"))
+        XCTAssertFalse(report.contains("word"))
+    }
+
+    /// The Query handoff records only the count — never the words.
+    func testQueryHandoffLogsCountOnly() {
+        let journal = makeJournal(tempJournalURL())
+        let store = makeStore(journal: journal)
+        store.logQueryHandoff(count: 7)
+        let report = journal.formattedReport()
+        XCTAssertTrue(report.contains("query_handoff count=7"))
+        XCTAssertFalse(report.contains("apple"))
+    }
+
     // MARK: - Owner-visible policy
 
     func testDiagnosticsSurfaceIsOwnerVisibleUnderUnstableFeaturePolicy() {

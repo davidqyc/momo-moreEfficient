@@ -113,6 +113,12 @@ final class StudyExportStore: ObservableObject {
         log("screen_disappear")
     }
 
+    /// The Study Export → Query handoff records only the count — never the
+    /// words themselves.
+    func logQueryHandoff(count: Int) {
+        log("query_handoff count=\(count)")
+    }
+
     // MARK: - Account identity
 
     /// Called with the root owner's current `AccountIdentity` whenever it

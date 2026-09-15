@@ -11,6 +11,10 @@ struct StudyExportView: View {
     @ObservedObject var viewModel: CompanionViewModel
     @ObservedObject var store: StudyExportStore
     @ObservedObject var router: AppRouter
+    /// The one bridge to the existing app-scoped batch Query (#161): installs
+    /// the exact words into `QuerySessionStore` and opens Query. No clipboard,
+    /// no auto-started reads.
+    let onOpenInQuery: ([String]) -> Void
 
     @State private var isReviewWindowExpanded = false
     @State private var toastText: String?
@@ -293,6 +297,13 @@ struct StudyExportView: View {
                     + "墨墨当日数据可能还未初始化；名单可以照常复制。",
                 tone: .stop
             )
+        case let .mismatchedWithRemainingProgress(remaining, read):
+            return Banner(
+                title: "结果可能不完整",
+                message: "今日进度显示还剩 \(remaining) 个，实际读取到 \(read) 个。"
+                    + "墨墨当日数据可能还未同步完整；名单可以照常使用，但结果可能不完整。",
+                tone: .stop
+            )
         }
     }
 
@@ -353,23 +364,28 @@ struct StudyExportView: View {
                             }
                         }
                     }
-                    if !outcome.words.isEmpty, let payload = store.copyPayload {
-                        ShareLink(item: payload) {
-                            Text("分享")
-                                .font(Theme.primaryButton)
-                                .foregroundStyle(Theme.ink)
-                                .lineLimit(2)
-                                .frame(maxWidth: .infinity, minHeight: Theme.controlHeight)
-                                .background(
-                                    Theme.surface,
-                                    in: RoundedRectangle(cornerRadius: Theme.radiusTile, style: .continuous)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Theme.radiusTile, style: .continuous)
-                                        .strokeBorder(Theme.separator, lineWidth: Theme.hairline)
-                                )
+                    if !outcome.words.isEmpty {
+                        PrimaryPillButton(title: "批量查阅 \(outcome.words.count) 个") {
+                            openInQuery(outcome.words)
                         }
-                        .accessibilityLabel("分享 \(outcome.words.count) 个单词")
+                        if let payload = store.copyPayload {
+                            ShareLink(item: payload) {
+                                Text("分享")
+                                    .font(Theme.primaryButton)
+                                    .foregroundStyle(Theme.ink)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, minHeight: Theme.controlHeight)
+                                    .background(
+                                        Theme.surface,
+                                        in: RoundedRectangle(cornerRadius: Theme.radiusTile, style: .continuous)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: Theme.radiusTile, style: .continuous)
+                                            .strokeBorder(Theme.separator, lineWidth: Theme.hairline)
+                                    )
+                            }
+                            .accessibilityLabel("分享 \(outcome.words.count) 个单词")
+                        }
                     }
                 }
             }
@@ -389,6 +405,15 @@ struct StudyExportView: View {
     }
 
     // MARK: - Actions
+
+    /// The direct Study Export → Query handoff: logs only the count, hands
+    /// over the exact words, and lets the ContentView bridge install them
+    /// into the existing Query store and navigate. No clipboard, and Query's
+    /// provider reads never auto-start here.
+    private func openInQuery(_ words: [String]) {
+        store.logQueryHandoff(count: words.count)
+        onOpenInQuery(words)
+    }
 
     private func run(_ preset: StudyExportPreset) {
         store.logPresetTap(

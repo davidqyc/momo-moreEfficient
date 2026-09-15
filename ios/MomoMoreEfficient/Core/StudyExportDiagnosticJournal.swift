@@ -61,6 +61,7 @@ enum StudyExportDiagnosticCategory {
         case .complete: return "complete"
         case .cappedAtSingleCallLimit: return "cappedAtSingleCallLimit"
         case .mismatchedWithProgress: return "mismatchedWithProgress"
+        case .mismatchedWithRemainingProgress: return "mismatchedWithRemainingProgress"
         }
     }
 }

@@ -37,6 +37,8 @@ struct StudyExportRunner {
         switch preset {
         case .todayLearned:
             return try await todayLearned(control: control, runID: runID)
+        case .todayPending:
+            return try await todayPending(control: control, runID: runID)
         case .todayNew:
             return try await todayNew(control: control, runID: runID)
         case .todayForgotten:
@@ -81,6 +83,21 @@ struct StudyExportRunner {
 
     // MARK: - Today-item presets
 
+    /// The shared today-progress read with its sanitized events. A progress
+    /// failure is non-blocking for every today preset: it only downgrades the
+    /// available completeness evidence.
+    private func readProgress(control: ExecutionControl, runID: String) async -> StudyProgress? {
+        log("progress_start", runID: runID)
+        do {
+            let progress = try await api.studyProgress(control: control)
+            log("progress_ok finished=\(progress.finished) total=\(progress.total)", runID: runID)
+            return progress
+        } catch {
+            log("progress_error category=\(StudyExportDiagnosticCategory.sanitized(error))", runID: runID)
+            return nil
+        }
+    }
+
     /// The one completed-items read every today preset starts from, together
     /// with the completeness evidence that read produced — so 今天已学,
     /// 今天忘记 and 今天模糊 can never drift apart on that judgment.
@@ -93,17 +110,7 @@ struct StudyExportRunner {
         control: ExecutionControl,
         runID: String
     ) async throws -> (items: [StudyTodayItem], completeness: StudyExportCompleteness) {
-        log("progress_start", runID: runID)
-        let progress: StudyProgress?
-        do {
-            progress = try await api.studyProgress(control: control)
-        } catch {
-            progress = nil
-            log("progress_error category=\(StudyExportDiagnosticCategory.sanitized(error))", runID: runID)
-        }
-        if let progress {
-            log("progress_ok finished=\(progress.finished) total=\(progress.total)", runID: runID)
-        }
+        let progress = await readProgress(control: control, runID: runID)
         let items = try await fetchTodayItems(isFinished: true, isNew: nil, control: control, runID: runID)
         let completeness = todayCompleteness(fetched: items.count, progress: progress, runID: runID)
         return (items, completeness)
@@ -114,6 +121,53 @@ struct StudyExportRunner {
         let (items, completeness) = try await completedItems(control: control, runID: runID)
         let words = StudyExportSemantics.dedupedByVocabularyID(
             items.map { (id: $0.vocabularyID, value: $0.spelling) }
+        )
+        return StudyExportOutcome(words: words, completeness: completeness)
+    }
+
+    /// 今日待复习: all of today's unfinished items (`is_finished=false`),
+    /// including unfinished review words AND unfinished today's new words —
+    /// deliberately no `is_new` filter, so new words are never silently
+    /// excluded. Completeness uses remaining semantics (`total - finished`)
+    /// when today's progress is usable; an impossible `finished > total` makes
+    /// progress unusable for this preset (never a negative count) and falls
+    /// back to the page-size rule with a sanitized
+    /// `progress_inconsistent` event.
+    private func todayPending(control: ExecutionControl, runID: String) async throws -> StudyExportOutcome {
+        var progress = await readProgress(control: control, runID: runID)
+        if let value = progress, value.finished > value.total {
+            log(
+                "progress_inconsistent finished=\(value.finished) total=\(value.total)",
+                runID: runID
+            )
+            progress = nil
+        }
+        let items = try await fetchTodayItems(isFinished: false, isNew: nil, control: control, runID: runID)
+        let words = StudyExportSemantics.dedupedByVocabularyID(
+            items.map { (id: $0.vocabularyID, value: $0.spelling) }
+        )
+        let completeness: StudyExportCompleteness
+        if let progress {
+            let expectedRemaining = progress.total - progress.finished
+            completeness = items.count == expectedRemaining
+                ? .complete
+                : .mismatchedWithRemainingProgress(remaining: expectedRemaining, read: items.count)
+        } else {
+            completeness = items.count >= CompanionConstants.studyPageSize
+                ? .cappedAtSingleCallLimit
+                : .complete
+        }
+        let expectedRemainingDescription: String
+        if let progress {
+            expectedRemainingDescription = String(progress.total - progress.finished)
+        } else {
+            expectedRemainingDescription = "nil"
+        }
+        log(
+            "today_pending expected_remaining=\(expectedRemainingDescription)"
+                + " fetched=\(items.count)"
+                + " completeness=\(StudyExportDiagnosticCategory.name(of: completeness))",
+            runID: runID
         )
         return StudyExportOutcome(words: words, completeness: completeness)
     }
