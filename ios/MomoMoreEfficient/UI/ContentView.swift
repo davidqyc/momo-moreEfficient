@@ -321,7 +321,7 @@ private struct WriteConfirmationDialogs: ViewModifier {
                 titleVisibility: .visible
             ) {
                 if let group = viewModel.pendingConfirmation {
-                    Button(group == .create ? "确认执行新建" : "确认执行更新", role: .destructive) {
+                    Button(group == .create ? "确认写入释义" : "确认写入释义（更新）", role: .destructive) {
                         viewModel.executeConfirmed(group)
                     }
                 }

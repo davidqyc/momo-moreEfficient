@@ -254,7 +254,7 @@ final class ShellNavigationUITests: XCTestCase {
         let create = app.buttons["新建 1 条例句"]
         XCTAssertTrue(create.waitForExistence(timeout: 20))
         create.tap()
-        app.buttons["确认新建 1 条例句"].tap()
+        app.buttons["确认写入例句 1 条"].tap()
         XCTAssertTrue(app.staticTexts["已完成 1 条例句 · 新建 1"].waitForExistence(timeout: 30))
         app.buttons["例句历史"].tap()
         let receipt = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", spelling)).firstMatch

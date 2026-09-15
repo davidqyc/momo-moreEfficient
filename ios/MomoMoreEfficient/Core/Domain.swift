@@ -773,10 +773,10 @@ struct PendingBatchConfirmation: Equatable, Sendable {
     var updateCount: Int { updateSpellings.count }
     var totalCount: Int { createCount + updateCount }
 
-    var title: String { "确认执行 \(totalCount) 条？" }
+    var title: String { "确认写入释义 \(totalCount) 条？" }
 
     var actionTitle: String {
-        "确认执行 \(totalCount) 条（新建 \(createCount) · 更新 \(updateCount)）"
+        "确认写入释义 \(totalCount) 条（新建 \(createCount) · 更新 \(updateCount)）"
     }
 
     var message: String {
@@ -805,8 +805,8 @@ struct PendingPhraseConfirmation: Equatable, Sendable {
     let bindingDigest: String
 
     var count: Int { spellings.count }
-    var title: String { "确认新建 \(count) 条例句？" }
-    var actionTitle: String { "确认新建 \(count) 条例句" }
+    var title: String { "确认写入例句 \(count) 条？" }
+    var actionTitle: String { "确认写入例句 \(count) 条" }
     var message: String {
         [
             "共 \(count) 条：" + spellings.joined(separator: "、"),
