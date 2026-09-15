@@ -242,6 +242,14 @@ final class StudyExportStore: ObservableObject {
                     message: "墨墨报告共 \(expected) 条记录，但分页读取只安全取得 \(read) 条唯一记录。"
                         + "可能是数据正在同步；稍后重试。"
                 )
+            case let .coverageGap(expected, read, countedThroughFinalDate):
+                return Failure(
+                    title: "无法证明读取完整",
+                    message: "墨墨公开接口报告共 \(expected) 条学习记录，"
+                        + "但按其公开分页只能安全枚举 \(read) 条"
+                        + "（截至最后分页日期 \(countedThroughFinalDate) 条）。"
+                        + "当前接口无法证明剩余记录已完整读取，因此不会导出可能遗漏的名单。"
+                )
             case .paginationNotAdvancing:
                 return Failure(
                     title: "无法证明读取完整",
@@ -262,6 +270,14 @@ final class StudyExportStore: ObservableObject {
                         + "其他导出项不受影响；稍后重试可能恢复。"
                 )
             }
+        }
+        if error is StudyRecordDecodeError {
+            // User-facing copy stays generic; the exact field class travels
+            // only in diagnostics.
+            return Failure(
+                title: "读取失败",
+                message: "墨墨返回的学习记录包含无法安全读取的字段，不会展示可能错误的结果。"
+            )
         }
         if let companionError = error as? CompanionError {
             switch companionError {

@@ -270,8 +270,139 @@ final class StudyExportDiagnosticTests: XCTestCase {
         XCTAssertTrue(report.contains("records_page index=1 start=nil end=nil rows=1000 new=1000 total=1000"))
         XCTAssertTrue(report.contains("records_page index=2"))
         XCTAssertTrue(report.contains("records_done reason=expected_total pages=2"))
+        // A complete pagination never issues a coverage probe.
+        XCTAssertFalse(report.contains("records_coverage_probe"))
         XCTAssertFalse(report.contains("VOC_"))
         XCTAssertFalse(report.contains("word0"))
+    }
+
+    /// Coverage-probe events carry counts and the safe date boundary only.
+    func testCoverageProbeLogsCountsAndSafeDateOnly() async throws {
+        func date(_ day: Int, _ hour: Int) -> String {
+            String(format: "2026-03-%02dT%02d:00:00+08:00", day, hour)
+        }
+        func record(_ index: Int, _ date: String) -> [String: Any] {
+            studyRecord(
+                id: "VOC_\(index)", spelling: "word\(index)", addDate: "2026-01-01", nextStudyDate: date
+            )
+        }
+        let journal = makeJournal(tempJournalURL())
+        let runner = makeRunner(FakeHTTPTransport([
+            studyCountResponse(2710),
+            studyRecordsResponse((0..<1000).map { index in
+                record(index, index < 999 ? date(1, 0) : date(2, 1))
+            }),
+            studyRecordsResponse(
+                (999..<1000).map { record($0, date(2, 1)) }
+                    + (1000..<1565).map { record($0, $0 < 1564 ? date(3, 0) : date(3, 1)) }
+            ),
+            studyCountResponse(1600),
+        ]), journal: journal)
+        var thrown: Error?
+        do {
+            _ = try await runner.run(.allWords, control: ExecutionControl(), now: fixedNow, runID: "testrun1")
+        } catch {
+            thrown = error
+        }
+        XCTAssertEqual(
+            thrown as? StudyExportError,
+            .coverageGap(expected: 2710, read: 1565, countedThroughFinalDate: 1600)
+        )
+
+        let report = journal.formattedReport()
+        XCTAssertTrue(report.contains(
+            "records_coverage_probe expected_total=2710 unique_read=1565"
+                + " count_through_final_date=1600 unaccounted=1145"
+                + " final_date=2026-03-03T01:00:00+08:00"
+        ))
+        // Counts and a safe date boundary only — no identities or spellings.
+        XCTAssertFalse(report.contains("VOC_"))
+        XCTAssertFalse(report.contains("word0"))
+    }
+
+    /// Failure B's diagnostic contract: a decode failure names the exact
+    /// field class — and never the provider value — in the copied report.
+    func testDecodeFailureEmitsFieldCategoryWithoutValues() async throws {
+        var badStudyCount = studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01")
+        badStudyCount["study_count"] = "many"
+        let cases: [([String: Any], String)] = [
+            (studyRecord(id: "BAD ID!", spelling: "ok", addDate: "2026-01-01"), "studyRecordDecode.vocID"),
+            (studyRecord(id: "VOC_1", spelling: "", addDate: "2026-01-01"), "studyRecordDecode.spelling"),
+            (badStudyCount, "studyRecordDecode.studyCount"),
+            (studyRecord(id: "VOC_1", spelling: "ok", addDate: "not-a-date"), "studyRecordDecode.addDateFormat"),
+            (studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01", nextStudyDate: "soon"), "studyRecordDecode.nextStudyDateFormat"),
+            (studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01", tags: "NOPE"), "studyRecordDecode.tagsValue"),
+            (studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01", tags: ["WORSE"]), "studyRecordDecode.tagsValue"),
+        ]
+        for (fixture, expectedCategory) in cases {
+            let journal = makeJournal(tempJournalURL())
+            let store = makeStore(journal: journal)
+            let transport = FakeHTTPTransport([
+                studyCountResponse(1),
+                studyRecordsResponse([fixture]),
+            ])
+            store.start(.allWords, lease: try queryLease(transport))
+            await store.awaitRunCompletion()
+
+            guard case .failed = store.phase else {
+                return XCTFail("expected failed for \(expectedCategory)")
+            }
+            let report = journal.formattedReport()
+            XCTAssertTrue(
+                report.contains("run_failed category=\(expectedCategory)"),
+                "expected \(expectedCategory) in\n\(report)"
+            )
+            // No fixture values may leak into the copied diagnostics.
+            XCTAssertFalse(report.contains("BAD ID"))
+            XCTAssertFalse(report.contains("NOPE"))
+            XCTAssertFalse(report.contains("WORSE"))
+            XCTAssertFalse(report.contains("not-a-date"))
+        }
+    }
+
+    /// Wrong-typed containers get their own type categories.
+    func testDecodeTypeCategoriesForDatesAndTags() async throws {
+        var numberNextDate = studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01")
+        numberNextDate["next_study_date"] = 123
+        var numberTags = studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01")
+        numberTags["tags"] = 42
+        let typeCases: [([String: Any], String)] = [
+            (numberNextDate, "studyRecordDecode.nextStudyDateType"),
+            (numberTags, "studyRecordDecode.tagsType"),
+        ]
+        for (fixture, expectedCategory) in typeCases {
+            let journal = makeJournal(tempJournalURL())
+            let store = makeStore(journal: journal)
+            let transport = FakeHTTPTransport([
+                studyCountResponse(1),
+                studyRecordsResponse([fixture]),
+            ])
+            store.start(.allWords, lease: try queryLease(transport))
+            await store.awaitRunCompletion()
+            guard case .failed = store.phase else {
+                return XCTFail("expected failed for \(expectedCategory)")
+            }
+            XCTAssertTrue(
+                journal.formattedReport().contains("run_failed category=\(expectedCategory)"),
+                "expected \(expectedCategory)"
+            )
+        }
+
+        // A wrong-typed add_date is addDateType (not format).
+        let journal = makeJournal(tempJournalURL())
+        let store = makeStore(journal: journal)
+        var recordWithNumberAddDate = studyRecord(id: "VOC_1", spelling: "ok", addDate: "2026-01-01")
+        recordWithNumberAddDate["add_date"] = 20260101
+        let transport = FakeHTTPTransport([
+            studyCountResponse(1),
+            studyRecordsResponse([recordWithNumberAddDate]),
+        ])
+        store.start(.allWords, lease: try queryLease(transport))
+        await store.awaitRunCompletion()
+        guard case .failed = store.phase else {
+            return XCTFail("expected failed for addDateType")
+        }
+        XCTAssertTrue(journal.formattedReport().contains("run_failed category=studyRecordDecode.addDateType"))
     }
 
     func testCancellationLogsAndLaneStillReleases() async throws {

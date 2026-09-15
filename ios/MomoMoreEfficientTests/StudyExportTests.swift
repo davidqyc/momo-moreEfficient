@@ -300,26 +300,39 @@ final class StudyExportTests: XCTestCase {
         let dated = try await datedRunner.api.studyRecords(asCount: false)
         XCTAssertEqual(dated.records[0].addDate, studyFixedDate("2025-12-31T16:00:00+00:00"))
 
-        // Unknown tag value fails closed.
+        // The two first-party sources conflict on scalar-vs-array tags; the
+        // narrow shape both cover is scalar-or-array over the same closed
+        // enum, a scalar normalizing to a one-element array.
+        let (scalarRunner, _) = makeRunner(FakeHTTPTransport([studyRecordsResponse([
+            studyRecord(id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: "STICKING"),
+        ])]))
+        let scalarTags = try await scalarRunner.api.studyRecords(asCount: false)
+        XCTAssertEqual(scalarTags.records[0].tags, [.sticking])
+
+        // Unknown tag value fails closed with its field category.
         let unknownTag = await recordDecodeError(studyRecord(
             id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: ["NEW_TAG"]
         ))
-        XCTAssertEqual(unknownTag as? CompanionError, .itemResponseRejected)
-        // The official proto-derived type says array: a scalar is rejected.
-        let scalarTag = await recordDecodeError(studyRecord(
-            id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: "STICKING"
+        XCTAssertEqual(unknownTag as? StudyRecordDecodeError, StudyRecordDecodeError(field: .tagsValue))
+        let unknownScalarTag = await recordDecodeError(studyRecord(
+            id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: "NEW_TAG"
         ))
-        XCTAssertEqual(scalarTag as? CompanionError, .itemResponseRejected)
-        // Malformed required-shape add_date (present, unparsable) fails closed.
+        XCTAssertEqual(unknownScalarTag as? StudyRecordDecodeError, StudyRecordDecodeError(field: .tagsValue))
+        // Wrong container type fails closed as tagsType.
+        let wrongContainer = await recordDecodeError(studyRecord(
+            id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: 42
+        ))
+        XCTAssertEqual(wrongContainer as? StudyRecordDecodeError, StudyRecordDecodeError(field: .tagsType))
+        // Present-but-malformed add_date fails closed as addDateFormat.
         let malformedAddDate = await recordDecodeError(studyRecord(
             id: "VOC_1", spelling: "apple", addDate: "not-a-date"
         ))
-        XCTAssertEqual(malformedAddDate as? CompanionError, .itemResponseRejected)
+        XCTAssertEqual(malformedAddDate as? StudyRecordDecodeError, StudyRecordDecodeError(field: .addDateFormat))
         // Present-but-malformed optional next_study_date fails closed.
         let malformedNext = await recordDecodeError(studyRecord(
             id: "VOC_1", spelling: "apple", addDate: "2026-01-01", nextStudyDate: "soon"
         ))
-        XCTAssertEqual(malformedNext as? CompanionError, .itemResponseRejected)
+        XCTAssertEqual(malformedNext as? StudyRecordDecodeError, StudyRecordDecodeError(field: .nextStudyDateFormat))
     }
 
     /// The official proto-derived type declares `add_date?: string`: a record
@@ -580,9 +593,9 @@ final class StudyExportTests: XCTestCase {
                 studyRecord(id: "VOC_BAD", spelling: "bad", addDate: "20/03/2026"),
             ]),
         ])
-        // A malformed required-shape add_date must fail the preset, never
-        // silently skip the record and still claim completeness.
-        XCTAssertEqual(thrown as? CompanionError, .itemResponseRejected)
+        // A malformed add_date must fail the preset, never silently skip the
+        // record and still claim completeness — with the exact field class.
+        XCTAssertEqual(thrown as? StudyRecordDecodeError, StudyRecordDecodeError(field: .addDateFormat))
     }
 
     /// 今天新添加 is the one preset that must classify *every* record by add
@@ -791,17 +804,130 @@ final class StudyExportTests: XCTestCase {
         XCTAssertEqual(transport.requests.count, 3)
     }
 
-    func testShortPageBelowProviderCountFailsClosed() async throws {
-        let thrown = await runnerError(.allWords, [
-            studyCountResponse(50),
+    /// Terminal short page below the provider's own count — the Owner's
+    /// real-use shape, synthetic (unique totals 1000 / 1186 / 1471 / 1565
+    /// against expected 2710): exactly one read-only coverage probe runs
+    /// against the final decoded record's date, its numbers are logged, and
+    /// the preset still fails closed — never a partial success.
+    func testTerminalMismatchIssuesOneProbeAndFailsClosed() async throws {
+        func date(_ day: Int, _ hour: Int) -> String {
+            String(format: "2026-03-%02dT%02d:00:00+08:00", day, hour)
+        }
+        func record(_ index: Int, _ date: String) -> [[String: Any]].Element {
+            studyRecord(
+                id: "VOC_\(index)", spelling: "word\(index)", addDate: "2026-01-01", nextStudyDate: date
+            )
+        }
+        // Each page's last record carries a fresh date so the documented
+        // boundary advances; duplicate rows re-use earlier identities.
+        // rows 1000 / 1000 / 1000 / 673; new 1000 / 186 / 285 / 94.
+        let page1: [[String: Any]] = (0..<1000).map { index in
+            record(
+                index,
+                index < 900 ? date(1, 0) : (index < 999 ? date(2, 0) : date(2, 1))
+            )
+        }
+        let page2: [[String: Any]] =
+            (186..<1000).map { record($0, $0 < 900 ? date(1, 0) : ($0 < 999 ? date(2, 0) : date(2, 1))) }
+            + (1000..<1186).map { record($0, $0 < 1185 ? date(2, 2) : date(2, 3)) }
+        let page3: [[String: Any]] =
+            (1000..<1186).map { record($0, $0 < 1185 ? date(2, 2) : date(2, 3)) }
+            + (0..<529).map { record($0, $0 < 528 ? date(1, 0) : date(2, 0)) }
+            + (1186..<1471).map { record($0, $0 < 1470 ? date(3, 0) : date(3, 1)) }
+        let page4: [[String: Any]] =
+            (0..<579).map { record($0, $0 < 528 ? date(1, 0) : date(2, 0)) }
+            + (1471..<1565).map { record($0, $0 < 1564 ? date(4, 0) : date(4, 1)) }
+
+        let transport = FakeHTTPTransport([
+            studyCountResponse(2710),
+            studyRecordsResponse(page1),
+            studyRecordsResponse(page2),
+            studyRecordsResponse(page3),
+            studyRecordsResponse(page4),
+            // The single coverage probe response.
+            studyCountResponse(1600),
+        ])
+        let (runner, _) = makeRunner(transport)
+        var thrown: Error?
+        do {
+            _ = try await runner.run(.allWords, control: ExecutionControl(), now: fixedNow, runID: "probe1")
+        } catch {
+            thrown = error
+        }
+
+        XCTAssertEqual(
+            thrown as? StudyExportError,
+            .coverageGap(expected: 2710, read: 1565, countedThroughFinalDate: 1600)
+        )
+        // count + 4 pages + exactly one probe = 6 requests. No partial success.
+        XCTAssertEqual(transport.requests.count, 6)
+        let probeBody = try requestBody(transport, index: 5)
+        XCTAssertEqual(probeBody["as_count"] as? Bool, true)
+        XCTAssertEqual(probeBody["voc_ids"] as? [String], [])
+        let range = probeBody["next_study_date"] as? [String: Any]
+        XCTAssertEqual(range?["end"] as? String, date(4, 1))
+        XCTAssertNil(range?["start"])
+    }
+
+    /// A failed probe never replaces the original truthful mismatch.
+    func testProbeFailurePreservesOriginalMismatch() async throws {
+        func date(_ day: Int, _ hour: Int) -> String {
+            String(format: "2026-03-%02dT%02d:00:00+08:00", day, hour)
+        }
+        func record(_ index: Int, _ date: String) -> [[String: Any]].Element {
+            studyRecord(
+                id: "VOC_\(index)", spelling: "word\(index)", addDate: "2026-01-01", nextStudyDate: date
+            )
+        }
+        let page1: [[String: Any]] = (0..<1000).map { index in
+            record(index, index < 999 ? date(1, 0) : date(2, 1))
+        }
+        let page2: [[String: Any]] =
+            (999..<1000).map { record($0, date(2, 1)) }
+            + (1000..<1565).map { record($0, $0 < 1564 ? date(3, 0) : date(3, 1)) }
+        let transport = FakeHTTPTransport([
+            studyCountResponse(2710),
+            studyRecordsResponse(page1),
+            studyRecordsResponse(page2),
+            .failure(CompanionError.transport),
+        ])
+        let (runner, _) = makeRunner(transport)
+        var thrown: Error?
+        do {
+            _ = try await runner.run(.allWords, control: ExecutionControl(), now: fixedNow, runID: "probe2")
+        } catch {
+            thrown = error
+        }
+        XCTAssertEqual(
+            thrown as? StudyExportError,
+            .recordCountMismatch(expected: 2710, read: 1565)
+        )
+        XCTAssertEqual(transport.requests.count, 4)
+    }
+
+    /// Failure A regression: the live provider documents scalar tags, so a
+    /// `reviewWithin(1)` fixture whose records carry scalar tags must now
+    /// succeed end to end.
+    func testReviewWithinSucceedsWithScalarTagsFixture() async throws {
+        let (runner, transport) = makeRunner(FakeHTTPTransport([
+            studyCountResponse(2),
             studyRecordsResponse([
                 studyRecord(
-                    id: "VOC_1", spelling: "one", addDate: "2026-01-01",
-                    nextStudyDate: "2026-03-01T00:00:00+08:00"
+                    id: "VOC_A", spelling: "apple", addDate: "2026-01-01",
+                    nextStudyDate: "2026-03-21T00:00:00+08:00", tags: "STICKING"
+                ),
+                studyRecord(
+                    id: "VOC_B", spelling: "banana", addDate: "2026-01-01",
+                    nextStudyDate: "2026-03-21T06:00:00+08:00", tags: "STUDY_RECORD_TAG_UNSPECIFIED"
                 ),
             ]),
-        ])
-        XCTAssertEqual(thrown as? StudyExportError, .recordCountMismatch(expected: 50, read: 1))
+        ]))
+        let outcome = try await runner.run(
+            .reviewWithin(days: 1), control: ExecutionControl(), now: fixedNow, runID: "probe3"
+        )
+        XCTAssertEqual(outcome.words, ["apple", "banana"])
+        XCTAssertEqual(outcome.completeness, .complete)
+        XCTAssertEqual(transport.requests.count, 2)
     }
 
     func testBoundaryRecordWithoutNextStudyDateFailsClosed() async throws {
@@ -978,6 +1104,43 @@ final class StudyExportTests: XCTestCase {
             return XCTFail("expected failed, got \(store.phase)")
         }
         XCTAssertEqual(failure.title, "无法证明读取完整")
+        XCTAssertNil(store.copyPayload)
+    }
+
+    /// The Owner-facing coverage-gap copy states the provider's count, the
+    /// safely enumerable count, and refuses the export — never a partial
+    /// list labelled complete.
+    func testCoverageGapFailureSurfacesTruthfulCopy() async throws {
+        let store = makeStore()
+        func date(_ day: Int, _ hour: Int) -> String {
+            String(format: "2026-03-%02dT%02d:00:00+08:00", day, hour)
+        }
+        func record(_ index: Int, _ date: String) -> [String: Any] {
+            studyRecord(
+                id: "VOC_\(index)", spelling: "word\(index)", addDate: "2026-01-01", nextStudyDate: date
+            )
+        }
+        let transport = FakeHTTPTransport([
+            studyCountResponse(2710),
+            studyRecordsResponse((0..<1000).map { index in
+                record(index, index < 999 ? date(1, 0) : date(2, 1))
+            }),
+            studyRecordsResponse(
+                (999..<1000).map { record($0, date(2, 1)) }
+                    + (1000..<1565).map { record($0, $0 < 1564 ? date(3, 0) : date(3, 1)) }
+            ),
+            studyCountResponse(1600),
+        ])
+        store.start(.allWords, lease: try queryLease(transport))
+        await store.awaitRunCompletion()
+
+        guard case let .failed(_, failure) = store.phase else {
+            return XCTFail("expected failed, got \(store.phase)")
+        }
+        XCTAssertEqual(failure.title, "无法证明读取完整")
+        XCTAssertTrue(failure.message.contains("2710"))
+        XCTAssertTrue(failure.message.contains("1565"))
+        XCTAssertTrue(failure.message.contains("不会导出可能遗漏的名单"))
         XCTAssertNil(store.copyPayload)
     }
 }

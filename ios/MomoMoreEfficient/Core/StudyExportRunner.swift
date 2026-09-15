@@ -271,6 +271,9 @@ struct StudyExportRunner {
         var currentBoundary: String?
         var pagesRemaining = expectedTotal + 1
         var pageIndex = 0
+        // The final successfully decoded record's actual `next_study_date` —
+        // the only safe end boundary for the terminal coverage probe.
+        var lastDecodedNextDate: Date?
 
         while true {
             guard !control.isCancellationRequested else { throw CompanionError.cancelled }
@@ -286,6 +289,9 @@ struct StudyExportRunner {
                 collected.append(record)
                 newCount += 1
             }
+            if let lastDate = page.records.last?.nextStudyDate {
+                lastDecodedNextDate = lastDate
+            }
             log(
                 "records_page index=\(pageIndex)"
                     + " start=\(currentBoundary ?? "nil") end=\(formattedEnd ?? "nil")"
@@ -297,7 +303,16 @@ struct StudyExportRunner {
                 return (collected, .complete)
             }
             guard page.records.count == CompanionConstants.studyPageSize else {
-                throw StudyExportError.recordCountMismatch(expected: expectedTotal, read: collected.count)
+                // Terminal short page below the provider's own total: the
+                // documented recipe is exhausted. Issue exactly one distinct
+                // read-only coverage probe to size the gap, then fail closed.
+                return try await coverageProbeOnTerminalMismatch(
+                    expectedTotal: expectedTotal,
+                    collected: collected,
+                    finalDate: lastDecodedNextDate,
+                    control: control,
+                    runID: runID
+                )
             }
             // Full page: slide, or fail closed. Records without a usable
             // `next_study_date` cannot seed the next window, and the documented
@@ -319,6 +334,71 @@ struct StudyExportRunner {
                 // termination bound the contract requires.
                 throw StudyExportError.paginationNotAdvancing
             }
+        }
+    }
+
+    /// One distinct read-only count probe when the documented sliding windows
+    /// end at a terminal short page but unique records are still below the
+    /// provider's own unfiltered `as_count` total. It sizes the gap —
+    /// `count_through_final_date` vs `unique_read` — using the final decoded
+    /// record's actual `next_study_date` as an exact end boundary, logs the
+    /// counts, and **still fails closed**: no synthesized records, no partial
+    /// export, no invented pagination. This is a diagnostic read, never an
+    /// automatic retry of the failed page.
+    private func coverageProbeOnTerminalMismatch(
+        expectedTotal: Int,
+        collected: [StudyRecord],
+        finalDate: Date?,
+        control: ExecutionControl,
+        runID: String
+    ) async throws -> (records: [StudyRecord], completeness: StudyExportCompleteness) {
+        let originalMismatch = StudyExportError.recordCountMismatch(
+            expected: expectedTotal, read: collected.count
+        )
+        guard let finalDate else {
+            log(
+                "records_coverage_probe skipped reason=final_date_unavailable"
+                    + " expected_total=\(expectedTotal) unique_read=\(collected.count)",
+                runID: runID
+            )
+            throw originalMismatch
+        }
+        let formattedFinal = StudyExportSemantics.beijingISO8601(finalDate)
+        do {
+            let probe = try await api.studyRecords(
+                nextStudyDateStart: nil,
+                nextStudyDateEnd: formattedFinal,
+                asCount: true,
+                control: control
+            )
+            let unaccounted = max(expectedTotal - collected.count, 0)
+            log(
+                "records_coverage_probe expected_total=\(expectedTotal)"
+                    + " unique_read=\(collected.count)"
+                    + " count_through_final_date=\(probe.count)"
+                    + " unaccounted=\(unaccounted)"
+                    + " final_date=\(formattedFinal)",
+                runID: runID
+            )
+            throw StudyExportError.coverageGap(
+                expected: expectedTotal,
+                read: collected.count,
+                countedThroughFinalDate: probe.count
+            )
+        } catch let gap as StudyExportError {
+            throw gap
+        } catch is CancellationError {
+            throw CompanionError.cancelled
+        } catch let error as CompanionError where error == .cancelled {
+            throw error
+        } catch {
+            // A failed probe never replaces the original truthful mismatch.
+            log(
+                "records_coverage_probe_error category=\(StudyExportDiagnosticCategory.sanitized(error))"
+                    + " final_date=\(formattedFinal)",
+                runID: runID
+            )
+            throw originalMismatch
         }
     }
 }

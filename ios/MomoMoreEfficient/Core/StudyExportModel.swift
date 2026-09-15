@@ -100,6 +100,30 @@ enum StudyExportError: Error, Equatable {
     /// its `add_date` is absent; exporting it as "today added" would be a
     /// guess, so this preset alone fails closed.
     case addDateUnavailable
+    /// The documented sliding windows reached their terminal short page, the
+    /// one coverage probe confirmed records were still unaccounted for, and
+    /// the provider offers no documented way to enumerate the remainder.
+    case coverageGap(expected: Int, read: Int, countedThroughFinalDate: Int)
+}
+
+/// Which field class of a StudyRecord failed its closed decode. Fixed
+/// category names only — never the raw provider value — so a future copied
+/// diagnostic names the exact field class without any private content.
+enum StudyRecordDecodeField: String, Equatable, Sendable {
+    case recordShape
+    case vocID
+    case spelling
+    case studyCount
+    case addDateType
+    case addDateFormat
+    case nextStudyDateType
+    case nextStudyDateFormat
+    case tagsType
+    case tagsValue
+}
+
+struct StudyRecordDecodeError: Error, Equatable, Sendable {
+    let field: StudyRecordDecodeField
 }
 
 // MARK: - Presets

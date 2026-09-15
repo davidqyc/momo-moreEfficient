@@ -491,13 +491,22 @@ final class MaimemoTransport {
             throw CompanionError.responseRejected
         }
         let records = try rawRecords.map { value -> StudyRecord in
-            guard let record = value as? [String: Any],
-                  let vocabularyID = record["voc_id"] as? String,
-                  isSafeIdentifier(vocabularyID),
-                  let spelling = safeStudySpelling(record["voc_spelling"]),
-                  let studyCount = strictInteger(record["study_count"])
+            // Every field failure carries its fixed decode-field category so
+            // diagnostics can name the exact field class; the provider value
+            // itself is never carried or logged.
+            guard let record = value as? [String: Any] else {
+                throw StudyRecordDecodeError(field: .recordShape)
+            }
+            guard let vocabularyID = record["voc_id"] as? String,
+                  isSafeIdentifier(vocabularyID)
             else {
-                throw CompanionError.itemResponseRejected
+                throw StudyRecordDecodeError(field: .vocID)
+            }
+            guard let spelling = safeStudySpelling(record["voc_spelling"]) else {
+                throw StudyRecordDecodeError(field: .spelling)
+            }
+            guard let studyCount = strictInteger(record["study_count"]) else {
+                throw StudyRecordDecodeError(field: .studyCount)
             }
             // Optional documented date (`add_date?` in the current
             // proto-derived official type): absent or null decodes as `nil`,
@@ -505,9 +514,15 @@ final class MaimemoTransport {
             // Presets that do not classify by add date must not fail on its
             // absence; `今天新添加` fail-closes on `nil` itself.
             let addDate: Date?
-            if let raw = try studyOptionalString(record["add_date"]) {
-                guard let parsed = StudyDateParsing.parse(raw) else {
-                    throw CompanionError.itemResponseRejected
+            let rawAddDate: String?
+            do {
+                rawAddDate = try studyOptionalString(record["add_date"])
+            } catch {
+                throw StudyRecordDecodeError(field: .addDateType)
+            }
+            if let rawAddDate {
+                guard let parsed = StudyDateParsing.parse(rawAddDate) else {
+                    throw StudyRecordDecodeError(field: .addDateFormat)
                 }
                 addDate = parsed
             } else {
@@ -517,21 +532,28 @@ final class MaimemoTransport {
             // rejection: silently dropping it could both lose a word and
             // corrupt the pagination boundary.
             let nextStudyDate: Date?
-            if let raw = try studyOptionalString(record["next_study_date"]) {
-                guard let parsed = StudyDateParsing.parse(raw) else {
-                    throw CompanionError.itemResponseRejected
+            let rawNext: String?
+            do {
+                rawNext = try studyOptionalString(record["next_study_date"])
+            } catch {
+                throw StudyRecordDecodeError(field: .nextStudyDateType)
+            }
+            if let rawNext {
+                guard let parsed = StudyDateParsing.parse(rawNext) else {
+                    throw StudyRecordDecodeError(field: .nextStudyDateFormat)
                 }
                 nextStudyDate = parsed
             } else {
                 nextStudyDate = nil
             }
+            let tags = try studyRecordTags(record["tags"])
             return StudyRecord(
                 vocabularyID: vocabularyID,
                 spelling: spelling,
                 addDate: addDate,
                 nextStudyDate: nextStudyDate,
                 studyCount: studyCount,
-                tags: try studyRecordTags(record["tags"])
+                tags: tags
             )
         }
         return StudyRecordsPage(records: records, count: count)
@@ -561,18 +583,26 @@ final class MaimemoTransport {
         return response
     }
 
-    /// The official proto-derived `StudyRecord.tags` is an **array** whose
-    /// elements come from the closed generated enum (including the neutral
-    /// `STUDY_RECORD_TAG_UNSPECIFIED` sentinel). No first-party source
-    /// documents a scalar wire shape, so a scalar is a decode rejection, and
-    /// any element outside the official enum fails closed.
+    /// The two current first-party sources genuinely conflict on the
+    /// `StudyRecord.tags` wire shape: the human reference documents a scalar
+    /// `"STICKING" | "WELL_FAMILIAR"` while the proto-derived official type
+    /// declares an array (with the neutral sentinel). The narrow shape both
+    /// cover is therefore scalar-or-array with every value from the same
+    /// closed enum; a scalar normalizes to a one-element array. Unknown
+    /// values and wrong container types stay fail-closed, each with its fixed
+    /// decode-field category.
     private func studyRecordTags(_ value: Any?) throws -> [StudyRecordTag] {
-        guard let elements = value as? [String] else {
-            throw CompanionError.itemResponseRejected
+        let elements: [String]
+        if let scalar = value as? String {
+            elements = [scalar]
+        } else if let array = value as? [String] {
+            elements = array
+        } else {
+            throw StudyRecordDecodeError(field: .tagsType)
         }
         return try elements.map { element in
             guard let tag = StudyRecordTag(rawValue: element) else {
-                throw CompanionError.itemResponseRejected
+                throw StudyRecordDecodeError(field: .tagsValue)
             }
             return tag
         }

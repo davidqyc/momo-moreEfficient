@@ -32,6 +32,9 @@ enum StudyExportDiagnosticCategory {
         switch error {
         case let error as CompanionError:
             return "companion.\(error.rawValue)"
+        case let error as StudyRecordDecodeError:
+            // Fixed field-class name only; never any provider value.
+            return "studyRecordDecode.\(error.field.rawValue)"
         case let error as StudyExportError:
             switch error {
             case let .recordCountMismatch(expected, read):
@@ -42,6 +45,9 @@ enum StudyExportDiagnosticCategory {
                 return "studyExport.paginationBoundaryUnavailable"
             case .addDateUnavailable:
                 return "studyExport.addDateUnavailable"
+            case let .coverageGap(expected, read, countedThroughFinalDate):
+                return "studyExport.coverageGap expected=\(expected) read=\(read)"
+                    + " counted_through_final_date=\(countedThroughFinalDate)"
             }
         case is CancellationError:
             return "cancelled"
