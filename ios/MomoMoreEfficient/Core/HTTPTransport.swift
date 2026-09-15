@@ -18,12 +18,21 @@ enum InterpretationRoute: Equatable, Sendable {
     /// whose base URL is `https://open.maimemo.com/open/` and which lists notes
     /// with `GET /api/v1/notes?voc_id=…`. No note mutation route exists here.
     case notes(vocabularyID: String)
+    /// Read-only Study (Beta) reads (#155), per the first-party
+    /// `maimemo/memo-skills@main:memo-api/references/study-api.md`. All three
+    /// are documented POST endpoints; the two mutation endpoints that document
+    /// also lists (`/study/add_words`, `/study/advance_study`) deliberately
+    /// have no route here.
+    case studyProgress
+    case studyTodayItems
+    case studyRecords
 
     var method: HTTPMethod {
         switch self {
         case .vocabulary, .interpretations, .phrases, .notes:
             return .get
-        case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase:
+        case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase,
+             .studyProgress, .studyTodayItems, .studyRecords:
             return .post
         }
     }
@@ -38,7 +47,8 @@ enum InterpretationRoute: Equatable, Sendable {
     /// accounted for or retried as a mutation.
     var isMutating: Bool {
         switch self {
-        case .vocabulary, .vocabularyQuery, .interpretations, .phrases, .notes:
+        case .vocabulary, .vocabularyQuery, .interpretations, .phrases, .notes,
+             .studyProgress, .studyTodayItems, .studyRecords:
             return false
         case .createInterpretation, .updateInterpretation, .createPhrase:
             return true
@@ -61,6 +71,12 @@ enum InterpretationRoute: Equatable, Sendable {
             return "/open/api/v1/phrases"
         case .notes:
             return "/open/api/v1/notes"
+        case .studyProgress:
+            return "/open/api/v1/study/get_study_progress"
+        case .studyTodayItems:
+            return "/open/api/v1/study/get_today_items"
+        case .studyRecords:
+            return "/open/api/v1/study/query_study_records"
         }
     }
 
@@ -83,7 +99,8 @@ enum InterpretationRoute: Equatable, Sendable {
         case let .notes(vocabularyID):
             guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
-        case .vocabularyQuery, .createInterpretation, .createPhrase:
+        case .vocabularyQuery, .createInterpretation, .createPhrase,
+             .studyProgress, .studyTodayItems, .studyRecords:
             break
         case let .updateInterpretation(recordID):
             guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }

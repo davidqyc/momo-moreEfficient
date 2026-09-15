@@ -78,6 +78,12 @@ struct QueryView: View {
                             + "不同账号的结果不会混用。"
                     )
                 }
+                if let handoffCount = store.studyExportHandoffCount {
+                    Banner(
+                        title: "来自单词导出 · \(handoffCount) 个词 · 尚未发起查阅",
+                        message: "词表已装入下方输入；点按「查阅 \(store.startActionCount) 项」后才会开始读取。"
+                    )
+                }
                 if store.returnableResult {
                     Banner(
                         title: "原结果仍保留",

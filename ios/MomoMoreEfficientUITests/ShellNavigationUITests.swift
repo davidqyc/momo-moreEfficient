@@ -19,15 +19,43 @@ final class ShellNavigationUITests: XCTestCase {
         let app = launch()
 
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
-        for entry in ["释义录入", "例句录入", "批量查阅"] {
+        for entry in ["释义录入", "例句录入", "批量查阅", "单词导出"] {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
         XCTAssertTrue(app.buttons["设置"].exists)
+        // The #155 directive places 单词导出 *under* the existing read-only
+        // 查阅 section; no separate export section exists.
+        XCTAssertTrue(app.staticTexts["查阅 · 只读取，不写入"].exists)
+        XCTAssertFalse(app.staticTexts["导出 · 只读取，不写入"].exists)
 
         // Frozen out of Home: no account row, no History summary, no tabs.
         XCTAssertFalse(app.staticTexts["连接状态"].exists)
         XCTAssertFalse(app.buttons["历史"].exists)
         XCTAssertEqual(app.tabBars.count, 0)
+    }
+
+    // MARK: - Study export (#155)
+
+    func testStudyExportEntryReachesPresetListAndDisconnectedGate() {
+        let app = launch()
+        app.buttons["单词导出"].tap()
+
+        XCTAssertTrue(app.staticTexts["单词导出"].waitForExistence(timeout: 5))
+        // The frozen preset list, reachable while disconnected.
+        for preset in ["今天已学", "今日待复习", "今天新添加", "今天新学", "今天忘记", "今天模糊", "顽固词", "熟知词", "全部学习词"] {
+            XCTAssertTrue(app.buttons[preset].exists, preset)
+        }
+        XCTAssertTrue(app.buttons["N 天内复习"].exists)
+        // Disconnected: presets are visibly gated with a truthful why-line.
+        XCTAssertTrue(app.staticTexts["连接墨墨账号后可导出"].exists)
+        // Owner standing rule (#155 unstable): compact on-device diagnostics
+        // stay visible and copyable on the normal export screen.
+        XCTAssertTrue(app.staticTexts["诊断 · 最近一次运行"].exists)
+        XCTAssertTrue(app.buttons["复制诊断"].exists)
+        XCTAssertTrue(app.buttons["清除诊断"].exists)
+
+        back(app)
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
     }
 
     // MARK: - Settings
@@ -172,7 +200,7 @@ final class ShellNavigationUITests: XCTestCase {
         let app = launch(contentSize: "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge")
 
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
-        for entry in ["释义录入", "例句录入", "批量查阅"] {
+        for entry in ["释义录入", "例句录入", "批量查阅", "单词导出"] {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
 
@@ -226,7 +254,7 @@ final class ShellNavigationUITests: XCTestCase {
         let create = app.buttons["新建 1 条例句"]
         XCTAssertTrue(create.waitForExistence(timeout: 20))
         create.tap()
-        app.buttons["确认新建 1 条例句"].tap()
+        app.buttons["确认写入例句 1 条"].tap()
         XCTAssertTrue(app.staticTexts["已完成 1 条例句 · 新建 1"].waitForExistence(timeout: 30))
         app.buttons["例句历史"].tap()
         let receipt = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", spelling)).firstMatch

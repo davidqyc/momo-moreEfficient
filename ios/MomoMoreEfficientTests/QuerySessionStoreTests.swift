@@ -774,4 +774,75 @@ final class QuerySessionStoreTests: XCTestCase {
             notesResponse([]),
         ]
     }
+
+    // MARK: - Study Export handoff (#155/#161)
+
+    /// An explicit handoff installs the exact newline spellings, discards the
+    /// prior completed result/filter/scroll state, preserves the account
+    /// identity, and never touches the network or the clipboard.
+    func testReplaceInputFromStudyExportInstallsExactWordsAndClearsPriorState() async throws {
+        let store = QuerySessionStore()
+        store.updateInput("alpha\nbeta")
+        let transport = FakeHTTPTransport(completedRunResponses())
+        store.start(lease: try queryLease(transport))
+        await store.awaitRunCompletion()
+        XCTAssertEqual(store.phase, .completed)
+        let identityBeforeHandoff = store.sessionIdentity
+        store.setFilter(QueryFilter(
+            interpretation: .positive, phrase: .any, note: .any, readStatus: .any, inabilityReasons: []
+        ))
+        XCTAssertTrue(store.filter.isActive)
+
+        let handed = store.replaceInputFromStudyExport([
+            "apple", "give up", "vice-versa", "   ", "",
+        ])
+        XCTAssertTrue(handed)
+        // Prior result/filter state discarded; phase back to input.
+        XCTAssertEqual(store.phase, .input)
+        XCTAssertEqual(store.rows, [])
+        XCTAssertFalse(store.filter.isActive)
+        XCTAssertNil(store.scrollAnchor)
+        // Exact newline text; entries with spaces/hyphens stay one input each;
+        // empty words dropped.
+        XCTAssertEqual(store.inputText, "apple\ngive up\nvice-versa")
+        XCTAssertEqual(store.studyExportHandoffCount, 3)
+        XCTAssertEqual(store.parse?.visibleCount, 3)
+        // The current account identity is preserved untouched.
+        XCTAssertEqual(store.sessionIdentity, identityBeforeHandoff)
+        // The handoff itself performs zero provider requests.
+        XCTAssertEqual(transport.requests.count, completedRunResponses().count)
+    }
+
+    func testHandoffRefusesWhileQueryIsRunning() async throws {
+        let store = QuerySessionStore()
+        store.updateInput("alpha")
+        let transport = SteppedHTTPTransport([resolvedQueryResponse(["alpha"])])
+        store.start(lease: try queryLease(transport))
+        await transport.waitUntilParked()
+        XCTAssertTrue(store.phase.isRunning)
+
+        // A running Query refuses replacement rather than being stopped.
+        XCTAssertFalse(store.replaceInputFromStudyExport(["one", "two"]))
+        XCTAssertNil(store.studyExportHandoffCount)
+        XCTAssertEqual(store.inputText, "alpha")
+
+        store.stop()
+        await transport.release()
+        await store.awaitRunCompletion()
+    }
+
+    func testManualEditClearsHandoffNote() {
+        let store = QuerySessionStore()
+        XCTAssertTrue(store.replaceInputFromStudyExport(["apple", "banana"]))
+        XCTAssertEqual(store.studyExportHandoffCount, 2)
+        store.updateInput("apple\nbanana\ncherry")
+        XCTAssertNil(store.studyExportHandoffCount)
+    }
+
+    func testHandoffRejectsEmptyWordLists() {
+        let store = QuerySessionStore()
+        XCTAssertFalse(store.replaceInputFromStudyExport(["", "   "]))
+        XCTAssertNil(store.studyExportHandoffCount)
+        XCTAssertEqual(store.inputText, "")
+    }
 }
