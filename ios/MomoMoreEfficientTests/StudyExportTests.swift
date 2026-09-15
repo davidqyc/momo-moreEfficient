@@ -124,6 +124,86 @@ final class StudyExportTests: XCTestCase {
         }
     }
 
+    // MARK: - Provider request contract
+
+    /// The proto-derived official request types make `voc_ids` / `spellings`
+    /// required (empty for v1's unfiltered reads) and the official CLI always
+    /// sends them; filters are added only when requested.
+    func testTodayRequestSendsGeneratedTypeRequiredFields() async throws {
+        let (runner, transport) = makeRunner(FakeHTTPTransport([studyTodayItemsResponse([])]))
+        _ = try await runner.api.studyTodayItems()
+        let body = try requestBody(transport, index: 0)
+        XCTAssertEqual(body["voc_ids"] as? [String], [])
+        XCTAssertEqual(body["spellings"] as? [String], [])
+        XCTAssertEqual(body["limit"] as? Int, 1000)
+        XCTAssertNil(body["is_finished"])
+        XCTAssertNil(body["is_new"])
+
+        // is_finished=true adds exactly that filter, retaining empty arrays.
+        let (finishedRunner, finishedTransport) = makeRunner(FakeHTTPTransport([
+            studyTodayItemsResponse([]),
+        ]))
+        _ = try await finishedRunner.api.studyTodayItems(isFinished: true)
+        let finishedBody = try requestBody(finishedTransport, index: 0)
+        XCTAssertEqual(finishedBody["is_finished"] as? Bool, true)
+        XCTAssertNil(finishedBody["is_new"])
+        XCTAssertEqual(finishedBody["voc_ids"] as? [String], [])
+        XCTAssertEqual(finishedBody["spellings"] as? [String], [])
+        XCTAssertEqual(finishedBody["limit"] as? Int, 1000)
+
+        // is_new=true likewise.
+        let (newRunner, newTransport) = makeRunner(FakeHTTPTransport([
+            studyTodayItemsResponse([]),
+        ]))
+        _ = try await newRunner.api.studyTodayItems(isNew: true)
+        let newBody = try requestBody(newTransport, index: 0)
+        XCTAssertEqual(newBody["is_new"] as? Bool, true)
+        XCTAssertNil(newBody["is_finished"])
+        XCTAssertEqual(newBody["voc_ids"] as? [String], [])
+        XCTAssertEqual(newBody["spellings"] as? [String], [])
+    }
+
+    /// `QueryStudyRecordsRequest` sends an explicit `as_count` boolean on
+    /// every page — data pages send `false`, never omit it — plus the empty
+    /// identity arrays and the limit.
+    func testRecordsRequestSendsExplicitAsCountAndEmptyArrays() async throws {
+        // Count page.
+        let (countRunner, countTransport) = makeRunner(FakeHTTPTransport([studyCountResponse(0)]))
+        _ = try await countRunner.api.studyRecords(asCount: true)
+        let countBody = try requestBody(countTransport, index: 0)
+        XCTAssertEqual(countBody["voc_ids"] as? [String], [])
+        XCTAssertEqual(countBody["spellings"] as? [String], [])
+        XCTAssertEqual(countBody["as_count"] as? Bool, true)
+        XCTAssertEqual(countBody["limit"] as? Int, 1000)
+        XCTAssertNil(countBody["next_study_date"])
+
+        // Ordinary data page.
+        let (dataRunner, dataTransport) = makeRunner(FakeHTTPTransport([studyRecordsResponse([])]))
+        _ = try await dataRunner.api.studyRecords(asCount: false)
+        let dataBody = try requestBody(dataTransport, index: 0)
+        XCTAssertEqual(dataBody["voc_ids"] as? [String], [])
+        XCTAssertEqual(dataBody["spellings"] as? [String], [])
+        XCTAssertEqual(dataBody["as_count"] as? Bool, false)
+        XCTAssertEqual(dataBody["limit"] as? Int, 1000)
+
+        // Ranged data page keeps the explicit false plus the exact range.
+        let (rangedRunner, rangedTransport) = makeRunner(FakeHTTPTransport([
+            studyRecordsResponse([]),
+        ]))
+        _ = try await rangedRunner.api.studyRecords(
+            nextStudyDateStart: "2026-03-02T00:00:00+08:00",
+            nextStudyDateEnd: "2026-03-21T12:00:00+08:00",
+            asCount: false
+        )
+        let rangedBody = try requestBody(rangedTransport, index: 0)
+        XCTAssertEqual(rangedBody["as_count"] as? Bool, false)
+        XCTAssertEqual(rangedBody["voc_ids"] as? [String], [])
+        XCTAssertEqual(rangedBody["spellings"] as? [String], [])
+        let range = rangedBody["next_study_date"] as? [String: Any]
+        XCTAssertEqual(range?["start"] as? String, "2026-03-02T00:00:00+08:00")
+        XCTAssertEqual(range?["end"] as? String, "2026-03-21T12:00:00+08:00")
+    }
+
     // MARK: - Closed decoding
 
     func testStudyProgressClosedDecoding() async throws {

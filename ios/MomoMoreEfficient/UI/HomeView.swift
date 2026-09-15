@@ -2,10 +2,11 @@ import SwiftUI
 
 /// 首页乙 — the frozen ivory-dominant Home.
 ///
-/// Three work sections and a settings pill, nothing else: no account row, no
-/// History summary, no metrics, no recent activity, no bottom tab bar.
-/// Capture never appears here; it arrives as a modal from the system share
-/// sheet.
+/// Two work sections and a settings pill, nothing else: no account row, no
+/// History summary, no metrics, no recent activity, no bottom tab bar. The
+/// read-only 查阅 section holds both read cards — 批量查阅 and, beneath it,
+/// the #155 单词导出 entry. Capture never appears here; it arrives as a
+/// modal from the system share sheet.
 struct HomeView: View {
     /// The two work tiles select the initial `ContentMode` and then enter the
     /// one `.write` destination — the mode is view-model state, not a route.
@@ -44,12 +45,6 @@ struct HomeView: View {
                     title: "查阅 · 只读取，不写入"
                 ) {
                     QueryCard(action: onEnterQuery)
-                }
-
-                section(
-                    marker: .hollow,
-                    title: "导出 · 只读取，不写入"
-                ) {
                     StudyExportCard(action: onEnterStudyExport)
                 }
 

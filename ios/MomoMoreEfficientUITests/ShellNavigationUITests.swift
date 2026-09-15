@@ -23,6 +23,10 @@ final class ShellNavigationUITests: XCTestCase {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
         XCTAssertTrue(app.buttons["设置"].exists)
+        // The #155 directive places 单词导出 *under* the existing read-only
+        // 查阅 section; no separate export section exists.
+        XCTAssertTrue(app.staticTexts["查阅 · 只读取，不写入"].exists)
+        XCTAssertFalse(app.staticTexts["导出 · 只读取，不写入"].exists)
 
         // Frozen out of Home: no account row, no History summary, no tabs.
         XCTAssertFalse(app.staticTexts["连接状态"].exists)

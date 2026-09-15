@@ -393,15 +393,24 @@ final class MaimemoTransport {
         return StudyProgress(finished: finished, total: total, studyTimeMilliseconds: studyTime)
     }
 
-    /// `POST /study/get_today_items`. `limit` is always the documented maximum
-    /// 1000; a caller that receives 1000 rows cannot prove completeness and
-    /// must say so — that policy lives in the runner, not here.
+    /// `POST /study/get_today_items`. The request body follows the
+    /// proto-derived official request type (`GetTodayItemsRequest`) and the
+    /// official CLI's construction: the required `voc_ids` / `spellings`
+    /// arrays are always sent empty (v1 has no word filtering), `limit` is
+    /// always the documented maximum 1000, and `is_finished` / `is_new` are
+    /// added only when requested. A caller that receives 1000 rows cannot
+    /// prove completeness and must say so — that policy lives in the runner,
+    /// not here.
     func studyTodayItems(
         isFinished: Bool? = nil,
         isNew: Bool? = nil,
         control: ExecutionControl? = nil
     ) async throws -> [StudyTodayItem] {
-        var payload: [String: Any] = ["limit": CompanionConstants.studyPageSize]
+        var payload: [String: Any] = [
+            "voc_ids": [String](),
+            "spellings": [String](),
+            "limit": CompanionConstants.studyPageSize,
+        ]
         if let isFinished { payload["is_finished"] = isFinished }
         if let isNew { payload["is_new"] = isNew }
         let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -438,18 +447,27 @@ final class MaimemoTransport {
         }
     }
 
-    /// `POST /study/query_study_records`, one page at a time. The sliding
-    /// `next_study_date` pagination strategy, the page ceiling and the
-    /// completeness accounting all belong to the export runner; this method
-    /// only moves one documented page.
+    /// `POST /study/query_study_records`, one page at a time. The request
+    /// body follows the proto-derived official request type
+    /// (`QueryStudyRecordsRequest`) and the official CLI's construction:
+    /// empty `voc_ids` / `spellings` arrays, an **explicit** `as_count`
+    /// boolean on every page (data pages send `false`, never omit it), the
+    /// documented maximum `limit`, and `next_study_date` only when a bound
+    /// exists. The sliding-window pagination strategy, the page ceiling and
+    /// the completeness accounting all belong to the export runner; this
+    /// method only moves one documented page.
     func studyRecords(
         nextStudyDateStart: String? = nil,
         nextStudyDateEnd: String? = nil,
         asCount: Bool,
         control: ExecutionControl? = nil
     ) async throws -> StudyRecordsPage {
-        var payload: [String: Any] = ["limit": CompanionConstants.studyPageSize]
-        if asCount { payload["as_count"] = true }
+        var payload: [String: Any] = [
+            "voc_ids": [String](),
+            "spellings": [String](),
+            "as_count": asCount,
+            "limit": CompanionConstants.studyPageSize,
+        ]
         if nextStudyDateStart != nil || nextStudyDateEnd != nil {
             var range: [String: Any] = [:]
             if let nextStudyDateStart { range["start"] = nextStudyDateStart }
