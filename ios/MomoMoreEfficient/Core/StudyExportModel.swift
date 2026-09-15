@@ -138,6 +138,21 @@ enum StudyExportPreset: Hashable, Sendable {
         }
     }
 
+    /// Stable, non-sensitive identifier for diagnostics.
+    var caseName: String {
+        switch self {
+        case .todayLearned: return "todayLearned"
+        case .todayAdded: return "todayAdded"
+        case .todayNew: return "todayNew"
+        case .todayForgotten: return "todayForgotten"
+        case .todayVague: return "todayVague"
+        case .sticking: return "sticking"
+        case .wellFamiliar: return "wellFamiliar"
+        case let .reviewWithin(days): return "reviewWithin(\(days))"
+        case .allWords: return "allWords"
+        }
+    }
+
     var subtitle: String {
         switch self {
         case .todayLearned: return "今天已完成的词，按墨墨学习顺序"

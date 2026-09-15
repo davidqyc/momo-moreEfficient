@@ -427,7 +427,14 @@ final class BindingAndExecutionTests: XCTestCase {
         )
         // D-020 / Owner B explicitly authorizes this one separate support file;
         // every other production source still has no file persistence authority.
-        let approvedSupportFiles: Set<String> = ["Core/ExecutionHistory.swift", "Core/PhraseSafetyJournal.swift"]
+        // The #155 study-export diagnostic journal is the second authorized
+        // support file (Owner standing rule + Issue #155 comment 5686449945:
+        // bounded, local-only, backup-excluded diagnostic evidence).
+        let approvedSupportFiles: Set<String> = [
+            "Core/ExecutionHistory.swift",
+            "Core/PhraseSafetyJournal.swift",
+            "Core/StudyExportDiagnosticJournal.swift",
+        ]
         for (path, contents) in sources where !approvedSupportFiles.contains(path) {
             XCTAssertFalse(contents.contains("FileManager.default"), path)
             XCTAssertFalse(contents.contains("write(to:"), path)

@@ -48,6 +48,11 @@ final class ShellNavigationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["N 天内复习"].exists)
         // Disconnected: presets are visibly gated with a truthful why-line.
         XCTAssertTrue(app.staticTexts["连接墨墨账号后可导出"].exists)
+        // Owner standing rule (#155 unstable): compact on-device diagnostics
+        // stay visible and copyable on the normal export screen.
+        XCTAssertTrue(app.staticTexts["诊断 · 最近一次运行"].exists)
+        XCTAssertTrue(app.buttons["复制诊断"].exists)
+        XCTAssertTrue(app.buttons["清除诊断"].exists)
 
         back(app)
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))

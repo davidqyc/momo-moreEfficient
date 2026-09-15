@@ -38,9 +38,16 @@ final class StudyExportStore: ObservableObject {
     private var activeTask: Task<Void, Never>?
     private var lastDispatchedRunTask: Task<Void, Never>?
     private let dateProvider: () -> Date
+    /// The bounded, sanitized on-device diagnostic trail. `nil` in tests that
+    /// do not exercise diagnostics; production uses the shared journal.
+    private let journal: StudyExportDiagnosticJournal?
 
-    init(dateProvider: @escaping () -> Date = Date.init) {
+    init(
+        dateProvider: @escaping () -> Date = Date.init,
+        journal: StudyExportDiagnosticJournal? = StudyExportDiagnosticJournal.shared
+    ) {
         self.dateProvider = dateProvider
+        self.journal = journal
     }
 
     /// Awaits the last dispatched run so a headless test can assert terminal
@@ -75,6 +82,37 @@ final class StudyExportStore: ObservableObject {
         return outcome.words.count
     }
 
+    // MARK: - Diagnostics (best-effort, never business state)
+
+    private func log(_ text: String, run: String? = nil) {
+        journal?.log(text, run: run)
+    }
+
+    /// The Owner-copyable plain-text diagnostic report.
+    func diagnosticReport() -> String {
+        journal?.formattedReport() ?? "(diagnostics unavailable)"
+    }
+
+    func clearDiagnostics() {
+        journal?.clear()
+    }
+
+    func logFeatureEntered(connected: Bool) {
+        log("feature_entered connected=\(connected)")
+    }
+
+    func logPresetTap(preset: StudyExportPreset, connected: Bool, laneBusy: Bool) {
+        log("preset_tap preset=\(preset.caseName) connected=\(connected) lane_busy=\(laneBusy)")
+    }
+
+    func logLeaseOutcome(acquired: Bool, preset: StudyExportPreset) {
+        log("lease_acquired \(acquired ? "yes" : "no") preset=\(preset.caseName)")
+    }
+
+    func logScreenDisappear() {
+        log("screen_disappear")
+    }
+
     // MARK: - Account identity
 
     /// Called with the root owner's current `AccountIdentity` whenever it
@@ -87,6 +125,9 @@ final class StudyExportStore: ObservableObject {
         stopDispatching()
         phase = .idle
         sessionIdentity = identity
+        // The diagnostic journal deliberately survives account changes: it
+        // holds no account identity and no private word data.
+        log("account_changed")
     }
 
     // MARK: - Stop
@@ -95,6 +136,7 @@ final class StudyExportStore: ObservableObject {
     /// and no partial list is ever presented as a result.
     func stop() {
         guard isRunning else { return }
+        log("run_stopped preset=\(activePreset?.caseName ?? "nil")")
         stopDispatching()
         phase = .idle
     }
@@ -124,6 +166,8 @@ final class StudyExportStore: ObservableObject {
             lease.finish()
             return
         }
+        let runID = String(UUID().uuidString.prefix(8))
+        log("run_start preset=\(preset.caseName) run=\(runID)", run: runID)
         runGeneration &+= 1
         let generation = runGeneration
         let control = ExecutionControl()
@@ -135,7 +179,8 @@ final class StudyExportStore: ObservableObject {
                 generation: generation,
                 preset: preset,
                 lease: lease,
-                control: control
+                control: control,
+                runID: runID
             )
             lease.finish()
         }
@@ -147,25 +192,33 @@ final class StudyExportStore: ObservableObject {
         generation: Int,
         preset: StudyExportPreset,
         lease: QueryReadLease,
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async {
-        let runner = StudyExportRunner(api: lease.api)
+        let runner = StudyExportRunner(api: lease.api, journal: journal)
         do {
-            let outcome = try await runner.run(preset, control: control, now: dateProvider())
+            let outcome = try await runner.run(preset, control: control, now: dateProvider(), runID: runID)
             guard generation == runGeneration else { return }
+            log(
+                "run_success preset=\(preset.caseName) count=\(outcome.words.count)"
+                    + " completeness=\(StudyExportDiagnosticCategory.name(of: outcome.completeness))",
+                run: runID
+            )
             phase = .completed(preset, outcome)
         } catch is CancellationError {
-            unwindCancelled(generation: generation)
+            unwindCancelled(generation: generation, preset: preset, runID: runID)
         } catch let error as CompanionError where error == .cancelled {
-            unwindCancelled(generation: generation)
+            unwindCancelled(generation: generation, preset: preset, runID: runID)
         } catch {
             guard generation == runGeneration else { return }
             if let companionError = error as? CompanionError,
                companionError == .authenticationRejected {
                 // A 401 is the root session's credential being rejected, not a
                 // study-export fact; report it to the one root owner.
+                log("auth_rejected category=companion.authenticationRejected", run: runID)
                 lease.reportAuthenticationRejection()
             }
+            log("run_failed category=\(StudyExportDiagnosticCategory.sanitized(error))", run: runID)
             phase = .failed(preset, Self.failureMessage(for: error))
         }
     }
@@ -174,8 +227,9 @@ final class StudyExportStore: ObservableObject {
     /// reclaiming background time) leaves no run behind: back to the preset
     /// list, with nothing presented as a result. A user stop or an identity
     /// change has already superseded this generation, making it a no-op there.
-    private func unwindCancelled(generation: Int) {
+    private func unwindCancelled(generation: Int, preset: StudyExportPreset, runID: String) {
         guard generation == runGeneration else { return }
+        log("run_cancelled preset=\(preset.caseName)", run: runID)
         phase = .idle
     }
 

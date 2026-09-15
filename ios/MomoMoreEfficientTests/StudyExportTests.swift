@@ -834,7 +834,10 @@ final class StudyExportTests: XCTestCase {
     // MARK: - Store: payload, identity, cancellation, auth
 
     private func makeStore() -> StudyExportStore {
-        StudyExportStore(dateProvider: { studyFixedDate("2026-03-20T04:00:00+00:00") })
+        StudyExportStore(
+            dateProvider: { studyFixedDate("2026-03-20T04:00:00+00:00") },
+            journal: nil
+        )
     }
 
     func testCopyPayloadIsExactlyNewlineSpellings() async throws {

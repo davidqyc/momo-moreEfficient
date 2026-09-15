@@ -33,7 +33,14 @@ struct StudyExportView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .themedScreen()
-        .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if StudyExportDiagnosticsPolicy.isOwnerVisible {
+                    diagnosticsStrip
+                }
+                actionBar
+            }
+        }
         .overlay(alignment: .bottom) {
             if let toastText {
                 Toast(text: toastText)
@@ -43,7 +50,41 @@ struct StudyExportView: View {
         }
         // Leaving the page stops subsequent study reads; the provider
         // operation lane is released by the run's own epilogue.
-        .onDisappear { store.stop() }
+        .onDisappear {
+            store.logScreenDisappear()
+            store.stop()
+        }
+        .onAppear {
+            store.logFeatureEntered(connected: viewModel.isConnected)
+        }
+    }
+
+    // MARK: - On-device diagnostics (Owner standing rule, #155 unstable)
+
+    /// Compact, always-visible diagnostics row: the Owner copies plain text
+    /// and never needs Xcode/Console. Copy/clear never touches business state.
+    private var diagnosticsStrip: some View {
+        HStack(spacing: Theme.gapS) {
+            Text("诊断 · 最近一次运行")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
+            Spacer(minLength: Theme.gapS)
+            NavPill(title: "复制诊断") { copyDiagnostics() }
+            NavPill(title: "清除诊断") { store.clearDiagnostics() }
+        }
+        .padding(.horizontal, Theme.pageMargin)
+        .padding(.vertical, Theme.gapS)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("诊断")
+    }
+
+    private func copyDiagnostics() {
+        UIPasteboard.general.string = store.diagnosticReport()
+        withAnimation { toastText = "已复制诊断" }
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            withAnimation { toastText = nil }
+        }
     }
 
     // MARK: - Header
@@ -350,7 +391,16 @@ struct StudyExportView: View {
     // MARK: - Actions
 
     private func run(_ preset: StudyExportPreset) {
-        guard canStart, let lease = viewModel.beginQueryRead() else { return }
+        store.logPresetTap(
+            preset: preset,
+            connected: viewModel.isConnected,
+            laneBusy: viewModel.isProviderLaneBusy
+        )
+        guard canStart, let lease = viewModel.beginQueryRead() else {
+            store.logLeaseOutcome(acquired: false, preset: preset)
+            return
+        }
+        store.logLeaseOutcome(acquired: true, preset: preset)
         store.start(preset, lease: lease)
     }
 

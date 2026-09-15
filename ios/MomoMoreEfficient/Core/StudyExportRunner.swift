@@ -6,8 +6,24 @@ import Foundation
 /// stop/retry decisions. Every request goes through the one authenticated
 /// transport and the shared scheduler the root owner's lease handed over, and
 /// every sequencing decision is a pure function of what came back.
+///
+/// The optional diagnostic journal records only sanitized facts — route
+/// starts/ends, row counts, boundaries, mapped error categories, completeness
+/// enums — never spellings, word lists, `voc_id`s, credentials or raw
+/// payloads. Journal failures cannot affect any outcome: the journal is
+/// best-effort by contract.
 struct StudyExportRunner {
     let api: MaimemoTransport
+    var journal: StudyExportDiagnosticJournal?
+
+    init(api: MaimemoTransport, journal: StudyExportDiagnosticJournal? = nil) {
+        self.api = api
+        self.journal = journal
+    }
+
+    private func log(_ text: String, runID: String) {
+        journal?.log(text, run: runID)
+    }
 
     /// Runs one frozen preset to a copyable outcome, or throws a truthful
     /// failure. There is no retry anywhere in this path; a failed preset only
@@ -15,44 +31,50 @@ struct StudyExportRunner {
     func run(
         _ preset: StudyExportPreset,
         control: ExecutionControl,
-        now: Date
+        now: Date,
+        runID: String = "run"
     ) async throws -> StudyExportOutcome {
         switch preset {
         case .todayLearned:
-            return try await todayLearned(control: control)
+            return try await todayLearned(control: control, runID: runID)
         case .todayNew:
-            return try await todayNew(control: control)
+            return try await todayNew(control: control, runID: runID)
         case .todayForgotten:
             return try await todayFiltered(
-                firstResponse: .forget, control: control
+                firstResponse: .forget, control: control, runID: runID
             )
         case .todayVague:
             return try await todayFiltered(
-                firstResponse: .vague, control: control
+                firstResponse: .vague, control: control, runID: runID
             )
         case .todayAdded:
-            let loaded = try await loadAllRecords(endBoundary: nil, control: control)
+            let loaded = try await loadAllRecords(endBoundary: nil, control: control, runID: runID)
             // This preset classifies every safely retrieved record by add
             // date. An absent `add_date` cannot be classified, so exporting
             // "today added" without it would be a guess: fail closed here,
             // and only here — the other record presets need no add date.
-            guard !loaded.records.contains(where: { $0.addDate == nil }) else {
+            let missingAddDate = loaded.records.count(where: { $0.addDate == nil })
+            guard missingAddDate == 0 else {
+                log("added_missing_add_date count=\(missingAddDate)", runID: runID)
                 throw StudyExportError.addDateUnavailable
             }
             let records = loaded.records.filter { StudyExportSemantics.isAddedToday($0, now: now) }
+            log("today_added count=\(records.count)", runID: runID)
             return StudyExportOutcome(words: records.map(\.spelling), completeness: loaded.completeness)
         case .sticking:
-            return try await tagged(.sticking, control: control)
+            return try await tagged(.sticking, control: control, runID: runID)
         case .wellFamiliar:
-            return try await tagged(.wellFamiliar, control: control)
+            return try await tagged(.wellFamiliar, control: control, runID: runID)
         case let .reviewWithin(days):
             let loaded = try await loadAllRecords(
                 endBoundary: StudyExportSemantics.reviewWindowEnd(days: days, now: now),
-                control: control
+                control: control,
+                runID: runID
             )
+            log("review_window days=\(days) count=\(loaded.records.count)", runID: runID)
             return StudyExportOutcome(words: loaded.records.map(\.spelling), completeness: loaded.completeness)
         case .allWords:
-            let loaded = try await loadAllRecords(endBoundary: nil, control: control)
+            let loaded = try await loadAllRecords(endBoundary: nil, control: control, runID: runID)
             return StudyExportOutcome(words: loaded.records.map(\.spelling), completeness: loaded.completeness)
         }
     }
@@ -68,16 +90,28 @@ struct StudyExportRunner {
     /// endpoint's own completeness), but a progress count that *exceeds* the
     /// returned completed items downgrades the result to "may be incomplete".
     private func completedItems(
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async throws -> (items: [StudyTodayItem], completeness: StudyExportCompleteness) {
-        let progress = try? await api.studyProgress(control: control)
-        let items = try await fetchTodayItems(isFinished: true, isNew: nil, control: control)
-        return (items, todayCompleteness(fetched: items.count, progress: progress))
+        log("progress_start", runID: runID)
+        let progress: StudyProgress?
+        do {
+            progress = try await api.studyProgress(control: control)
+        } catch {
+            progress = nil
+            log("progress_error category=\(StudyExportDiagnosticCategory.sanitized(error))", runID: runID)
+        }
+        if let progress {
+            log("progress_ok finished=\(progress.finished) total=\(progress.total)", runID: runID)
+        }
+        let items = try await fetchTodayItems(isFinished: true, isNew: nil, control: control, runID: runID)
+        let completeness = todayCompleteness(fetched: items.count, progress: progress, runID: runID)
+        return (items, completeness)
     }
 
     /// 今天已学: completed items in provider study order.
-    private func todayLearned(control: ExecutionControl) async throws -> StudyExportOutcome {
-        let (items, completeness) = try await completedItems(control: control)
+    private func todayLearned(control: ExecutionControl, runID: String) async throws -> StudyExportOutcome {
+        let (items, completeness) = try await completedItems(control: control, runID: runID)
         let words = StudyExportSemantics.dedupedByVocabularyID(
             items.map { (id: $0.vocabularyID, value: $0.spelling) }
         )
@@ -86,8 +120,8 @@ struct StudyExportRunner {
 
     /// 今天新学: new items in provider order. Progress carries no new-word
     /// count, so exactly-1000 stays honestly capped.
-    private func todayNew(control: ExecutionControl) async throws -> StudyExportOutcome {
-        try await fetchToday(isFinished: nil, isNew: true, progress: nil, control: control)
+    private func todayNew(control: ExecutionControl, runID: String) async throws -> StudyExportOutcome {
+        try await fetchToday(isFinished: nil, isNew: true, progress: nil, control: control, runID: runID)
     }
 
     /// 今天忘记 / 今天模糊: today's *completed* items, filtered locally by
@@ -97,13 +131,15 @@ struct StudyExportRunner {
     /// complete.
     private func todayFiltered(
         firstResponse: StudyResponse,
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async throws -> StudyExportOutcome {
-        let (items, completeness) = try await completedItems(control: control)
+        let (items, completeness) = try await completedItems(control: control, runID: runID)
         let filtered = items.filter { StudyExportSemantics.isFirstResponse(firstResponse, in: $0) }
         let words = StudyExportSemantics.dedupedByVocabularyID(
             filtered.map { (id: $0.vocabularyID, value: $0.spelling) }
         )
+        log("first_response_filter response=\(firstResponse.rawValue) count=\(words.count)", runID: runID)
         return StudyExportOutcome(words: words, completeness: completeness)
     }
 
@@ -111,24 +147,39 @@ struct StudyExportRunner {
         isFinished: Bool?,
         isNew: Bool?,
         progress: StudyProgress?,
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async throws -> StudyExportOutcome {
-        let items = try await fetchTodayItems(isFinished: isFinished, isNew: isNew, control: control)
+        let items = try await fetchTodayItems(isFinished: isFinished, isNew: isNew, control: control, runID: runID)
         let words = StudyExportSemantics.dedupedByVocabularyID(
             items.map { (id: $0.vocabularyID, value: $0.spelling) }
         )
         return StudyExportOutcome(
             words: words,
-            completeness: todayCompleteness(fetched: items.count, progress: progress)
+            completeness: todayCompleteness(fetched: items.count, progress: progress, runID: runID)
         )
     }
 
     private func fetchTodayItems(
         isFinished: Bool?,
         isNew: Bool?,
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async throws -> [StudyTodayItem] {
-        try await api.studyTodayItems(isFinished: isFinished, isNew: isNew, control: control)
+        log(
+            "today_items_start is_finished=\(isFinished.map(String.init) ?? "nil")"
+                + " is_new=\(isNew.map(String.init) ?? "nil")"
+                + " limit=\(CompanionConstants.studyPageSize)",
+            runID: runID
+        )
+        do {
+            let items = try await api.studyTodayItems(isFinished: isFinished, isNew: isNew, control: control)
+            log("today_items_ok rows=\(items.count)", runID: runID)
+            return items
+        } catch {
+            log("today_items_error category=\(StudyExportDiagnosticCategory.sanitized(error))", runID: runID)
+            throw error
+        }
     }
 
     /// The frozen completeness rule for one today-items read of `fetched`
@@ -138,28 +189,40 @@ struct StudyExportRunner {
     /// with a truthful mismatch.
     private func todayCompleteness(
         fetched: Int,
-        progress: StudyProgress?
+        progress: StudyProgress?,
+        runID: String
     ) -> StudyExportCompleteness {
+        let result: StudyExportCompleteness
         if let progress, progress.finished > fetched {
-            return .mismatchedWithProgress(finished: progress.finished, read: fetched)
-        }
-        if fetched >= CompanionConstants.studyPageSize {
+            result = .mismatchedWithProgress(finished: progress.finished, read: fetched)
+        } else if fetched >= CompanionConstants.studyPageSize {
             if let progress, progress.finished == fetched {
-                return .complete
+                result = .complete
+            } else {
+                result = .cappedAtSingleCallLimit
             }
-            return .cappedAtSingleCallLimit
+        } else {
+            result = .complete
         }
-        return .complete
+        log(
+            "today_completeness fetched=\(fetched)"
+                + " progress_finished=\(progress.map { String($0.finished) } ?? "nil")"
+                + " result=\(StudyExportDiagnosticCategory.name(of: result))",
+            runID: runID
+        )
+        return result
     }
 
     // MARK: - Record presets
 
     private func tagged(
         _ tag: StudyRecordTag,
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async throws -> StudyExportOutcome {
-        let loaded = try await loadAllRecords(endBoundary: nil, control: control)
+        let loaded = try await loadAllRecords(endBoundary: nil, control: control, runID: runID)
         let records = loaded.records.filter { $0.tags.contains(tag) }
+        log("tag_filter tag=\(tag.rawValue) count=\(records.count)", runID: runID)
         return StudyExportOutcome(words: records.map(\.spelling), completeness: loaded.completeness)
     }
 
@@ -179,17 +242,27 @@ struct StudyExportRunner {
     ///    termination even if every other check somehow passed.
     private func loadAllRecords(
         endBoundary: Date?,
-        control: ExecutionControl
+        control: ExecutionControl,
+        runID: String
     ) async throws -> (records: [StudyRecord], completeness: StudyExportCompleteness) {
         let formattedEnd = endBoundary.map { StudyExportSemantics.beijingISO8601($0) }
-        let countPage = try await api.studyRecords(
-            nextStudyDateStart: nil,
-            nextStudyDateEnd: formattedEnd,
-            asCount: true,
-            control: control
-        )
+        log("records_count_start end=\(formattedEnd ?? "nil")", runID: runID)
+        let countPage: StudyRecordsPage
+        do {
+            countPage = try await api.studyRecords(
+                nextStudyDateStart: nil,
+                nextStudyDateEnd: formattedEnd,
+                asCount: true,
+                control: control
+            )
+        } catch {
+            log("records_count_error category=\(StudyExportDiagnosticCategory.sanitized(error))", runID: runID)
+            throw error
+        }
         let expectedTotal = countPage.count
+        log("records_count_ok expected=\(expectedTotal)", runID: runID)
         if expectedTotal == 0 {
+            log("records_done reason=expected_total", runID: runID)
             return ([], .complete)
         }
 
@@ -197,6 +270,7 @@ struct StudyExportRunner {
         var collected: [StudyRecord] = []
         var currentBoundary: String?
         var pagesRemaining = expectedTotal + 1
+        var pageIndex = 0
 
         while true {
             guard !control.isCancellationRequested else { throw CompanionError.cancelled }
@@ -206,12 +280,20 @@ struct StudyExportRunner {
                 asCount: false,
                 control: control
             )
+            pageIndex += 1
             var newCount = 0
             for record in page.records where seen.insert(record.vocabularyID).inserted {
                 collected.append(record)
                 newCount += 1
             }
+            log(
+                "records_page index=\(pageIndex)"
+                    + " start=\(currentBoundary ?? "nil") end=\(formattedEnd ?? "nil")"
+                    + " rows=\(page.records.count) new=\(newCount) total=\(collected.count)",
+                runID: runID
+            )
             if collected.count >= expectedTotal {
+                log("records_done reason=expected_total pages=\(pageIndex)", runID: runID)
                 return (collected, .complete)
             }
             guard page.records.count == CompanionConstants.studyPageSize else {
