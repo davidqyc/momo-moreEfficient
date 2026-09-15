@@ -32,6 +32,13 @@ struct StudyExportRunner {
             )
         case .todayAdded:
             let loaded = try await loadAllRecords(endBoundary: nil, control: control)
+            // This preset classifies every safely retrieved record by add
+            // date. An absent `add_date` cannot be classified, so exporting
+            // "today added" without it would be a guess: fail closed here,
+            // and only here — the other record presets need no add date.
+            guard !loaded.records.contains(where: { $0.addDate == nil }) else {
+                throw StudyExportError.addDateUnavailable
+            }
             let records = loaded.records.filter { StudyExportSemantics.isAddedToday($0, now: now) }
             return StudyExportOutcome(words: records.map(\.spelling), completeness: loaded.completeness)
         case .sticking:
@@ -52,14 +59,29 @@ struct StudyExportRunner {
 
     // MARK: - Today-item presets
 
-    /// 今天已学: completed items in provider study order, cross-checked against
-    /// the today progress count. A progress read failure never blocks the item
-    /// read — a short page proves the items endpoint's own completeness — but a
-    /// progress count that *exceeds* the returned completed items always
-    /// downgrades the result to "may be incomplete".
-    private func todayLearned(control: ExecutionControl) async throws -> StudyExportOutcome {
+    /// The one completed-items read every today preset starts from, together
+    /// with the completeness evidence that read produced — so 今天已学,
+    /// 今天忘记 and 今天模糊 can never drift apart on that judgment.
+    ///
+    /// The progress read shares 今天已学's non-blocking semantics: a progress
+    /// failure never blocks the item read (a short page proves the items
+    /// endpoint's own completeness), but a progress count that *exceeds* the
+    /// returned completed items downgrades the result to "may be incomplete".
+    private func completedItems(
+        control: ExecutionControl
+    ) async throws -> (items: [StudyTodayItem], completeness: StudyExportCompleteness) {
         let progress = try? await api.studyProgress(control: control)
-        return try await fetchToday(isFinished: true, isNew: nil, progress: progress, control: control)
+        let items = try await fetchTodayItems(isFinished: true, isNew: nil, control: control)
+        return (items, todayCompleteness(fetched: items.count, progress: progress))
+    }
+
+    /// 今天已学: completed items in provider study order.
+    private func todayLearned(control: ExecutionControl) async throws -> StudyExportOutcome {
+        let (items, completeness) = try await completedItems(control: control)
+        let words = StudyExportSemantics.dedupedByVocabularyID(
+            items.map { (id: $0.vocabularyID, value: $0.spelling) }
+        )
+        return StudyExportOutcome(words: words, completeness: completeness)
     }
 
     /// 今天新学: new items in provider order. Progress carries no new-word
@@ -69,17 +91,20 @@ struct StudyExportRunner {
     }
 
     /// 今天忘记 / 今天模糊: today's *completed* items, filtered locally by
-    /// `first_response`. Never `StudyRecord.last_response`.
+    /// `first_response`. Never `StudyRecord.last_response`. The filtered list
+    /// inherits exactly the completed-items source's completeness — a
+    /// mismatched or capped source cannot present a filtered subset as
+    /// complete.
     private func todayFiltered(
         firstResponse: StudyResponse,
         control: ExecutionControl
     ) async throws -> StudyExportOutcome {
-        let items = try await fetchTodayItems(isFinished: true, isNew: nil, control: control)
+        let (items, completeness) = try await completedItems(control: control)
         let filtered = items.filter { StudyExportSemantics.isFirstResponse(firstResponse, in: $0) }
         let words = StudyExportSemantics.dedupedByVocabularyID(
             filtered.map { (id: $0.vocabularyID, value: $0.spelling) }
         )
-        return StudyExportOutcome(words: words, completeness: todayCompleteness(fetched: items.count, progress: nil))
+        return StudyExportOutcome(words: words, completeness: completeness)
     }
 
     private func fetchToday(

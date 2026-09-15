@@ -200,6 +200,13 @@ final class StudyExportStore: ObservableObject {
                     message: "某一页最后一条记录缺少可用于翻页的下次复习时间，"
                         + "当前公开接口不能继续安全翻页。"
                 )
+            case .addDateUnavailable:
+                return Failure(
+                    title: "无法判断添加日期",
+                    message: "墨墨返回的部分学习记录缺少添加日期，"
+                        + "无法安全判断哪些词是今天新添加的。"
+                        + "其他导出项不受影响；稍后重试可能恢复。"
+                )
             }
         }
         if let companionError = error as? CompanionError {

@@ -2,9 +2,12 @@ import Foundation
 
 // MARK: - Provider schemas (#155, closed)
 
-/// The documented `StudyResponse` vocabulary. An unknown provider value is a
-/// decode rejection, never a guessed local meaning.
+/// The documented `StudyResponse` vocabulary, including the proto-derived
+/// `STUDY_RESPONSE_UNSPECIFIED` sentinel from the current official
+/// `memo-api-cli/src/types/study_model.ts`. An unknown provider value outside
+/// this closed set is a decode rejection, never a guessed local meaning.
 enum StudyResponse: String, Equatable, Sendable {
+    case unspecified = "STUDY_RESPONSE_UNSPECIFIED"
     case familiar = "FAMILIAR"
     case vague = "VAGUE"
     case forget = "FORGET"
@@ -12,9 +15,11 @@ enum StudyResponse: String, Equatable, Sendable {
     case cancelWellFamiliar = "CANCEL_WELL_FAMILIAR"
 }
 
-/// The documented record tag set (`StudyRecord.tags`). The provider may return
-/// a scalar or an array; both decode into this closed set.
+/// The documented record tag set (`StudyRecord.tags`) — an array whose
+/// elements come from the proto-derived enum, including the neutral
+/// `STUDY_RECORD_TAG_UNSPECIFIED` sentinel.
 enum StudyRecordTag: String, Equatable, Sendable {
+    case unspecified = "STUDY_RECORD_TAG_UNSPECIFIED"
     case sticking = "STICKING"
     case wellFamiliar = "WELL_FAMILIAR"
 }
@@ -37,10 +42,16 @@ struct StudyTodayItem: Equatable, Sendable {
 
 /// One `query_study_records` row. Only the fields a preset consumes are
 /// modelled; nothing is synthesised for the rest.
+///
+/// `addDate` is optional because the current proto-derived official type
+/// (`study_model.ts`, sourced from `study_model.proto`) declares
+/// `add_date?: string`, and the presets that do not classify by add date must
+/// not fail on its absence. `今天新添加` is the preset that needs the
+/// classification, and it fail-closes on `nil` itself.
 struct StudyRecord: Equatable, Sendable {
     let vocabularyID: String
     let spelling: String
-    let addDate: Date
+    let addDate: Date?
     let nextStudyDate: Date?
     let studyCount: Int
     let tags: [StudyRecordTag]
@@ -85,6 +96,10 @@ enum StudyExportError: Error, Equatable {
     case paginationNotAdvancing
     /// The page's last record has no usable `next_study_date` to slide from.
     case paginationBoundaryUnavailable
+    /// 今天新添加 cannot classify at least one otherwise-valid record because
+    /// its `add_date` is absent; exporting it as "today added" would be a
+    /// guess, so this preset alone fails closed.
+    case addDateUnavailable
 }
 
 // MARK: - Presets
@@ -179,11 +194,13 @@ enum StudyExportSemantics {
         return start..<end
     }
 
-    /// 今天新添加: the record's required `add_date` falls on today's Beijing
-    /// study day. A record that cannot carry a parsed `add_date` never reaches
-    /// here — the decoder rejects it before this filter runs.
+    /// 今天新添加: the record's `add_date` falls on today's Beijing study
+    /// day. A record whose `add_date` is absent cannot be classified by this
+    /// pure function; `今天新添加` fails closed on such records before ever
+    /// filtering, so `nil` never reaches a silent "not today" answer here.
     static func isAddedToday(_ record: StudyRecord, now: Date) -> Bool {
-        beijingStudyDay(containing: now).contains(record.addDate)
+        guard let addDate = record.addDate else { return false }
+        return beijingStudyDay(containing: now).contains(addDate)
     }
 
     /// 今天忘记 / 今天模糊: first response of today's *completed* items.

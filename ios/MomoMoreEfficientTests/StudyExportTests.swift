@@ -101,8 +101,8 @@ final class StudyExportTests: XCTestCase {
         let cases: [StudyExportPreset: [StubbedResult]] = [
             .todayLearned: [progress, todayItems],
             .todayNew: [todayItems],
-            .todayForgotten: [todayItems],
-            .todayVague: [todayItems],
+            .todayForgotten: [progress, todayItems],
+            .todayVague: [progress, todayItems],
             .todayAdded: [studyCountResponse(1), records],
             .sticking: [studyCountResponse(1), records],
             .wellFamiliar: [studyCountResponse(1), records],
@@ -196,30 +196,41 @@ final class StudyExportTests: XCTestCase {
     }
 
     func testStudyRecordClosedDecoding() async throws {
-        // Array tags and scalar tags both decode into the closed set.
+        // Array tags decode into the closed set, including the neutral
+        // proto-derived sentinel.
         let (arrayRunner, _) = makeRunner(FakeHTTPTransport([studyRecordsResponse([
             studyRecord(
                 id: "VOC_1", spelling: "apple", addDate: "2026-01-01T00:00:00+08:00",
-                nextStudyDate: "2026-03-25T00:00:00+08:00", tags: ["STICKING"]
+                nextStudyDate: "2026-03-25T00:00:00+08:00",
+                tags: ["STUDY_RECORD_TAG_UNSPECIFIED", "STICKING", "WELL_FAMILIAR"]
             ),
         ])]))
         let arrayTags = try await arrayRunner.api.studyRecords(asCount: false)
-        XCTAssertEqual(arrayTags.records[0].tags, [.sticking])
+        XCTAssertEqual(
+            arrayTags.records[0].tags,
+            [.unspecified, .sticking, .wellFamiliar]
+        )
         XCTAssertEqual(arrayTags.records[0].nextStudyDate, studyFixedDate("2026-03-24T16:00:00+00:00"))
 
-        let (scalarRunner, _) = makeRunner(FakeHTTPTransport([studyRecordsResponse([
-            studyRecord(id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: "WELL_FAMILIAR"),
+        // A present, parseable add_date decodes; date-only form is interpreted
+        // on the documented Beijing calendar.
+        let (datedRunner, _) = makeRunner(FakeHTTPTransport([studyRecordsResponse([
+            studyRecord(id: "VOC_1", spelling: "apple", addDate: "2026-01-01"),
         ])]))
-        let scalarTags = try await scalarRunner.api.studyRecords(asCount: false)
-        XCTAssertEqual(scalarTags.records[0].tags, [.wellFamiliar])
-        XCTAssertEqual(scalarTags.records[0].addDate, studyFixedDate("2025-12-31T16:00:00+00:00"))
+        let dated = try await datedRunner.api.studyRecords(asCount: false)
+        XCTAssertEqual(dated.records[0].addDate, studyFixedDate("2025-12-31T16:00:00+00:00"))
 
         // Unknown tag value fails closed.
         let unknownTag = await recordDecodeError(studyRecord(
             id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: ["NEW_TAG"]
         ))
         XCTAssertEqual(unknownTag as? CompanionError, .itemResponseRejected)
-        // Malformed required add_date fails closed.
+        // The official proto-derived type says array: a scalar is rejected.
+        let scalarTag = await recordDecodeError(studyRecord(
+            id: "VOC_1", spelling: "apple", addDate: "2026-01-01", tags: "STICKING"
+        ))
+        XCTAssertEqual(scalarTag as? CompanionError, .itemResponseRejected)
+        // Malformed required-shape add_date (present, unparsable) fails closed.
         let malformedAddDate = await recordDecodeError(studyRecord(
             id: "VOC_1", spelling: "apple", addDate: "not-a-date"
         ))
@@ -229,12 +240,17 @@ final class StudyExportTests: XCTestCase {
             id: "VOC_1", spelling: "apple", addDate: "2026-01-01", nextStudyDate: "soon"
         ))
         XCTAssertEqual(malformedNext as? CompanionError, .itemResponseRejected)
-        // Absent next_study_date is legitimate.
+    }
+
+    /// The official proto-derived type declares `add_date?: string`: a record
+    /// without one decodes safely as `nil` instead of rejecting the page.
+    func testOfficialOptionalAddDateDecodesAsNil() async throws {
         let (absentRunner, _) = makeRunner(FakeHTTPTransport([studyRecordsResponse([
-            studyRecord(id: "VOC_1", spelling: "apple", addDate: "2026-01-01"),
+            studyRecord(id: "VOC_1", spelling: "apple", addDate: nil, nextStudyDate: "2026-03-25T00:00:00+08:00"),
         ])]))
-        let absent = try await absentRunner.api.studyRecords(asCount: false)
-        XCTAssertNil(absent.records[0].nextStudyDate)
+        let page = try await absentRunner.api.studyRecords(asCount: false)
+        XCTAssertNil(page.records[0].addDate)
+        XCTAssertNotNil(page.records[0].nextStudyDate)
     }
 
     // MARK: - 今天已学
@@ -329,24 +345,116 @@ final class StudyExportTests: XCTestCase {
             studyTodayItem(id: "VOC_F", spelling: "forget", order: 1, firstResponse: "FORGET", isFinished: true),
             studyTodayItem(id: "VOC_V", spelling: "vague", order: 2, firstResponse: "VAGUE", isFinished: true),
             studyTodayItem(id: "VOC_K", spelling: "known", order: 3, firstResponse: "FAMILIAR", isFinished: true),
-            studyTodayItem(id: "VOC_N", spelling: "unanswered", order: 4, isFinished: true),
+            // The official proto-derived sentinel is a valid, neutral response.
+            studyTodayItem(
+                id: "VOC_U", spelling: "unspecified", order: 4,
+                firstResponse: "STUDY_RESPONSE_UNSPECIFIED", isFinished: true
+            ),
+            studyTodayItem(id: "VOC_N", spelling: "unanswered", order: 5, isFinished: true),
         ])
-        let (runner, transport) = makeRunner(FakeHTTPTransport([completed]))
+        let (runner, transport) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 5, total: 10),
+            completed,
+        ]))
         let forgotten = try await runner.run(.todayForgotten, control: ExecutionControl(), now: fixedNow)
         XCTAssertEqual(forgotten.words, ["forget"])
 
-        let (vagueRunner, vagueTransport) = makeRunner(FakeHTTPTransport([completed]))
+        let (vagueRunner, vagueTransport) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 5, total: 10),
+            completed,
+        ]))
         let vague = try await vagueRunner.run(.todayVague, control: ExecutionControl(), now: fixedNow)
         XCTAssertEqual(vague.words, ["vague"])
 
-        // Both presets read today's *completed* items, never records and
-        // never last_response.
+        // Both presets read today's *completed* items (progress first, then
+        // the same completed read 今天已学 uses), never records and never
+        // last_response.
         for t in [transport, vagueTransport] {
-            XCTAssertEqual(t.requests.count, 1)
-            XCTAssertEqual(t.requests[0].route, .studyTodayItems)
-            let body = try requestBody(t, index: 0)
+            XCTAssertEqual(t.requests.map(\.route), [.studyProgress, .studyTodayItems])
+            let body = try requestBody(t, index: 1)
             XCTAssertEqual(body["is_finished"] as? Bool, true)
         }
+    }
+
+    func testStudyResponseUnspecifiedIsNeutralAndUnknownFailsClosed() async throws {
+        let (runner, _) = makeRunner(FakeHTTPTransport([studyTodayItemsResponse([
+            studyTodayItem(
+                id: "VOC_U", spelling: "neutral", order: 1,
+                firstResponse: "STUDY_RESPONSE_UNSPECIFIED", isFinished: true
+            ),
+        ])]))
+        let items = try await runner.api.studyTodayItems()
+        XCTAssertEqual(items[0].firstResponse, .unspecified)
+        // The sentinel matches neither preset, and is never a user-facing
+        // response category.
+        XCTAssertFalse(StudyExportSemantics.isFirstResponse(.forget, in: items[0]))
+        XCTAssertFalse(StudyExportSemantics.isFirstResponse(.vague, in: items[0]))
+
+        let unknown = await todayItemDecodeError(studyTodayItem(
+            id: "VOC_1", spelling: "apple", order: 1, firstResponse: "SOMETHING_ELSE"
+        ))
+        XCTAssertEqual(unknown as? CompanionError, .itemResponseRejected)
+    }
+
+    /// 忘记/模糊 inherit exactly the completed-items source's completeness:
+    /// the Coordinator counterexample (progress 5, 3 completed rows, one
+    /// FORGET) must not present a filtered subset as complete.
+    func testForgottenAndVagueInheritCompletedListCompleteness() async throws {
+        let completed = studyTodayItemsResponse([
+            studyTodayItem(id: "VOC_F", spelling: "forget", order: 1, firstResponse: "FORGET", isFinished: true),
+            studyTodayItem(id: "VOC_V", spelling: "vague", order: 2, firstResponse: "VAGUE", isFinished: true),
+            studyTodayItem(id: "VOC_K", spelling: "known", order: 3, firstResponse: "FAMILIAR", isFinished: true),
+        ])
+        let (forgotten, forgottenTransport) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 5, total: 10),
+            completed,
+        ]))
+        let forgottenOutcome = try await forgotten.run(
+            .todayForgotten, control: ExecutionControl(), now: fixedNow
+        )
+        XCTAssertEqual(forgottenOutcome.words, ["forget"])
+        XCTAssertEqual(
+            forgottenOutcome.completeness,
+            .mismatchedWithProgress(finished: 5, read: 3)
+        )
+        XCTAssertEqual(forgottenTransport.requests.count, 2)
+
+        let (vague, _) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 5, total: 10),
+            completed,
+        ]))
+        let vagueOutcome = try await vague.run(.todayVague, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(vagueOutcome.words, ["vague"])
+        XCTAssertEqual(
+            vagueOutcome.completeness,
+            .mismatchedWithProgress(finished: 5, read: 3)
+        )
+    }
+
+    func testFilteredTodayPresetsInheritCappedAndProvenCompleteness() async throws {
+        let fullPage: [[String: Any]] = (0..<1000).map {
+            studyTodayItem(id: "VOC_\($0)", spelling: "word\($0)", order: $0, isFinished: true)
+        }
+        // Exactly 1000 completed rows with no progress proof: the filtered
+        // preset is capped, never silently complete.
+        let (capped, _) = makeRunner(FakeHTTPTransport([
+            .failure(.transport),
+            studyTodayItemsResponse(fullPage),
+        ]))
+        let cappedOutcome = try await capped.run(
+            .todayForgotten, control: ExecutionControl(), now: fixedNow
+        )
+        XCTAssertEqual(cappedOutcome.completeness, .cappedAtSingleCallLimit)
+
+        // Matching progress equality proves the 1000-row read complete.
+        let (proved, _) = makeRunner(FakeHTTPTransport([
+            studyProgressResponse(finished: 1000, total: 1000),
+            studyTodayItemsResponse(fullPage),
+        ]))
+        let provedOutcome = try await proved.run(
+            .todayVague, control: ExecutionControl(), now: fixedNow
+        )
+        XCTAssertEqual(provedOutcome.completeness, .complete)
     }
 
     // MARK: - 今天新添加 (Beijing study day)
@@ -392,9 +500,23 @@ final class StudyExportTests: XCTestCase {
                 studyRecord(id: "VOC_BAD", spelling: "bad", addDate: "20/03/2026"),
             ]),
         ])
-        // A malformed required add_date must fail the preset, never silently
-        // skip the record and still claim completeness.
+        // A malformed required-shape add_date must fail the preset, never
+        // silently skip the record and still claim completeness.
         XCTAssertEqual(thrown as? CompanionError, .itemResponseRejected)
+    }
+
+    /// 今天新添加 is the one preset that must classify *every* record by add
+    /// date, so one otherwise-valid record without `add_date` fails this
+    /// preset truthfully instead of silently omitting it.
+    func testTodayAddedFailsClosedWhenAnyRecordLacksAddDate() async throws {
+        let thrown = await runnerError(.todayAdded, [
+            studyCountResponse(2),
+            studyRecordsResponse([
+                studyRecord(id: "VOC_OK", spelling: "ok", addDate: "2026-03-20T09:00:00+08:00"),
+                studyRecord(id: "VOC_UNKNOWN", spelling: "unknown", addDate: nil),
+            ]),
+        ])
+        XCTAssertEqual(thrown as? StudyExportError, .addDateUnavailable)
     }
 
     // MARK: - 顽固词 / 熟知词
@@ -403,8 +525,43 @@ final class StudyExportTests: XCTestCase {
         let records = studyRecordsResponse([
             studyRecord(id: "VOC_S", spelling: "sticky", addDate: "2026-01-01", tags: ["STICKING"]),
             studyRecord(id: "VOC_W", spelling: "familiar", addDate: "2026-01-01", tags: ["WELL_FAMILIAR"]),
+            // The neutral sentinel matches neither preset.
+            studyRecord(id: "VOC_U", spelling: "neutral", addDate: nil, tags: ["STUDY_RECORD_TAG_UNSPECIFIED"]),
             studyRecord(id: "VOC_P", spelling: "plain", addDate: "2026-01-01", tags: []),
         ])
+        let (sticking, _) = makeRunner(FakeHTTPTransport([studyCountResponse(4), records]))
+        let stickingOutcome = try await sticking.run(.sticking, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(stickingOutcome.words, ["sticky"])
+
+        let (familiar, _) = makeRunner(FakeHTTPTransport([studyCountResponse(4), records]))
+        let familiarOutcome = try await familiar.run(.wellFamiliar, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(familiarOutcome.words, ["familiar"])
+    }
+
+    // MARK: - Optional add_date (proto-derived official shape)
+
+    /// Records without `add_date` are legitimate for every preset that does
+    /// not classify by add date: 全部学习词 exports them, and 顽固词 /
+    /// 熟知词 / N 天内复习 keep working.
+    func testRecordPresetsNotRequiringAddDateOperateWithoutIt() async throws {
+        let records = studyRecordsResponse([
+            studyRecord(
+                id: "VOC_S", spelling: "sticky", addDate: nil,
+                nextStudyDate: "2026-03-22T00:00:00+08:00", tags: ["STICKING"]
+            ),
+            studyRecord(
+                id: "VOC_W", spelling: "familiar", addDate: nil,
+                nextStudyDate: "2026-03-23T00:00:00+08:00", tags: ["WELL_FAMILIAR"]
+            ),
+            studyRecord(
+                id: "VOC_P", spelling: "plain", addDate: nil,
+                nextStudyDate: "2026-03-24T00:00:00+08:00"
+            ),
+        ])
+        let (allWords, _) = makeRunner(FakeHTTPTransport([studyCountResponse(3), records]))
+        let allOutcome = try await allWords.run(.allWords, control: ExecutionControl(), now: fixedNow)
+        XCTAssertEqual(allOutcome.words, ["sticky", "familiar", "plain"])
+
         let (sticking, _) = makeRunner(FakeHTTPTransport([studyCountResponse(3), records]))
         let stickingOutcome = try await sticking.run(.sticking, control: ExecutionControl(), now: fixedNow)
         XCTAssertEqual(stickingOutcome.words, ["sticky"])
@@ -412,6 +569,12 @@ final class StudyExportTests: XCTestCase {
         let (familiar, _) = makeRunner(FakeHTTPTransport([studyCountResponse(3), records]))
         let familiarOutcome = try await familiar.run(.wellFamiliar, control: ExecutionControl(), now: fixedNow)
         XCTAssertEqual(familiarOutcome.words, ["familiar"])
+
+        let (review, _) = makeRunner(FakeHTTPTransport([studyCountResponse(3), records]))
+        let reviewOutcome = try await review.run(
+            .reviewWithin(days: 3), control: ExecutionControl(), now: fixedNow
+        )
+        XCTAssertEqual(reviewOutcome.completeness, .complete)
     }
 
     // MARK: - N 天内复习

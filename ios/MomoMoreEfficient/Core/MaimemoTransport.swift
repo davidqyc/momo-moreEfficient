@@ -477,11 +477,23 @@ final class MaimemoTransport {
                   let vocabularyID = record["voc_id"] as? String,
                   isSafeIdentifier(vocabularyID),
                   let spelling = safeStudySpelling(record["voc_spelling"]),
-                  let addDateRaw = record["add_date"] as? String,
-                  let addDate = StudyDateParsing.parse(addDateRaw),
                   let studyCount = strictInteger(record["study_count"])
             else {
                 throw CompanionError.itemResponseRejected
+            }
+            // Optional documented date (`add_date?` in the current
+            // proto-derived official type): absent or null decodes as `nil`,
+            // present-but-malformed or wrong-typed is an item rejection.
+            // Presets that do not classify by add date must not fail on its
+            // absence; `今天新添加` fail-closes on `nil` itself.
+            let addDate: Date?
+            if let raw = try studyOptionalString(record["add_date"]) {
+                guard let parsed = StudyDateParsing.parse(raw) else {
+                    throw CompanionError.itemResponseRejected
+                }
+                addDate = parsed
+            } else {
+                addDate = nil
             }
             // Optional documented date. Present-but-malformed is an item
             // rejection: silently dropping it could both lose a word and
@@ -531,15 +543,13 @@ final class MaimemoTransport {
         return response
     }
 
+    /// The official proto-derived `StudyRecord.tags` is an **array** whose
+    /// elements come from the closed generated enum (including the neutral
+    /// `STUDY_RECORD_TAG_UNSPECIFIED` sentinel). No first-party source
+    /// documents a scalar wire shape, so a scalar is a decode rejection, and
+    /// any element outside the official enum fails closed.
     private func studyRecordTags(_ value: Any?) throws -> [StudyRecordTag] {
-        if value is NSNull { return [] }
-        guard let raw = value else { return [] }
-        let elements: [String]
-        if let single = raw as? String {
-            elements = [single]
-        } else if let array = raw as? [String] {
-            elements = array
-        } else {
+        guard let elements = value as? [String] else {
             throw CompanionError.itemResponseRejected
         }
         return try elements.map { element in

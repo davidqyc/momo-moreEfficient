@@ -735,7 +735,7 @@ func studyTodayItemsResponse(_ records: [[String: Any]]) -> StubbedResult {
 func studyRecord(
     id: String,
     spelling: String,
-    addDate: String,
+    addDate: String?,
     nextStudyDate: String? = nil,
     studyCount: Int = 1,
     tags: Any = [String]()
@@ -743,10 +743,10 @@ func studyRecord(
     var record: [String: Any] = [
         "voc_id": id,
         "voc_spelling": spelling,
-        "add_date": addDate,
         "study_count": studyCount,
         "tags": tags,
     ]
+    if let addDate { record["add_date"] = addDate }
     if let nextStudyDate { record["next_study_date"] = nextStudyDate }
     return record
 }
