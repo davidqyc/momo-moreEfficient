@@ -306,7 +306,7 @@ final class StudyExportDiagnosticTests: XCTestCase {
         }
         XCTAssertEqual(
             thrown as? StudyExportError,
-            .coverageGap(expected: 2710, read: 1565, countedThroughFinalDate: 1600)
+            .coverageGap(expected: 2710, read: 1565, countedThroughFinalDate: 1600, finalDate: studyFixedDate("2026-03-03T01:00:00+08:00"))
         )
 
         let report = journal.formattedReport()

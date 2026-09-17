@@ -52,10 +52,12 @@ struct StudyExportView: View {
                     .transition(.opacity)
             }
         }
-        // Leaving the page stops subsequent study reads; the provider
-        // operation lane is released by the run's own epilogue.
+        // Leaving the page stops subsequent study reads and any running
+        // enumerability probe; the provider operation lane is released by
+        // each run's own epilogue.
         .onDisappear {
             store.logScreenDisappear()
+            store.cancelProbe()
             store.stop()
         }
         .onAppear {
@@ -317,12 +319,54 @@ struct StudyExportView: View {
                     message: failure.message,
                     tone: .stop
                 )
+                // The enumerability probe unlocks only on the coverageGap
+                // failure, and runs only as an explicit user action.
+                if store.showsCoverageProbe {
+                    coverageProbeSection
+                }
                 CaptionLine(text: "不会自动重试；点按下方按钮重试，或返回列表。")
                 Spacer(minLength: Theme.gapL)
             }
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, Theme.gapM)
         }
+    }
+
+    /// The #155 diagnostic-only enumerability probe surface: explicit action,
+    /// read-only copy, counts-only result. No word list is ever produced here.
+    @ViewBuilder
+    private var coverageProbeSection: some View {
+        VStack(alignment: .leading, spacing: Theme.gapS) {
+            GroupedCard(title: "完整性探针") {
+                VStack(alignment: .leading, spacing: Theme.gapS) {
+                    switch store.probePhase {
+                    case .idle:
+                        PrimaryPillButton(title: "运行完整性探针", isEnabled: viewModel.isConnected && !viewModel.isProviderLaneBusy) {
+                            runCoverageProbe()
+                        }
+                        CaptionLine(text: "只读取。将按日期区间核对墨墨 count 与可枚举 records，不会导出或修改学习数据。")
+                    case .running:
+                        HStack(spacing: Theme.gapS) {
+                            ProgressView().controlSize(.small).tint(Theme.ink)
+                            Text("完整性探针运行中…")
+                                .font(Theme.row)
+                                .foregroundStyle(Theme.ink)
+                        }
+                        CaptionLine(text: "最多 32 次只读请求；离开本页会停止探针。")
+                    case let .completed(verdict):
+                        AckLine(text: "完整性探针：已完成 · \(verdict.chineseLabel)")
+                    }
+                }
+                .padding(Theme.rowPaddingH)
+            }
+        }
+    }
+
+    private func runCoverageProbe() {
+        guard viewModel.isConnected, !viewModel.isProviderLaneBusy,
+              let lease = viewModel.beginQueryRead()
+        else { return }
+        store.startCoverageProbe(lease: lease)
     }
 
     // MARK: - Bottom actions

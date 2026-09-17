@@ -955,7 +955,7 @@ final class StudyExportTests: XCTestCase {
 
         XCTAssertEqual(
             thrown as? StudyExportError,
-            .coverageGap(expected: 2710, read: 1565, countedThroughFinalDate: 1600)
+            .coverageGap(expected: 2710, read: 1565, countedThroughFinalDate: 1600, finalDate: studyFixedDate("2026-03-04T01:00:00+08:00"))
         )
         // count + 4 pages + exactly one probe = 6 requests. No partial success.
         XCTAssertEqual(transport.requests.count, 6)

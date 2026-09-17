@@ -21,6 +21,12 @@ final class StudyExportStore: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
+    /// True only while the latest failure is `studyExport.coverageGap`: the
+    /// one state that unlocks the explicit 运行完整性探针 diagnostic action.
+    @Published private(set) var showsCoverageProbe = false
+    /// The bounded enumerability probe's state. Diagnostic-only: it produces
+    /// no word list and never changes production export semantics.
+    @Published private(set) var probePhase: ProbePhase = .idle
     /// The account identity the current result belongs to. Truth produced
     /// under one identity is never shown under another.
     private(set) var sessionIdentity = AccountIdentity.disconnected
@@ -33,6 +39,13 @@ final class StudyExportStore: ObservableObject {
         case failed(StudyExportPreset, Failure)
     }
 
+    /// The on-device enumerability probe's phase (#155 diagnostic only).
+    enum ProbePhase: Equatable {
+        case idle
+        case running
+        case completed(StudyRecordEnumerabilityProbeVerdict)
+    }
+
     private var runGeneration = 0
     private var activeControl: ExecutionControl?
     private var activeTask: Task<Void, Never>?
@@ -41,6 +54,11 @@ final class StudyExportStore: ObservableObject {
     /// The bounded, sanitized on-device diagnostic trail. `nil` in tests that
     /// do not exercise diagnostics; production uses the shared journal.
     private let journal: StudyExportDiagnosticJournal?
+    /// The last coverage-gap anchor reported by a failed full-record run —
+    /// the safe upper anchor the probe may reuse. Memory-only.
+    private var coverageGapAnchorDate: Date?
+    private var probeControl: ExecutionControl?
+    private var probeTask: Task<Void, Never>?
 
     init(
         dateProvider: @escaping () -> Date = Date.init,
@@ -119,6 +137,66 @@ final class StudyExportStore: ObservableObject {
         log("query_handoff count=\(count)")
     }
 
+    // MARK: - Enumerability probe (#155, diagnostic only)
+
+    /// The short Chinese verdict label once the probe completed.
+    var probeVerdictLabel: String? {
+        guard case let .completed(verdict) = probePhase else { return nil }
+        return verdict.chineseLabel
+    }
+
+    /// Starts the bounded enumerability probe as an explicit user action.
+    /// The caller mints the lease through the same read seam; the probe
+    /// cannot run concurrently with an export run (lane-guarded) and is
+    /// cancelled by leaving the page. Diagnostic-only: no word list, and
+    /// production export semantics stay fail-closed.
+    func startCoverageProbe(lease: QueryReadLease) {
+        guard !isRunning, probePhase != .running, showsCoverageProbe else {
+            lease.finish()
+            return
+        }
+        let runID = "probe" + String(UUID().uuidString.prefix(6))
+        let control = ExecutionControl()
+        probeControl = control
+        probePhase = .running
+        let anchor = coverageGapAnchorDate
+        // The whole epilogue stays on the MainActor: QueryReadLease (and its
+        // finish()/authentication-reporting seam) is a @MainActor object, so
+        // lease.finish() must never run on a global-executor thread.
+        probeTask = Task { @MainActor [weak self] in
+            let verdict = await StudyRecordEnumerabilityProbe(
+                api: lease.api,
+                journal: self?.journal,
+                hintAnchorDate: anchor
+            ).run(control: control, runID: runID)
+            lease.finish()
+            guard let self else { return }
+            // A probe superseded by a newer export run must not resurrect a
+            // stale verdict; a cancelled probe leaves no verdict surface.
+            if verdict == .cancelled {
+                self.probePhase = .idle
+            } else if self.showsCoverageProbe {
+                self.probePhase = .completed(verdict)
+            }
+        }
+    }
+
+    /// Leaving Study Export cancels remaining probe calls; the lane releases
+    /// through the probe task's own epilogue. The task handle is kept so
+    /// `awaitProbeCompletion` can wait for the unwind.
+    func cancelProbe() {
+        guard probePhase == .running else { return }
+        probeControl?.requestCancellation()
+        probeTask?.cancel()
+        probeControl = nil
+    }
+
+    /// Awaits the running probe so headless tests can assert terminal state
+    /// without polling. Production never calls this.
+    func awaitProbeCompletion() async {
+        await probeTask?.value
+    }
+
     // MARK: - Account identity
 
     /// Called with the root owner's current `AccountIdentity` whenever it
@@ -129,7 +207,11 @@ final class StudyExportStore: ObservableObject {
     func handleAccountIdentityChange(to identity: AccountIdentity) {
         guard identity != sessionIdentity else { return }
         stopDispatching()
+        cancelProbe()
         phase = .idle
+        showsCoverageProbe = false
+        coverageGapAnchorDate = nil
+        probePhase = .idle
         sessionIdentity = identity
         // The diagnostic journal deliberately survives account changes: it
         // holds no account identity and no private word data.
@@ -168,10 +250,14 @@ final class StudyExportStore: ObservableObject {
     /// `beginQueryRead()` read seam Query uses); if this store cannot start,
     /// the lease is finished immediately so the lane is never held.
     func start(_ preset: StudyExportPreset, lease: QueryReadLease) {
-        guard !isRunning else {
+        guard !isRunning, probePhase != .running else {
             lease.finish()
             return
         }
+        // A fresh export run invalidates the previous failure's probe affordance.
+        showsCoverageProbe = false
+        coverageGapAnchorDate = nil
+        probePhase = .idle
         let runID = String(UUID().uuidString.prefix(8))
         log("run_start preset=\(preset.caseName) run=\(runID)", run: runID)
         runGeneration &+= 1
@@ -225,6 +311,12 @@ final class StudyExportStore: ObservableObject {
                 lease.reportAuthenticationRejection()
             }
             log("run_failed category=\(StudyExportDiagnosticCategory.sanitized(error))", run: runID)
+            if let studyError = error as? StudyExportError,
+               case let .coverageGap(_, _, _, finalDate) = studyError {
+                // The exact safe anchor the enumerability probe may reuse.
+                showsCoverageProbe = true
+                coverageGapAnchorDate = finalDate
+            }
             phase = .failed(preset, Self.failureMessage(for: error))
         }
     }
@@ -248,7 +340,7 @@ final class StudyExportStore: ObservableObject {
                     message: "墨墨报告共 \(expected) 条记录，但分页读取只安全取得 \(read) 条唯一记录。"
                         + "可能是数据正在同步；稍后重试。"
                 )
-            case let .coverageGap(expected, read, countedThroughFinalDate):
+            case let .coverageGap(expected, read, countedThroughFinalDate, _):
                 return Failure(
                     title: "无法证明读取完整",
                     message: "墨墨公开接口报告共 \(expected) 条学习记录，"

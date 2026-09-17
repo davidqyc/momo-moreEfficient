@@ -107,7 +107,14 @@ enum StudyExportError: Error, Equatable {
     /// The documented sliding windows reached their terminal short page, the
     /// one coverage probe confirmed records were still unaccounted for, and
     /// the provider offers no documented way to enumerate the remainder.
-    case coverageGap(expected: Int, read: Int, countedThroughFinalDate: Int)
+    /// `finalDate` is the last successfully decoded record's actual
+    /// `next_study_date` — the safe anchor the enumerability probe reuses.
+    case coverageGap(
+        expected: Int,
+        read: Int,
+        countedThroughFinalDate: Int,
+        finalDate: Date?
+    )
 }
 
 /// Which field class of a StudyRecord failed its closed decode. Fixed
@@ -231,6 +238,60 @@ enum StudyExportSemantics {
 
     /// Maimemo's study calendar day is Beijing time (UTC+8, no DST).
     static let studyTimeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+
+    private static let beijingCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = studyTimeZone
+        return calendar
+    }()
+
+    // MARK: Whole-Beijing-day primitives (enumerability probe #155)
+
+    /// 00:00:00 +08:00 of the Beijing day containing `date`.
+    static func beijingDayStart(_ date: Date) -> Date {
+        beijingCalendar.startOfDay(for: date)
+    }
+
+    /// 23:59:59 +08:00 of the Beijing day containing `date` — the inclusive
+    /// whole-day end. Never nextDayStart minus an epsilon.
+    static func beijingDayEnd(_ date: Date) -> Date {
+        var components = DateComponents()
+        components.hour = 23
+        components.minute = 59
+        components.second = 59
+        return beijingCalendar.date(bySettingHour: 23, minute: 59, second: 59, of: beijingDayStart(date))!
+    }
+
+    /// 00:00:00 +08:00 of the Beijing day after the day containing `date`.
+    static func nextDayStart(_ date: Date) -> Date {
+        beijingCalendar.date(byAdding: .day, value: 1, to: beijingDayStart(date))!
+    }
+
+    /// 23:59:59 +08:00 of the Beijing day before the day containing `date`.
+    static func previousDayEnd(_ date: Date) -> Date {
+        beijingDayEnd(beijingCalendar.date(byAdding: .day, value: -1, to: beijingDayStart(date))!)
+    }
+
+    /// The day start `days` whole days after the Beijing day containing
+    /// `date` (negative moves back).
+    static func beijingDayShift(_ date: Date, days: Int) -> Date {
+        beijingCalendar.date(byAdding: .day, value: days, to: beijingDayStart(date))!
+    }
+
+    /// Whole Beijing days from the day containing `from` to the day
+    /// containing `to` (positive when `to` is later).
+    static func beijingDayDistance(from: Date, to: Date) -> Int {
+        beijingCalendar.dateComponents([.day], from: beijingDayStart(from), to: beijingDayStart(to)).day ?? 0
+    }
+
+    /// `yyyy-MM-dd` on the Beijing calendar — a safe diagnostic boundary.
+    static func beijingDayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = studyTimeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
 
     /// The half-open Beijing study day `[start, next start)` containing `now`.
     static func beijingStudyDay(containing now: Date) -> Range<Date> {

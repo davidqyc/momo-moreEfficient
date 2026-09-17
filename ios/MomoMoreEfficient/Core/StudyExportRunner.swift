@@ -437,7 +437,8 @@ struct StudyExportRunner {
             throw StudyExportError.coverageGap(
                 expected: expectedTotal,
                 read: collected.count,
-                countedThroughFinalDate: probe.count
+                countedThroughFinalDate: probe.count,
+                finalDate: finalDate
             )
         } catch let gap as StudyExportError {
             throw gap

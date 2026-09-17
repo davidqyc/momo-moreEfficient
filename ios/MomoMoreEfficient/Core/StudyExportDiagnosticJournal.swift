@@ -45,9 +45,10 @@ enum StudyExportDiagnosticCategory {
                 return "studyExport.paginationBoundaryUnavailable"
             case .addDateUnavailable:
                 return "studyExport.addDateUnavailable"
-            case let .coverageGap(expected, read, countedThroughFinalDate):
+            case let .coverageGap(expected, read, countedThroughFinalDate, finalDate):
                 return "studyExport.coverageGap expected=\(expected) read=\(read)"
                     + " counted_through_final_date=\(countedThroughFinalDate)"
+                    + (finalDate.map { " final_date=\(StudyExportSemantics.beijingDayString($0))" } ?? "")
             }
         case is CancellationError:
             return "cancelled"
