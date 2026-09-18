@@ -55,12 +55,38 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
         /// FILTERED_RESPONSE_OUT_OF_RANGE anomaly).
         var outOfRangeLeak = false
         private(set) var requests: [TransportRequest] = []
+        /// When set, the Nth request (1-based) parks until released — a
+        /// controlled gate for cancellation mid-search tests.
+        var parkOnRequestIndex: Int?
+        private var parkedContinuation: CheckedContinuation<TransportResponse, Error>?
+        private var parkedWaiters: [CheckedContinuation<Void, Never>] = []
+        private var didPark = false
+
+        func waitUntilParked() async {
+            if didPark { return }
+            await withCheckedContinuation { parkedWaiters.append($0) }
+        }
+
+        func release(_ result: StubbedResult = .failure(.cancelled)) {
+            guard let continuation = parkedContinuation else { return }
+            self.parkedContinuation = nil
+            switch result {
+            case let .response(response): continuation.resume(returning: response)
+            case let .failure(error): continuation.resume(throwing: error)
+            }
+        }
 
         func send(
             _ request: TransportRequest,
             credential: OperationCredentialLease
         ) async throws -> TransportResponse {
             requests.append(request)
+            if let target = parkOnRequestIndex, requests.count == target, !didPark {
+                didPark = true
+                parkedWaiters.forEach { $0.resume() }
+                parkedWaiters.removeAll()
+                return try await withCheckedThrowingContinuation { parkedContinuation = $0 }
+            }
             let body = (try? JSONSerialization.jsonObject(with: request.body ?? Data())) as? [String: Any] ?? [:]
             let range = body["next_study_date"] as? [String: Any]
             let start = (range?["start"] as? String).flatMap(StudyDateParsing.parse)
@@ -178,34 +204,38 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
 
     // MARK: - Stage 0/1 + happy path
 
-    /// Tests 1–3, 6, 7, 9: the Owner's real 2716/2316/400 shape closes fully.
-    /// 2316 dated records over 3 days (772 each) + 400 after the anchor;
-    /// the coverage-gap anchor (day 3 boundary area) extends lastDay so
-    /// through_last=2316 and after_last=400; the after-last segment closes
-    /// count=rows=unique; the whole-day split is disjoint and exhaustive and
-    /// every child sum equals its parent; all three leaves close.
+    /// Tests 1–3, 6: the Owner's real 2716/2316/400 shape closes fully under
+    /// the corrected boundary-closure algorithm: both envelopes are proven
+    /// closed with count-only exponential searches, the bounded root equals
+    /// the global count, and every split/leaf closes.
     func testPartitionCase2716ClosesEndToEnd() async {
         let anchor = day(4, 12) // the coverageGap final-date anchor (day 4)
         let journal = makeJournal()
         var world = ProbeWorldTransport()
         world.records = spreadRecords(ids: "VOC", count: 2316, days: [1, 2, 3])
             + spreadRecords(ids: "AFTER", count: 400, days: [5, 6])
-        // First page (first 1000 by date order): min day 1, max day 2.
-        // lastDay extends to day 4 via the anchor.
-        world.countOverride = [:]
 
         let verdict = await runProbe(makeProbe(world, anchor: anchor, journal: journal))
 
-        XCTAssertEqual(verdict, .datePartitionEnumerable)
-        // Whole-day split ranges are disjoint and exhaustive: no data page was
-        // ever requested for a >1000 single day (there are none), and every
-        // request was read-only.
+        if verdict != .datePartitionEnumerable {
+            print("PC_REPORT:\n\(journal.formattedReport())\nPC_END")
+        }
+        let report = journal.formattedReport()
+        print("PC_REPORT2:\n\(report)\nPC_END2")
+        // Both boundaries proven closed by count-only searches.
+        XCTAssertTrue(report.contains("probe_lower_closed date=2026-05-01"))
+        XCTAssertTrue(report.contains("probe_upper_closed date=2026-05-07"))
+        XCTAssertTrue(report.contains("probe_boundary_closed lower=2026-05-01 upper=2026-05-07"))
+        // Bounded-root equality decided the envelope accounts for everything.
+        XCTAssertTrue(report.contains("probe_bounded_root global=2716 bounded=2716"))
+        XCTAssertTrue(report.contains("enumerability_probe_verdict verdict=DATE_PARTITION_ENUMERABLE"))
         XCTAssertTrue(world.allReadOnly)
+        XCTAssertLessThanOrEqual(world.requests.count, StudyRecordEnumerabilityProbe.maxRequestBudget)
     }
 
-    /// Test 3: after_last > 0 proves the previous terminal short page was not
-    /// globally terminal — logged as probe_partition_root after_last=N.
-    func testAfterLastPartitionProvesEarlierTerminalWasNotGlobal() async {
+    /// Test 3: a forward after-last population is handled by the upper
+    /// closure search moving the envelope forward — never an early verdict.
+    func testUpperSearchAbsorbsAfterLastPopulation() async {
         let anchor = day(4, 12)
         let journal = makeJournal()
         var world = ProbeWorldTransport()
@@ -215,8 +245,13 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
         _ = await runProbe(makeProbe(world, anchor: anchor, journal: journal))
 
         let report = journal.formattedReport()
-        XCTAssertTrue(report.contains("probe_partition_root before_first=0 through_last=2316 after_last=400"))
-        XCTAssertTrue(report.contains("probe_after_last count=400 rows=400 unique=400"))
+        // The forward search walked past the seed until count_after hit zero.
+        XCTAssertTrue(report.contains("probe_upper_search step=1 candidate=2026-05-04 count_after=400"))
+        XCTAssertTrue(report.contains("probe_upper_search step=2 candidate=2026-05-05 count_after=200"))
+        XCTAssertTrue(report.contains("probe_upper_search step=4 candidate=2026-05-07 count_after=0"))
+        XCTAssertTrue(report.contains("probe_upper_closed date=2026-05-07"))
+        // The old AFTER_LAST early verdict no longer fires on this condition.
+        XCTAssertFalse(report.contains("AFTER_LAST_UNBOUNDED_OVER_LIMIT"))
     }
 
     // MARK: - Stage 1 verdicts
@@ -234,31 +269,61 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
         XCTAssertEqual(verdict, .globalNotDatePartitionable)
     }
 
-    /// Test 5: before_first > 0 → LOWER_ANCHOR_NOT_CLOSED.
-    func testBeforeFirstPositiveFailsLowerAnchor() async {
-        let anchor = day(3)
+    /// Test 1 — physical-shape regression: the Owner's real run (global
+    /// count 2724, unbounded first page missing genuinely earlier dated
+    /// records) returned LOWER_ANCHOR_NOT_CLOSED at head 6c35421. The
+    /// corrected probe must search backward, close the lower boundary, and
+    /// continue instead of stopping.
+    func testPhysicalShapeRegression2724ClosesLowerBoundary() async {
+        let journal = makeJournal()
         var world = ProbeWorldTransport()
-        world.records = spreadRecords(ids: "VOC", count: 50, days: [3, 4])
-        // The provider claims records before the first-page's earliest day.
-        world.countOverride["|2026-05-02T23:59:59+08:00"] = 5
+        // 2716 records on days 1..5 in construction order plus 8 genuinely
+        // earlier day-0 records at the tail: the unbounded first page never
+        // sees them, exactly like the Owner's real account.
+        world.records = spreadRecords(ids: "VOC", count: 2716, days: [1, 2, 3, 4, 5])
+            + spreadRecords(ids: "EARLY", count: 8, days: [0])
 
-        let verdict = await runProbe(makeProbe(world, anchor: anchor))
+        let verdict = await runProbe(makeProbe(world, journal: journal))
 
-        XCTAssertEqual(verdict, .lowerAnchorNotClosed)
+        XCTAssertEqual(verdict, .datePartitionEnumerable)
+        let report = journal.formattedReport()
+        XCTAssertTrue(report.contains("probe_global total=2724"))
+        // The lower search walked backward past the first-page seed and
+        // closed on the genuinely earliest day.
+        XCTAssertTrue(report.contains("probe_lower_closed date=2026-04-30"))
+        XCTAssertFalse(report.contains("verdict=LOWER_ANCHOR_NOT_CLOSED"))
     }
 
-    /// After-last > 1000 → AFTER_LAST_UNBOUNDED_OVER_LIMIT; the unbounded
-    /// future is never chased. The first page is exactly filled by records at
-    /// or before the anchor day, so lastDay stays the anchor day.
-    func testAfterLastOverLimitIsNotChased() async {
-        let anchor = day(2, 12)
+    /// Test 13: cancellation during the lower-bound search stops future
+    /// requests and releases the lane.
+    func testCancellationDuringLowerSearchStopsFutureCallsAndReleasesLane() async throws {
+        let journal = makeJournal()
+        let store = makeStore(journal: journal)
+        store.handleAccountIdentityChange(to: AccountIdentity(fingerprint: "FP_1", authorityGeneration: 1))
+        await seedCoverageGapFailure(store: store)
+
         var world = ProbeWorldTransport()
-        world.records = spreadRecords(ids: "VOC", count: 1000, days: [1, 2])
-            + spreadRecords(ids: "AFTER", count: 1200, days: [3, 4, 5])
+        world.records = spreadRecords(ids: "VOC", count: 16000, days: (1...1600).map { $0 })
+        // Park on the third request: global count, first page, then the very
+        // first lower-bound count.
+        world.parkOnRequestIndex = 3
 
-        let verdict = await runProbe(makeProbe(world, anchor: anchor))
+        let laneReleased = ThreadSafeCounter()
+        let lease = try queryLease(world, onFinish: { laneReleased.record() })
+        store.startCoverageProbe(lease: lease)
+        await world.waitUntilParked()
 
-        XCTAssertEqual(verdict, .afterLastUnboundedOverLimit)
+        store.cancelProbe()
+        await world.release()
+        await store.awaitProbeCompletion()
+
+        XCTAssertEqual(store.probePhase, .idle)
+        XCTAssertTrue(laneReleased.didFire)
+        let report = journal.formattedReport()
+        XCTAssertTrue(report.contains("probe_stop reason=cancelled"))
+        XCTAssertTrue(report.contains("enumerability_probe_verdict verdict=CANCELLED"))
+        // Nothing was dispatched after the cancellation point.
+        XCTAssertLessThanOrEqual(world.requests.count, 3)
     }
 
     // MARK: - Stage 2 partition verdicts
@@ -279,6 +344,9 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
     func testLeafRowsBelowCount() async {
         var world = ProbeWorldTransport()
         world.records = spreadRecords(ids: "VOC", count: 500, days: [2])
+        // The inflated count applies to the unfiltered global read as well,
+        // so the anomaly isolates to the leaf's count/data mismatch.
+        world.countOverride["|"] = 600
         world.countOverride["2026-05-02T00:00:00+08:00|2026-05-02T23:59:59+08:00"] = 600
 
         let verdict = await runProbe(makeProbe(world))
@@ -412,7 +480,9 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
         let report = journal.formattedReport()
         XCTAssertTrue(report.contains("enumerability_probe_start"))
         XCTAssertTrue(report.contains("probe_global total=2716"))
-        XCTAssertTrue(report.contains("probe_anchor first_day=2026-05-01 last_day=2026-05-04"))
+        XCTAssertTrue(report.contains("probe_anchor seed_first_day=2026-05-01 seed_last_day=2026-05-04"))
+        XCTAssertTrue(report.contains("probe_lower_closed date=2026-05-01"))
+        XCTAssertTrue(report.contains("probe_upper_closed date=2026-05-07"))
         XCTAssertTrue(report.contains("enumerability_probe_verdict verdict=DATE_PARTITION_ENUMERABLE"))
         XCTAssertFalse(report.contains("VOC_SECRET"))
         XCTAssertFalse(report.contains("AFTER_SECRET"))
@@ -432,7 +502,7 @@ final class StudyRecordEnumerabilityProbeTests: XCTestCase {
 
         XCTAssertEqual(verdict, .datePartitionEnumerable)
         XCTAssertTrue(world.allReadOnly)
-        XCTAssertEqual(world.requests.count, 14)
+        XCTAssertEqual(world.requests.count, 17)
     }
 
     // MARK: - Store gating (test 21)

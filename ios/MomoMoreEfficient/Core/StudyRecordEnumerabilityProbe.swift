@@ -14,7 +14,16 @@ enum StudyRecordEnumerabilityProbeVerdict: String, Equatable, Sendable, CaseIter
     case filteredResponseContainsNilDate = "FILTERED_RESPONSE_CONTAINS_NIL_DATE"
     case filteredResponseOutOfRange = "FILTERED_RESPONSE_OUT_OF_RANGE"
     case globalNotDatePartitionable = "GLOBAL_NOT_DATE_PARTITIONABLE"
+    /// A newer boundary-search count moved the envelope earlier/later yet the
+    /// count grew — provider count semantics are not monotonic under the
+    /// documented date filters, so no partition math can be trusted.
+    case boundaryCountNonMonotonic = "BOUNDARY_COUNT_NON_MONOTONIC"
+    /// Backward compatibility only: the corrected boundary-search path never
+    /// emits this (the lower bound is discovered by count-only search, not
+    /// assumed from an unbounded first page).
     case lowerAnchorNotClosed = "LOWER_ANCHOR_NOT_CLOSED"
+    /// Backward compatibility only: the corrected upper search moves the
+    /// envelope forward with cheap count-only calls instead of terminating.
     case afterLastUnboundedOverLimit = "AFTER_LAST_UNBOUNDED_OVER_LIMIT"
     case requestBudgetExhausted = "REQUEST_BUDGET_EXHAUSTED"
     case cancelled = "CANCELLED"
@@ -31,6 +40,7 @@ enum StudyRecordEnumerabilityProbeVerdict: String, Equatable, Sendable, CaseIter
         case .filteredResponseContainsNilDate: return "日期过滤结果包含缺少日期的记录"
         case .filteredResponseOutOfRange: return "日期过滤结果包含区间之外的日期"
         case .globalNotDatePartitionable: return "全量 count 无法按日期分区闭合"
+        case .boundaryCountNonMonotonic: return "日期边界 count 不满足单调关系"
         case .lowerAnchorNotClosed: return "最早日期之前仍有记录，下界未闭合"
         case .afterLastUnboundedOverLimit: return "最后锚点之后超过 1000 条，无法有界追踪"
         case .requestBudgetExhausted: return "探针请求预算（32 次）已用完，结果不确定"
@@ -140,70 +150,108 @@ final class StudyRecordEnumerabilityProbe {
             log("probe_stop reason=no_dated_anchor")
             return .otherSanitizedFailure
         }
-        let firstDay = StudyExportSemantics.beijingDayStart(minDated)
-        // The last usable anchor: the fresh first page's maximum date, extended
-        // by the coverage-gap anchor from the failed export run when available.
-        var lastDay = StudyExportSemantics.beijingDayStart(maxDated)
+        // The first page's min/max are SEARCH SEEDS only — the Owner's real
+        // account proved the unbounded first page can miss genuinely earlier
+        // dated records (LOWER_ANCHOR_NOT_CLOSED at head 6c35421).
+        var lowerCandidate = StudyExportSemantics.beijingDayStart(minDated)
+        var upperCandidate = StudyExportSemantics.beijingDayStart(maxDated)
         if let hint = hintAnchorDate {
             let hintDay = StudyExportSemantics.beijingDayStart(hint)
-            if hintDay > lastDay { lastDay = hintDay }
+            if hintDay > upperCandidate { upperCandidate = hintDay }
         }
         log(
-            "probe_anchor first_day=\(StudyExportSemantics.beijingDayString(firstDay))"
-                + " last_day=\(StudyExportSemantics.beijingDayString(lastDay))"
+            "probe_anchor seed_first_day=\(StudyExportSemantics.beijingDayString(lowerCandidate))"
+                + " seed_last_day=\(StudyExportSemantics.beijingDayString(upperCandidate))"
         )
 
-        // Step 1 — global date-addressability.
-        let beforeFirst = try await countCall(
-            start: nil,
-            end: StudyExportSemantics.previousDayEnd(firstDay)
-        )
-        let throughLast = try await countCall(
-            start: nil,
-            end: StudyExportSemantics.beijingDayEnd(lastDay)
-        )
-        let afterLast = try await countCall(
-            start: StudyExportSemantics.nextDayStart(lastDay),
-            end: nil
-        )
-        log(
-            "probe_partition_root before_first=\(beforeFirst)"
-                + " through_last=\(throughLast) after_last=\(afterLast)"
-                + " partition_sum=\(beforeFirst + throughLast + afterLast)"
-        )
-        if beforeFirst > 0 {
-            return .lowerAnchorNotClosed
-        }
-        if throughLast + afterLast != globalCount {
-            return .globalNotDatePartitionable
-        }
-        // after_last > 0 directly proves the previous terminal short page was
-        // not globally terminal. A small segment is fetched exactly once.
-        if afterLast > 0 {
-            if afterLast > CompanionConstants.studyPageSize {
-                return .afterLastUnboundedOverLimit
+        // Part A — lower-bound closure: count-only exponential backward search
+        // until the envelope's lower edge is proven closed (countBefore == 0).
+        // Counts must be non-increasing as the candidate moves earlier.
+        var lowerStep = 1
+        var previousCountBefore: Int?
+        var lowerClosed = false
+        while lowerClosed == false {
+            let countBefore = try await countCall(
+                start: nil,
+                end: StudyExportSemantics.previousDayEnd(lowerCandidate)
+            )
+            log(
+                "probe_lower_search step=\(lowerStep)"
+                    + " candidate=\(StudyExportSemantics.beijingDayString(lowerCandidate))"
+                    + " count_before=\(countBefore)"
+            )
+            if let previous = previousCountBefore, countBefore > previous {
+                log("probe_stop reason=boundary_count_non_monotonic direction=lower")
+                return .boundaryCountNonMonotonic
             }
-            let segment = try await dataCall(
-                start: StudyExportSemantics.nextDayStart(lastDay),
+            if countBefore == 0 {
+                lowerClosed = true
+                log(
+                    "probe_lower_closed date=\(StudyExportSemantics.beijingDayString(lowerCandidate))"
+                        + " requests_used=\(requestsUsed)"
+                )
+                break
+            }
+            lowerCandidate = StudyExportSemantics.beijingDayShift(lowerCandidate, days: -lowerStep)
+            lowerStep *= 2
+            previousCountBefore = countBefore
+        }
+
+        // Part B — upper-bound closure: the symmetric exponential forward
+        // search. Cheap count-only calls move the envelope arbitrarily far —
+        // no unbounded-future early exit exists in the corrected route.
+        var upperStep = 1
+        var previousCountAfter: Int?
+        var upperClosed = false
+        while upperClosed == false {
+            let countAfter = try await countCall(
+                start: StudyExportSemantics.nextDayStart(upperCandidate),
                 end: nil
             )
-            let uniqueCount = Set(segment.records.map(\.vocabularyID)).count
             log(
-                "probe_after_last count=\(afterLast)"
-                    + " rows=\(segment.records.count) unique=\(uniqueCount)"
+                "probe_upper_search step=\(upperStep)"
+                    + " candidate=\(StudyExportSemantics.beijingDayString(upperCandidate))"
+                    + " count_after=\(countAfter)"
             )
-            if segment.records.count != afterLast {
-                return .leafCountDataGap
+            if let previous = previousCountAfter, countAfter > previous {
+                log("probe_stop reason=boundary_count_non_monotonic direction=upper")
+                return .boundaryCountNonMonotonic
             }
-            if uniqueCount != segment.records.count {
-                return .leafDuplicateIDs
+            if countAfter == 0 {
+                upperClosed = true
+                log(
+                    "probe_upper_closed date=\(StudyExportSemantics.beijingDayString(upperCandidate))"
+                        + " requests_used=\(requestsUsed)"
+                )
+                break
             }
+            upperCandidate = StudyExportSemantics.beijingDayShift(upperCandidate, days: upperStep)
+            upperStep *= 2
+            previousCountAfter = countAfter
         }
 
-        // Step 2 — bounded recursive partition of [firstDay, lastDay].
-        let rootStart = firstDay
-        let rootEnd = StudyExportSemantics.beijingDayEnd(lastDay)
-        let rootCount = try await countCall(start: rootStart, end: rootEnd)
+        // Part C — bounded-root equality: the decisive check for records the
+        // global count sees but the fully closed date envelope cannot account
+        // for. Never labelled next_study_date=nil without a returned record
+        // proving exactly that.
+        let envelopeStart = lowerCandidate
+        let envelopeEnd = StudyExportSemantics.beijingDayEnd(upperCandidate)
+        log(
+            "probe_boundary_closed"
+                + " lower=\(StudyExportSemantics.beijingDayString(envelopeStart))"
+                + " upper=\(StudyExportSemantics.beijingDayString(upperCandidate))"
+        )
+        let boundedRootCount = try await countCall(start: envelopeStart, end: envelopeEnd)
+        log("probe_bounded_root global=\(globalCount) bounded=\(boundedRootCount)")
+        if boundedRootCount != globalCount {
+            return .globalNotDatePartitionable
+        }
+
+        // Part D — bounded recursive partition of the proven envelope
+        // [lowerClosed .. upperClosed].
+        let rootStart = envelopeStart
+        let rootEnd = envelopeEnd
+        let rootCount = boundedRootCount
         log(
             "probe_range depth=0"
                 + " start=\(StudyExportSemantics.beijingDayString(rootStart))"
