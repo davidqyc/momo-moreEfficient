@@ -170,7 +170,10 @@ final class TransportAndPlanningTests: XCTestCase {
             [.create, .blocked, .alreadyMatching]
         )
         XCTAssertEqual(snapshot.presentation.rows[1].reason, "VOCABULARY_NOT_FOUND")
-        XCTAssertEqual(snapshot.presentation.rows[1].compactBlockedReason, "未读取到可用词条目标")
+        XCTAssertEqual(
+            snapshot.presentation.rows[1].compactBlockedReason,
+            "当前 Open API 无法解析该词条；若为自添加词，当前暂不支持"
+        )
         XCTAssertNil(snapshot.items[1].vocabularyID)
         XCTAssertEqual(transport.requests.count, 3, "no unresolved entry costs a content read")
         XCTAssertEqual(transport.postCount, 0)

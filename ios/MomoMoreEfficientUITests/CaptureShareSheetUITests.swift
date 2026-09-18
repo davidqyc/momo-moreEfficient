@@ -38,23 +38,51 @@ final class CaptureShareSheetUITests: XCTestCase {
         // The system Share Sheet is presented modally over our own app; its
         // elements are queryable through the same XCUIApplication instance
         // — no coordinates, no assumption about row position.
-        let extensionRow = app.descendants(matching: .any)
+        //
+        // Since #161 the app's own Home also displays `小黑鸟伴侣` as its
+        // header, and that header sorts first in the hierarchy — so matching by
+        // label alone would resolve to a view the modal sheet is covering.
+        // Hittability disambiguates them without reintroducing a coordinate or
+        // row-position assumption: while the Share Sheet is presented, only the
+        // sheet's own row is actually tappable. (`hittable` is not a valid
+        // predicate key path, so the choice is made here rather than in the
+        // query.)
+        let candidates = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "小黑鸟伴侣"))
-            .firstMatch
         XCTAssertTrue(
-            extensionRow.waitForExistence(timeout: 15),
+            candidates.firstMatch.waitForExistence(timeout: 15),
             "Share Sheet extension row for '小黑鸟伴侣' was not accessibility-selectable"
         )
-        extensionRow.tap()
+
+        var extensionRow: XCUIElement?
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            extensionRow = candidates
+                .allElementsBoundByAccessibilityElement
+                .first { $0.isHittable }
+            if extensionRow != nil { break }
+            _ = candidates.firstMatch.waitForExistence(timeout: 1)
+        }
+        let row = try XCTUnwrap(
+            extensionRow,
+            "No hittable '小黑鸟伴侣' element: the Share Sheet row was never selectable"
+        )
+        row.tap()
 
         // The extension's own UI runs in a separate process
         // (com.jiripple.xiaoheiniao.ShareExtension) but stays reachable
         // through the same XCUIApplication instance once opened.
+        //
+        // Run 34130642290 timed out here at 10s on a loaded CI runner even
+        // though the identical code/build reached this same title in ~4s one
+        // run earlier (34057604549) — the extension process's cold-start cost
+        // on a shared runner, not a broken observation path. 20s absorbs that
+        // variance without weakening what is actually being proven.
         let extensionTitle = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "保存到小黑鸟伴侣"))
             .firstMatch
         XCTAssertTrue(
-            extensionTitle.waitForExistence(timeout: 10),
+            extensionTitle.waitForExistence(timeout: 20),
             "Share Extension's own UI was not reachable through the presenting app's XCUIApplication instance"
         )
 
@@ -73,7 +101,7 @@ final class CaptureShareSheetUITests: XCTestCase {
         // lifecycle, otherwise a missing capture cannot be attributed to
         // either the extension write or the main-app pickup.
         XCTAssertTrue(
-            extensionTitle.waitForNonExistence(timeout: 10),
+            extensionTitle.waitForNonExistence(timeout: 20),
             "Share Extension never completed/dismissed, so PendingCaptureInbox.save did not succeed"
         )
 
