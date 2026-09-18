@@ -28,6 +28,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var pendingBatchConfirmation: PendingBatchConfirmation?
     @Published private(set) var pendingPhraseConfirmation: PendingPhraseConfirmation?
     @Published private(set) var isPreviewStale = false
+    /// #180 cross-mode guard: a high-confidence wrong-mode shape in the
+    /// current editor, blocking Preview before any provider request. `nil`
+    /// means the selected mode may proceed normally.
+    @Published private(set) var modeSafetyIssue: WriteInputModeSafetyIssue?
     @Published private(set) var history: [ExecutionReceipt] = []
     @Published private(set) var completionAcknowledgement: String?
     @Published private(set) var historyErrorMessage: String?
@@ -461,6 +465,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     func previewCurrentInput() async {
+        // #180 double enforcement: the same pure guard runs again here, before
+        // the provider operation lane, before the credential lease, before any
+        // transport exists — a blocked mode mismatch provably sends nothing.
+        if let issue = WriteInputModeGuard.safetyIssue(
+            document: sourceText,
+            selectedMode: contentMode
+        ) {
+            modeSafetyIssue = issue
+            WriteModeGuardDiagnostics.logBlocked(selected: contentMode, issue: issue)
+            return
+        }
         guard !isBusy, beginProviderOperation(.preview) else { return }
         cameFromCapture = false
         let mode = contentMode
@@ -1372,6 +1387,29 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         updateLocalParseState()
     }
 
+    /// The #180 one-tap recovery: switch to the suggested mode while the
+    /// current exact document bytes remain the editor content. The old mode's
+    /// draft stays what the Owner left it as; the same document also becomes
+    /// the target mode's draft. Preview/approval/feedback are invalidated by
+    /// the normal paths, the local parse and the mode guard recompute — and
+    /// neither the clipboard nor the network is involved.
+    func switchModePreservingCurrentText(to mode: ContentMode) {
+        guard canSwitchMode, mode != contentMode else { return }
+        // The current document is already the old mode's draft (sourceText
+        // didSet keeps them in sync); also make it the target mode's draft.
+        storeDraft(sourceText, for: mode)
+        invalidatePreview()
+        detachInlineExecutionFeedback()
+        contentMode = mode
+        updateLocalParseState()
+    }
+
+    /// The Owner-copyable sanitized guard diagnostic (#180).
+    func modeGuardReport() -> String? {
+        guard let modeSafetyIssue else { return nil }
+        return WriteModeGuardDiagnostics.report(selected: contentMode, issue: modeSafetyIssue)
+    }
+
     /// Changing the publication preference invalidates the current
     /// interpretation Preview exactly as a tag change does: the executable
     /// authority no longer describes what would be written.
@@ -1620,6 +1658,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func updateLocalParseState() {
+        // #180 cross-mode guard: recomputed on every edit/mode change so the
+        // editor can show a high-confidence wrong-mode shape before any
+        // provider Preview is even possible.
+        modeSafetyIssue = WriteInputModeGuard.safetyIssue(
+            document: sourceText,
+            selectedMode: contentMode
+        )
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             localParseState = .empty
             return
@@ -1654,7 +1699,11 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func storeActiveDraft(_ document: String) {
-        switch contentMode {
+        storeDraft(document, for: contentMode)
+    }
+
+    private func storeDraft(_ document: String, for mode: ContentMode) {
+        switch mode {
         case .interpretation: interpretationDraft = document
         case .phrase: phraseDraft = document
         }

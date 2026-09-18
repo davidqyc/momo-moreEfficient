@@ -242,6 +242,17 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
                 for: vocabularyID
             )
             return try json([:], status: 201)
+
+        case .studyProgress:
+            // Rehearsal owns no study data: the read-only export surface sees
+            // an empty, consistent today.
+            return try json(["progress": ["finished": 0, "total": 0, "study_time": 0]])
+
+        case .studyTodayItems:
+            return try json(["today_items": []])
+
+        case .studyRecords:
+            return try json(["records": [], "count": 0])
         }
     }
 
