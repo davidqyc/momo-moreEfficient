@@ -1,17 +1,19 @@
 # momo-moreEfficient Coding Reasoning Depth Policy
 
 status=CANONICAL_CODING_REASONING_DEPTH_POLICY
-version=2.0
+version=2.1
 date=2026-08-12
+updatedAt=2026-09-24
 
-本文件只负责**模型 / effort / execution topology 路由**。产品事实和当前任务以 `AGENTS.md`、`docs/PROJECT_STATE.md`、当前 Issue 为准。
+本文件只负责**model role / effort / execution topology 路由**。具体模型版本由 `owner-coordinator@main:docs/routing/MODEL_REGISTRY.json` JIT 解析；产品事实和当前任务以 `AGENTS.md`、`docs/PROJECT_STATE.md`、当前 Issue 为准。
 
 ## 1. 正式 Prompt 头
 
 实质 coding / review Prompt 仍写：
 
 ```text
-Model: GPT-5.6 Sol
+MODEL_ROLE: CODEX_SOL
+Model: <JIT-resolved display>
 思考深度: 轻度 | 中 | 高 | 极高 | 最高
 执行模式: 单 Agent | Ultra
 选择原因: <一句话>
@@ -75,8 +77,8 @@ Model: GPT-5.6 Sol
 
 Claude coding / architecture Agent 的正式输入 Prompt 和 Agent 自生成报告默认全英文。
 
-- 普通架构敏感 fresh review：Opus 5 / Extra / Single Agent；
-- 最高能力、长程 architecture reset：Fable 5 / Max / Single Agent；
+- 普通架构敏感 fresh review：CLAUDE_OPUS / Extra / Single Agent；
+- 最高能力、长程 architecture reset：CLAUDE_FABLE / Max / Single Agent；
 - 不为了“更强”默认使用 Ultracode；本项目通常是一条连续判断链，单 Agent 更合适。
 
 具体 Claude 产品端映射以 `davidqyc/agent-skills` 的 `claude-model-effort-routing` 与项目 instance 为准。
