@@ -58,8 +58,10 @@ PROJECT_STATE
 
 ```text
 ChatGPT = Coordinator
-default heavy Builder = Codex / GPT-5.6 Sol
+default heavy Builder = Codex / CODEX_SOL
 ```
+
+`CODEX_SOL` 等模型角色统一由 `owner-coordinator@main:docs/routing/MODEL_REGISTRY.json` JIT 解析；本项目不再固定具体模型版本。
 
 ChatGPT Coordinator 负责：current truth、产品/安全 adjudication、Builder/Reviewer dispatch、返回结果审阅、普通 merge/readback、轻量 docs/state sync。
 

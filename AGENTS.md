@@ -163,8 +163,8 @@ Owner 会在需要切 Claude / Codex / 其它工具时直接告诉项目 Coordin
 
 例如：
 
-- 当前 family=Claude 时，普通边界明确 coding 常见形状可为 Sonnet 5 / High / Standard / Single Agent，但必须 JIT 复核；
-- 当前 family=Codex 时，普通边界明确 coding 常见形状可为 GPT-5.6 Sol / 高 / Single Agent，但必须 JIT 复核；
+- 当前 family=Claude 时，普通边界明确 coding 常见形状可为 CLAUDE_SONNET / High / Standard / Single Agent，具体模型由中央 Registry JIT 解析；
+- 当前 family=Codex 时，普通边界明确 coding 常见形状可为 CODEX_SOL / 高 / Single Agent，具体模型由中央 Registry JIT 解析；
 - 架构简化/高风险审阅需要升级能力时，按当前 family 和 live routing 决定，不从项目名推导。
 
 Claude coding/architecture Agent 的正式输入 Prompt 使用英文；Codex 标题/Prompt 呈现等按 live cross-project presentation/routing contract；Owner-facing Coordinator 回复仍按 live Owner collaboration preferences。

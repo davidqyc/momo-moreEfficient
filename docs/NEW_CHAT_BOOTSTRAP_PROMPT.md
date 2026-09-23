@@ -25,7 +25,7 @@ docs/PROJECT_STATE.md
 
 ```text
 ChatGPT = Coordinator
-Codex / GPT-5.6 Sol = default heavy Builder
+Codex / CODEX_SOL = default heavy Builder
 ```
 
 本 Prompt 允许 readback、纯文档机械状态同步、bounded review/planning/preflight/dispatch preparation；不自动授权真实账号写入、Token use、delete、未授权产品实现、release/publish 或 destructive Git。
