@@ -62,6 +62,72 @@ enum WriteTagPreference {
     }
 }
 
+/// The interpretation publication status the Owner intends to write (#161).
+///
+/// Deliberately *not* a relaxation of `CompanionConstants.status`, which stays
+/// the immutable legacy/shared constant the phrase path and every default write
+/// still bind to. This is a separate, explicitly allowlisted value threaded
+/// through the interpretation Preview snapshot → binding context → digest →
+/// fresh preflight → request body → authenticated readback chain.
+///
+/// `UNPUBLISHED` is the provider's own status name, proven by the current
+/// first-party `maimemo/memo-api-cli` interpretation contract. Its user-facing
+/// label is 未发布 and nothing else: the public contract does not establish that
+/// the status means "private", only that it is a documented non-published state,
+/// so the forbidden-copy guard in the test suite asserts the private-sounding
+/// word appears nowhere in production sources.
+enum InterpretationPublicationStatus: String, Codable, CaseIterable, Equatable, Sendable {
+    case published = "PUBLISHED"
+    case unpublished = "UNPUBLISHED"
+
+    /// The exact set a create/update request may carry. Anything else fails
+    /// closed rather than being forwarded to the provider.
+    static let documentedWriteStatuses: Set<String> = Set(
+        allCases.map(\.rawValue)
+    )
+
+    static func isDocumentedWriteStatus(_ status: String) -> Bool {
+        documentedWriteStatuses.contains(status)
+    }
+
+    init?(providerStatus: String) {
+        guard let value = InterpretationPublicationStatus(rawValue: providerStatus) else {
+            return nil
+        }
+        self = value
+    }
+
+    var providerStatus: String { rawValue }
+    var label: String { self == .published ? "公开" : "未发布" }
+}
+
+/// The device-local interpretation publication preference.
+///
+/// Non-sensitive local preference data stored exactly like `WriteTagPreference`:
+/// no remote state, credential state or History record participates. The default
+/// preserves today's behavior, so an app that has never seen this preference
+/// writes precisely what it wrote before.
+enum InterpretationPublicationPreference {
+    static let userDefaultsKey = "interpretation-publication-preference-v1"
+    static let `default` = InterpretationPublicationStatus.published
+
+    static func load(from defaults: UserDefaults) -> InterpretationPublicationStatus {
+        guard let stored = defaults.string(forKey: userDefaultsKey),
+              let value = InterpretationPublicationStatus(rawValue: stored)
+        else {
+            return `default`
+        }
+        return value
+    }
+
+    static func save(
+        _ status: InterpretationPublicationStatus,
+        to defaults: UserDefaults
+    ) {
+        defaults.set(status.rawValue, forKey: userDefaultsKey)
+    }
+}
+
 enum ContentMode: String, CaseIterable, Equatable, Sendable {
     case interpretation
     case phrase
@@ -98,6 +164,8 @@ enum CompanionError: String, Error, Codable, Equatable, Sendable, CustomStringCo
     case previewInterrupted
     case credentialStorageUnavailable
     case remainingPhaseChanged
+    case phraseJournalUnavailable
+    case phraseJournalProtectionFailed
 
     var description: String {
         switch self {
@@ -137,6 +205,10 @@ enum CompanionError: String, Error, Codable, Equatable, Sendable, CustomStringCo
             return "预览被系统中断；未写入任何数据，可重新预览。"
         case .credentialStorageUnavailable:
             return "无法安全访问设备上的 Token；请解锁设备后重试。"
+        case .phraseJournalUnavailable:
+            return "本机例句安全记录无法读取或保存；已停止例句新建，未发送新的写请求。"
+        case .phraseJournalProtectionFailed:
+            return "例句已创建，但本机防重复保护未能保存；请勿重复提交。本次打开 App 期间已停止后续例句新建。"
         case .remainingPhaseChanged:
             return "后续阶段的服务器状态已变化；该阶段未发送任何写请求，请重新预览。"
         }
@@ -221,7 +293,7 @@ struct PreviewRow: Codable, Equatable, Identifiable, Sendable {
         guard classification == .blocked else { return nil }
         switch reason {
         case "AMBIGUOUS": return "存在多条自建释义"
-        case "VOCABULARY_NOT_FOUND": return "未读取到可用词条目标"
+        case "VOCABULARY_NOT_FOUND": return "当前 Open API 无法解析该词条；若为自添加词，当前暂不支持"
         case "VOCABULARY_MATCH_ANOMALY": return "词条目标匹配异常"
         default: return "其他无法安全读取"
         }
@@ -439,11 +511,90 @@ struct ReadbackAttemptDiagnostic: Codable, Equatable, Sendable {
 /// The one shared, intentionally small write diagnostic used by phrase and
 /// interpretation executors. Receipt-level data supplies content kind,
 /// operation, timestamp and build metadata.
+enum PhraseCreateResponseCategory: String, Codable, Equatable, Sendable {
+    case proven, malformed, mismatching
+}
+
+/// A closed fingerprint of an English CREATE-response mismatch. It deliberately
+/// stores Unicode-scalar counts and code points only, never either source string.
+struct PhraseEnglishScalarDiff: Codable, Equatable, Sendable {
+    let expectedScalarCount: Int
+    let returnedScalarCount: Int
+    let commonPrefixScalarCount: Int
+    let commonSuffixScalarCount: Int
+    let expectedFirstDifferenceScalar: UInt32?
+    let returnedFirstDifferenceScalar: UInt32?
+
+    init(expected: String, returned: String) {
+        let expectedScalars = expected.unicodeScalars.map(\.value)
+        let returnedScalars = returned.unicodeScalars.map(\.value)
+        let sharedCount = min(expectedScalars.count, returnedScalars.count)
+
+        var prefixCount = 0
+        while prefixCount < sharedCount,
+              expectedScalars[prefixCount] == returnedScalars[prefixCount] {
+            prefixCount += 1
+        }
+
+        var suffixCount = 0
+        let maximumSuffixCount = sharedCount - prefixCount
+        while suffixCount < maximumSuffixCount,
+              expectedScalars[expectedScalars.count - suffixCount - 1]
+                == returnedScalars[returnedScalars.count - suffixCount - 1] {
+            suffixCount += 1
+        }
+
+        expectedScalarCount = expectedScalars.count
+        returnedScalarCount = returnedScalars.count
+        commonPrefixScalarCount = prefixCount
+        commonSuffixScalarCount = suffixCount
+        expectedFirstDifferenceScalar = prefixCount < expectedScalars.count
+            ? expectedScalars[prefixCount]
+            : nil
+        returnedFirstDifferenceScalar = prefixCount < returnedScalars.count
+            ? returnedScalars[prefixCount]
+            : nil
+    }
+
+    var compactDescription: String {
+        "expectedLen=\(expectedScalarCount) returnedLen=\(returnedScalarCount) "
+            + "prefix=\(commonPrefixScalarCount) suffix=\(commonSuffixScalarCount) "
+            + "expected=\(Self.format(expectedFirstDifferenceScalar)) "
+            + "returned=\(Self.format(returnedFirstDifferenceScalar))"
+    }
+
+    private static func format(_ scalar: UInt32?) -> String {
+        scalar.map { String(format: "U+%04X", $0) } ?? "none"
+    }
+}
+
 struct WriteAttemptDiagnostic: Codable, Equatable, Sendable {
     let ordinal: Int
     let postDispatch: PostDispatchCategory
     let readbackAttempts: [ReadbackAttemptDiagnostic]
     let terminalErrorCategory: CompanionError?
+    let phraseCreateResponse: PhraseCreateResponseCategory?
+    let phraseCreateMismatchKeys: [PhraseMismatchKey]?
+    let phraseEnglishScalarDiff: PhraseEnglishScalarDiff?
+
+    init(ordinal: Int, postDispatch: PostDispatchCategory, readbackAttempts: [ReadbackAttemptDiagnostic],
+         terminalErrorCategory: CompanionError?, phraseCreateResponse: PhraseCreateResponseCategory? = nil,
+         phraseCreateMismatchKeys: [PhraseMismatchKey]? = nil,
+         phraseEnglishScalarDiff: PhraseEnglishScalarDiff? = nil) {
+        self.ordinal = ordinal
+        self.postDispatch = postDispatch
+        self.readbackAttempts = readbackAttempts
+        self.terminalErrorCategory = terminalErrorCategory
+        self.phraseCreateResponse = phraseCreateResponse
+        self.phraseCreateMismatchKeys = phraseCreateMismatchKeys
+        self.phraseEnglishScalarDiff = phraseEnglishScalarDiff
+    }
+
+    var phraseCreateMismatchFieldList: String? {
+        guard phraseCreateResponse == .mismatching,
+              let keys = phraseCreateMismatchKeys, !keys.isEmpty else { return nil }
+        return keys.map(\.rawValue).joined(separator: ",")
+    }
 }
 
 struct ItemExecutionResult: Equatable, Sendable {
@@ -611,6 +762,9 @@ struct PendingBatchConfirmation: Equatable, Sendable {
     /// Short form of the whole-plan binding digest, which commits to the exact
     /// Preview and to both subplans including their proposed content.
     let bindingDigest: String
+    /// The exact intended 公开/未发布 label this mixed batch will write (#161
+    /// A-01), captured from the same bound snapshot the digest itself commits to.
+    let statusLabel: String
 
     var createCount: Int { createSpellings.count }
     var updateCount: Int { updateSpellings.count }
@@ -624,6 +778,7 @@ struct PendingBatchConfirmation: Equatable, Sendable {
 
     var message: String {
         var lines = ["共 \(totalCount) 条 · 新建 \(createCount) · 更新 \(updateCount)"]
+        lines.append("拟写入状态：\(statusLabel)")
         if !createSpellings.isEmpty {
             lines.append("新建：" + createSpellings.joined(separator: "、"))
         }
@@ -706,13 +861,54 @@ struct InterpretationRecord: Equatable, Sendable {
     let tags: [String]
     let status: String
 
-    func matchesIntendedState(_ proposed: String, tags intendedTags: [String]) -> Bool {
+    /// Whether this stored record already *is* the intended state.
+    ///
+    /// Status participates (#161): a record equal in text and tags but carrying a
+    /// different publication status is not `一致`, it is an `更新`. Without this,
+    /// a requested 公开 → 未发布 change would silently no-op.
+    ///
+    /// `intendedStatus` defaults to the legacy shared constant, so every existing
+    /// caller — and every default-preference write — keeps exactly today's
+    /// meaning.
+    func matchesIntendedState(
+        _ proposed: String,
+        tags intendedTags: [String],
+        status intendedStatus: String = CompanionConstants.status
+    ) -> Bool {
         interpretation == proposed
             && tags.count == intendedTags.count
             && Set(tags).count == intendedTags.count
             && Set(tags) == Set(intendedTags)
-            && status == CompanionConstants.status
+            && status == intendedStatus
     }
+}
+
+/// One safely decoded note (助记) record.
+///
+/// Read-only. The shape mirrors the current first-party contract
+/// (`maimemo/memo-api-cli` `src/types/note.ts`, itself mirroring
+/// `maimemo/openapi/note/v1/note.proto`): `id`, `note_type`, `note`, `status`,
+/// with optional created/updated times this product does not need. #161 adds no
+/// note mutation route, so nothing here participates in write planning.
+struct NoteRecord: Equatable, Sendable {
+    /// The documented note statuses. `UNSPECIFIED` is documented but carries no
+    /// safe meaning for counting, so it is decoded and then treated as an
+    /// inability rather than silently counted or dropped.
+    static let documentedStatuses = [
+        "NOTE_STATUS_UNSPECIFIED", "PUBLISHED", "DELETED",
+    ]
+
+    let id: String
+    let noteType: String
+    let note: String
+    let status: String
+
+    /// `PUBLISHED` is the only status that counts as an active note.
+    var isActive: Bool { status == "PUBLISHED" }
+    /// `DELETED` is decoded, then deliberately excluded from the count.
+    var isDeleted: Bool { status == "DELETED" }
+    /// A documented-but-unsafe status must never become a `0`.
+    var hasUnsafeStatusForCounting: Bool { !isActive && !isDeleted }
 }
 
 struct PrivatePreflightItem: Equatable, Sendable {
@@ -761,6 +957,18 @@ struct PreviewSnapshot: Equatable, Sendable {
     func items(for group: OperationGroup) -> [PrivatePreflightItem] {
         let desired: PreviewClassification = group == .create ? .create : .update
         return items.filter { $0.classification == desired }
+    }
+
+    /// The exact 公开/未发布 label this bound plan will write (#161 A-01).
+    ///
+    /// Reads only the already-bound `bindingContext.status` — the same value the
+    /// digest, fresh preflight and request body use — never the live
+    /// `publicationPreference`, so Preview and every native confirmation always
+    /// state the plan that was actually captured, not whatever the preference
+    /// happens to be at render time.
+    var intendedStatusLabel: String {
+        InterpretationPublicationStatus(providerStatus: bindingContext.status)?.label
+            ?? bindingContext.status
     }
 }
 
