@@ -12,7 +12,7 @@ updatedAt=2026-09-24
 实质 coding / review Prompt 仍写：
 
 ```text
-MODEL_ROLE: CODEX_SOL
+MODEL_ROUTE: <JIT-resolved from current Owner routing>
 Model: <JIT-resolved display>
 思考深度: 轻度 | 中 | 高 | 极高 | 最高
 执行模式: 单 Agent | Ultra
