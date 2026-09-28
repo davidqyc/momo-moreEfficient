@@ -24,6 +24,12 @@ struct SettingsRootView: View {
 
                 accountGroup
 
+#if DEBUG
+                if viewModel.isConnected {
+                    liveDogfoodGroup
+                }
+#endif
+
                 GroupedCard(title: "录入") {
                     GroupedRow(
                         label: "录入偏好",
@@ -77,6 +83,67 @@ struct SettingsRootView: View {
     }
 
     private var isBusy: Bool { viewModel.isBusy }
+
+#if DEBUG
+    private var liveDogfoodGroup: some View {
+        GroupedCard(
+            title: "真实机制 Dogfood · DEBUG",
+            footnote: "会在一个无自建内容的候选词下创建一条未发布释义、更新它、创建一条例句，然后自动删除。"
+                + "只删除带 __XHN_DOGFOOD_V1__ 或 XHN-DOGFOOD- 标记的测试记录；若运行被中断，可随时点“撤回所有 Dogfood”。"
+        ) {
+            VStack(alignment: .leading, spacing: Theme.gapS) {
+                if viewModel.isLiveDogfoodRunning {
+                    HStack(spacing: Theme.gapS) {
+                        ProgressView().controlSize(.small)
+                        Text("Dogfood 正在运行…")
+                            .font(Theme.rowValue)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+
+                if let report = viewModel.liveDogfoodReport {
+                    Text(report.message)
+                        .font(Theme.body)
+                        .foregroundStyle(report.succeeded ? Theme.ink : Theme.alert)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("liveDogfoodStatus")
+                } else {
+                    Text("尚未运行 · 当前没有由本入口创建的测试记录")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .accessibilityIdentifier("liveDogfoodStatus")
+                }
+
+                Button("扫描验收残留") {
+                    Task { await viewModel.scanLiveDogfood() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLiveDogfoodRunning || viewModel.isBusy)
+
+                Button("运行真实 Dogfood") {
+                    Task { await viewModel.runLiveDogfood() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isLiveDogfoodRunning || viewModel.isBusy)
+
+                Button("撤回所有 Dogfood", role: .destructive) {
+                    Task { await viewModel.cleanupLiveDogfood() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLiveDogfoodRunning || viewModel.isBusy)
+
+                if let report = viewModel.liveDogfoodReport {
+                    Text(report.diagnostic)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Dogfood 诊断")
+                }
+            }
+            .padding(Theme.rowPaddingH)
+        }
+    }
+#endif
 
     @ViewBuilder
     private var accountGroup: some View {

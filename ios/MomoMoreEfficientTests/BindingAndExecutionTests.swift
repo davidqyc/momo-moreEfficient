@@ -409,11 +409,18 @@ final class BindingAndExecutionTests: XCTestCase {
             )
         })
         let source = sources.values.joined(separator: "\n")
+        // "DELETE" is now a reviewed exception (Issue #183 / Owner-authorized
+        // physical dogfood gate): the verb literal may exist only in the
+        // transport that defines the DEBUG-only dogfood cleanup routes and is
+        // compiled out of Release with them. PATCH/PUT stay banned everywhere.
         for forbidden in [
             "os_log", "NSUbiquitousKeyValueStore",
-            "localStorage", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
+            "localStorage", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
+        }
+        for (path, contents) in sources where contents.contains("\"DELETE\"") {
+            XCTAssertEqual(path, "Core/HTTPTransport.swift", path)
         }
         // Owner-authorized spelling copy is confined to Query results,
         // individual History receipt rows, the study word export (#155,
@@ -436,15 +443,38 @@ final class BindingAndExecutionTests: XCTestCase {
         // every other production source still has no file persistence authority.
         // The #155 study-export diagnostic journal is the second authorized
         // support file (Owner standing rule + Issue #155 comment 5686449945:
-        // bounded, local-only, backup-excluded diagnostic evidence).
+        // bounded, local-only, backup-excluded diagnostic evidence). The #183
+        // DEBUG-only dogfood ledger is the third persistence authority: it must
+        // stay confined to the `#if DEBUG` dogfood section of RehearsalMode.swift
+        // (below its MARK), so Release builds contain none of it.
         let approvedSupportFiles: Set<String> = [
             "Core/ExecutionHistory.swift",
             "Core/PhraseSafetyJournal.swift",
             "Core/StudyExportDiagnosticJournal.swift",
         ]
+        let dogfoodSectionMarker = "// MARK: - Physical live dogfood (#155/#180 acceptance)"
         for (path, contents) in sources where !approvedSupportFiles.contains(path) {
-            XCTAssertFalse(contents.contains("FileManager.default"), path)
-            XCTAssertFalse(contents.contains("write(to:"), path)
+            if path == "Core/RehearsalMode.swift" {
+                let markerRange = try XCTUnwrap(
+                    contents.range(of: dogfoodSectionMarker),
+                    "the DEBUG dogfood section marker must stay present"
+                )
+                let debugDogfoodSection = String(contents[markerRange.lowerBound...])
+                let preDogfoodSource = String(contents[..<markerRange.lowerBound])
+                XCTAssertFalse(preDogfoodSource.contains("FileManager.default"), path)
+                XCTAssertFalse(preDogfoodSource.contains("write(to:"), path)
+                // The ledger itself stays free of credential/keychain/persistence
+                // surfaces it was never authorized to touch.
+                for forbidden in ["SecItem", "kSecAttr", "UserDefaults"] {
+                    XCTAssertFalse(
+                        debugDogfoodSection.contains(forbidden),
+                        "\(path) dogfood section: \(forbidden)"
+                    )
+                }
+            } else {
+                XCTAssertFalse(contents.contains("FileManager.default"), path)
+                XCTAssertFalse(contents.contains("write(to:"), path)
+            }
         }
         for (path, contents) in sources where path != "Core/TokenStore.swift" {
             XCTAssertFalse(contents.contains("SecItem"), path)

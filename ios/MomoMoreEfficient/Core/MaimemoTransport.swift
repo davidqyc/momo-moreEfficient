@@ -309,6 +309,24 @@ final class MaimemoTransport {
         return PhraseCreateDispatchResult(dispatch: result.dispatch, phrase: phrase)
     }
 
+#if DEBUG
+    /// DEBUG-only dogfood cleanup routes. These are intentionally unavailable
+    /// in Release builds and only remove records carrying the exact dogfood marker.
+    func deleteDogfoodInterpretation(
+        recordID: String,
+        control: ExecutionControl
+    ) async -> PostDispatchResult {
+        await dispatchDelete(route: .dogfoodDeleteInterpretation(recordID: recordID), control: control)
+    }
+
+    func deleteDogfoodPhrase(
+        recordID: String,
+        control: ExecutionControl
+    ) async -> PostDispatchResult {
+        await dispatchDelete(route: .dogfoodDeletePhrase(recordID: recordID), control: control)
+    }
+#endif
+
     /// The strict read-only notes list used by batch Query (#161).
     ///
     /// Deliberately the smallest possible extension of this transport family: the
@@ -617,6 +635,36 @@ final class MaimemoTransport {
         return number.boolValue
     }
 
+
+#if DEBUG
+    private func dispatchDelete(
+        route: InterpretationRoute,
+        control: ExecutionControl
+    ) async -> PostDispatchResult {
+        do {
+            guard route.isMutating, route.method == .delete else { return .notDispatched }
+            let ticket = try await pace { control.isCancellationRequested }
+            var dispatched = false
+            defer { if !dispatched { scheduler.cancelReservation(ticket) } }
+            guard control.beginPostIfAllowed() else { return .notDispatched }
+            let request = try TransportRequest(route: route)
+            dispatched = true
+            scheduler.confirmDispatch(ticket)
+            do {
+                let response = try await transport.send(request, credential: credential)
+                return (200..<300).contains(response.status)
+                    ? .clean2xx(status: response.status)
+                    : .httpRejected(status: response.status)
+            } catch {
+                return .transportFailure(
+                    errorCategory: PostSendFailureCategory(error: error)
+                )
+            }
+        } catch {
+            return .notDispatched
+        }
+    }
+#endif
 
     private func dispatchPost(
         route: InterpretationRoute,

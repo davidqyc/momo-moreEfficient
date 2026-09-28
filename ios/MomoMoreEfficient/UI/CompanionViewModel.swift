@@ -68,6 +68,12 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// Shown only when a removal actually failed, so the truthful 已连接 state is
     /// never contradicted by a silent success.
     @Published private(set) var tokenRemovalErrorMessage: String?
+#if DEBUG
+    /// Real-provider dogfood is DEBUG-only. The report is deliberately
+    /// content-free: counts/stages only, never Token or provider record IDs.
+    @Published private(set) var liveDogfoodReport: LiveDogfoodReport?
+    @Published private(set) var isLiveDogfoodRunning = false
+#endif
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -334,6 +340,92 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     #if DEBUG
+    /// Runs the DEBUG-only real-provider dogfood through the same credential,
+    /// scheduler and single write lane as production. The runner only creates
+    /// marker-owned test records and always attempts automatic cleanup; the
+    /// independent cleanup action can be run after any interruption.
+    func runLiveDogfood() async {
+        await performLiveDogfood(.run)
+    }
+
+    /// GET-only residual scan for the Settings acceptance surface: it proves
+    /// the visible 残留 count without dispatching any mutation.
+    func scanLiveDogfood() async {
+        await performLiveDogfood(.scan)
+    }
+
+    func cleanupLiveDogfood() async {
+        await performLiveDogfood(.cleanup)
+    }
+
+    private enum LiveDogfoodAction {
+        case scan
+        case run
+        case cleanup
+    }
+
+    private func performLiveDogfood(_ action: LiveDogfoodAction) async {
+        guard !isLiveDogfoodRunning, !isBusy, isConnected,
+              beginProviderOperation(.write)
+        else {
+            liveDogfoodReport = LiveDogfoodReport(
+                succeeded: false,
+                message: action == .scan
+                    ? "Dogfood 扫描当前不可运行"
+                    : "Dogfood 当前不可运行",
+                diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nblocked=busy_or_disconnected",
+                remainingActiveRecords: -1
+            )
+            return
+        }
+
+        isLiveDogfoodRunning = true
+        isBusy = true
+        isExecuting = true
+        defer {
+            isExecuting = false
+            isBusy = false
+            isLiveDogfoodRunning = false
+            endProviderOperation(.write)
+            settleDeferredBackgroundTeardown()
+        }
+
+        do {
+            let lease = try credentialSession.makeOperationLease()
+            defer { lease.clear() }
+            let api = MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
+            )
+            let runner = LiveDogfoodRunner(api: api)
+            switch action {
+            case .scan:
+                liveDogfoodReport = await runner.scanResidual()
+            case .run:
+                liveDogfoodReport = await runner.run()
+            case .cleanup:
+                liveDogfoodReport = await runner.cleanup()
+            }
+        } catch let error as CompanionError {
+            liveDogfoodReport = LiveDogfoodReport(
+                succeeded: false,
+                message: "Dogfood 无法开始 · \(error.description)",
+                diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nstart_error=\(error.rawValue)",
+                remainingActiveRecords: -1
+            )
+        } catch {
+            liveDogfoodReport = LiveDogfoodReport(
+                succeeded: false,
+                message: "Dogfood 无法开始",
+                diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nstart_error=other",
+                remainingActiveRecords: -1
+            )
+        }
+    }
+
     /// Existing XCTest setup for write/preview invariants that are unrelated to
     /// onboarding. New credential tests must use `connect(token:)` and the fake
     /// authenticated GET; this helper is not reachable from the product UI.

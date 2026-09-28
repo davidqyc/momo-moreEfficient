@@ -35,9 +35,105 @@ final class TransportAndPlanningTests: XCTestCase {
         XCTAssertEqual(InterpretationRoute.interpretations(vocabularyID: "ID").method, .get)
         XCTAssertEqual(InterpretationRoute.createInterpretation.method, .post)
         XCTAssertEqual(InterpretationRoute.updateInterpretation(recordID: "ID").method, .post)
+        XCTAssertEqual(InterpretationRoute.vocabularyQuery.method, .post)
+        XCTAssertEqual(InterpretationRoute.studyRecords.method, .post)
         XCTAssertEqual(
             Set([HTTPMethod.get.rawValue, HTTPMethod.post.rawValue]),
             Set(["GET", "POST"])
+        )
+        // Every production route stays read-only GET or write-semantic POST;
+        // the only DELETE in the app is the DEBUG-only dogfood cleanup pair
+        // below (#183), absent from Release builds entirely.
+    }
+
+    /// #183 DEBUG dogfood cleanup routes sit on the current first-party
+    /// `maimemo/memo-api-cli` coordinates and are the app's only DELETEs.
+    func testDogfoodDeleteRoutesAreMutatingDELETEOnDocumentedCoordinates() throws {
+        #if DEBUG
+        let interpretationDelete = InterpretationRoute.dogfoodDeleteInterpretation(recordID: "REC_A")
+        let phraseDelete = InterpretationRoute.dogfoodDeletePhrase(recordID: "REC_B")
+        XCTAssertEqual(interpretationDelete.method, .delete)
+        XCTAssertEqual(phraseDelete.method, .delete)
+        XCTAssertTrue(interpretationDelete.isMutating)
+        XCTAssertTrue(phraseDelete.isMutating)
+        XCTAssertEqual(interpretationDelete.reviewedPath, "/open/api/v1/interpretations/REC_A")
+        XCTAssertEqual(phraseDelete.reviewedPath, "/open/api/v1/phrases/REC_B")
+        XCTAssertEqual(try interpretationDelete.url().path, "/open/api/v1/interpretations/REC_A")
+        XCTAssertEqual(try phraseDelete.url().path, "/open/api/v1/phrases/REC_B")
+        XCTAssertThrowsError(
+            try InterpretationRoute.dogfoodDeleteInterpretation(recordID: "../bad").url()
+        )
+        XCTAssertThrowsError(try InterpretationRoute.dogfoodDeletePhrase(recordID: "bad/id").url())
+        // A DELETE carries no body, exactly like a GET.
+        XCTAssertNoThrow(try TransportRequest(route: interpretationDelete))
+        #else
+        throw XCTSkip("DEBUG-only dogfood delete routes")
+        #endif
+    }
+
+    /// The DEBUG delete dispatch sends the documented DELETE with no body and
+    /// reports a clean 2xx; the readback that must follow stays a plain GET.
+    func testDogfoodDeleteDispatchSendsDocumentedDELETE() async throws {
+        #if DEBUG
+        let transport = FakeHTTPTransport([jsonResponse([:])])
+        let lease = try credentialLease()
+        let api = MaimemoTransport(transport: transport, credential: lease)
+        let control = ExecutionControl()
+
+        let dispatch = await api.deleteDogfoodInterpretation(recordID: "REC_A", control: control)
+        control.finishPostResolution()
+
+        guard case let .clean2xx(status) = dispatch else {
+            return XCTFail("expected clean 2xx, got \(dispatch)")
+        }
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(transport.requests.count, 1)
+        XCTAssertEqual(transport.requests[0].route.method, .delete)
+        XCTAssertNil(transport.requests[0].body)
+        XCTAssertTrue(transport.requests[0].route.isMutating)
+        #else
+        throw XCTSkip("DEBUG-only dogfood delete routes")
+        #endif
+    }
+
+    /// The dogfood ledger is the cross-relaunch recovery state: entries record,
+    /// retire only on verified record IDs, and deleted entries keep nominating
+    /// their spelling for the bounded rescan.
+    func testDogfoodLedgerRecordsRetiresAndSurvivesRelaunch() {
+        let directory = NSTemporaryDirectory()
+            .appending("DogfoodLedgerTests-\(UUID().uuidString)")
+        let directoryURL = URL(fileURLWithPath: directory)
+        try? FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let ledger = DogfoodLedger(applicationSupportDirectory: directoryURL)
+        XCTAssertTrue(ledger.load().isEmpty)
+        XCTAssertEqual(ledger.activeCount(), 0)
+
+        ledger.recordActive(runID: "RUN_A", kind: "interpretation", recordID: "REC_A", spelling: "apple")
+        ledger.recordActive(runID: "RUN_A", kind: "phrase", recordID: "REC_B", spelling: "apple")
+        XCTAssertEqual(ledger.activeCount(), 2)
+        XCTAssertEqual(ledger.spellings(), ["apple"])
+
+        // A fresh instance over the same Application Support directory is the
+        // cross-relaunch recovery path.
+        let relaunched = DogfoodLedger(applicationSupportDirectory: directoryURL)
+        XCTAssertEqual(relaunched.load().count, 2)
+
+        // Only a verified record ID retires; unknown IDs never touch entries.
+        relaunched.retire(recordIDs: ["REC_UNKNOWN"])
+        XCTAssertEqual(relaunched.activeCount(), 2)
+        relaunched.retire(recordIDs: ["REC_A"])
+        XCTAssertEqual(relaunched.activeCount(), 1)
+        XCTAssertEqual(relaunched.load().first { $0.recordID == "REC_A" }?.state, "deleted")
+        XCTAssertEqual(relaunched.load().first { $0.recordID == "REC_B" }?.state, "active")
+        XCTAssertEqual(
+            relaunched.spellings(),
+            ["apple"],
+            "deleted entries keep nominating their spelling for the bounded rescan"
         )
     }
 
@@ -347,6 +443,55 @@ final class TransportAndPlanningTests: XCTestCase {
             "a phantom reservation from the cancelled call would double this to ~10"
         )
         XCTAssertEqual(transport.requests.count, 2, "the fresh call must still dispatch once its wait clears")
+    }
+
+    /// Physical-device fallback for the live dogfood closure when
+    /// XCUIAutomation cannot acquire device automation mode. This still runs
+    /// inside the signed app test host on the Owner phone, using the real saved
+    /// Token and real provider, and proves cleanup before + after the full
+    /// create/update/create/delete round trip. Simulator/CI skips it.
+    func testPhysicalLiveDogfoodRunnerRestoresDatabase() async throws {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil {
+            throw XCTSkip("physical-device live dogfood")
+        }
+        guard let token = try KeychainTokenStore().loadToken(), !token.isEmpty else {
+            throw XCTSkip("physical app Keychain has no Maimemo token")
+        }
+
+        let session = CredentialSession()
+        try session.connect(token: token)
+        let lease = try session.makeOperationLease()
+        defer {
+            lease.clear()
+            session.disconnect()
+        }
+
+        let api = MaimemoTransport(
+            transport: URLSessionHTTPTransport(),
+            credential: lease,
+            phraseSafetyJournal: .shared,
+            sleeper: ProductionRequestSleeper(),
+            scheduler: RequestWindowScheduler()
+        )
+        let runner = LiveDogfoodRunner(api: api)
+
+        let pre = await runner.cleanup()
+        XCTAssertTrue(pre.succeeded, pre.diagnostic)
+        XCTAssertEqual(pre.remainingActiveRecords, 0, pre.diagnostic)
+
+        let run = await runner.run()
+
+        // Always run one independent final sweep before asserting the run, so
+        // even a failed write/readback sequence cannot strand marker records.
+        let post = await runner.cleanup()
+        XCTAssertTrue(post.succeeded, post.diagnostic)
+        XCTAssertEqual(post.remainingActiveRecords, 0, post.diagnostic)
+        XCTAssertTrue(run.succeeded, run.diagnostic)
+        XCTAssertEqual(run.remainingActiveRecords, 0, run.diagnostic)
+#else
+        throw XCTSkip("DEBUG-only live dogfood")
+#endif
     }
 
     func testGlobalReadFailuresAbortInterpretationPlanWithoutFabricatedRows() async throws {

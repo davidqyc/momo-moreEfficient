@@ -3,6 +3,11 @@ import Foundation
 enum HTTPMethod: String, Equatable, Sendable {
     case get = "GET"
     case post = "POST"
+#if DEBUG
+    /// Only the DEBUG-only dogfood cleanup routes (#183) dispatch this verb;
+    /// no Release route or behavior can ever produce a DELETE.
+    case delete = "DELETE"
+#endif
 }
 
 enum InterpretationRoute: Equatable, Sendable {
@@ -26,11 +31,25 @@ enum InterpretationRoute: Equatable, Sendable {
     case studyProgress
     case studyTodayItems
     case studyRecords
+#if DEBUG
+    /// DEBUG-only dogfood cleanup (#183). These are the current first-party
+    /// `maimemo/memo-api-cli` documented coordinates
+    /// (`DELETE /api/v1/interpretations/{id}`, `DELETE /api/v1/phrases/{id}`)
+    /// and the only delete routes in this app. Callers may target them solely
+    /// at records whose live authenticated content carries the exact dogfood
+    /// marker; they are absent from Release builds entirely.
+    case dogfoodDeleteInterpretation(recordID: String)
+    case dogfoodDeletePhrase(recordID: String)
+#endif
 
     var method: HTTPMethod {
         switch self {
         case .vocabulary, .interpretations, .phrases, .notes:
             return .get
+#if DEBUG
+        case .dogfoodDeleteInterpretation, .dogfoodDeletePhrase:
+            return .delete
+#endif
         case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase,
              .studyProgress, .studyTodayItems, .studyRecords:
             return .post
@@ -50,6 +69,10 @@ enum InterpretationRoute: Equatable, Sendable {
         case .vocabulary, .vocabularyQuery, .interpretations, .phrases, .notes,
              .studyProgress, .studyTodayItems, .studyRecords:
             return false
+#if DEBUG
+        case .dogfoodDeleteInterpretation, .dogfoodDeletePhrase:
+            return true
+#endif
         case .createInterpretation, .updateInterpretation, .createPhrase:
             return true
         }
@@ -77,6 +100,12 @@ enum InterpretationRoute: Equatable, Sendable {
             return "/open/api/v1/study/get_today_items"
         case .studyRecords:
             return "/open/api/v1/study/query_study_records"
+#if DEBUG
+        case let .dogfoodDeleteInterpretation(recordID):
+            return "/open/api/v1/interpretations/\(recordID)"
+        case let .dogfoodDeletePhrase(recordID):
+            return "/open/api/v1/phrases/\(recordID)"
+#endif
         }
     }
 
@@ -104,6 +133,12 @@ enum InterpretationRoute: Equatable, Sendable {
             break
         case let .updateInterpretation(recordID):
             guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
+#if DEBUG
+        case let .dogfoodDeleteInterpretation(recordID):
+            guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
+        case let .dogfoodDeletePhrase(recordID):
+            guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
+#endif
         }
         guard let url = components.url,
               url.scheme == "https",
