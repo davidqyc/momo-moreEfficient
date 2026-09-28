@@ -1875,3 +1875,25 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         contentMode == .interpretation ? snapshot != nil : phraseSnapshot != nil
     }
 }
+
+#if DEBUG
+/// The one DEBUG-only, UI-test-only deterministic preference reset (#165).
+///
+/// The Settings/tag UI tests need a clean preference baseline to be
+/// self-isolating: the tag selection and publication preference persist in
+/// `UserDefaults.standard` across launches, so one contaminated simulator
+/// install could leak a prior run's selection into another run's counters.
+/// When the app is launched with `-MomoUITestResetPreferences`, exactly the
+/// two non-secret preference keys below are removed at startup — nothing
+/// else: no credential, no History, no capture state. The whole declaration
+/// is compiled out of Release builds.
+enum MomoUITestPreferenceReset {
+    static let launchArgument = "-MomoUITestResetPreferences"
+
+    static func performIfRequested(defaults: UserDefaults = .standard) {
+        guard ProcessInfo.processInfo.arguments.contains(launchArgument) else { return }
+        defaults.removeObject(forKey: WriteTagPreference.userDefaultsKey)
+        defaults.removeObject(forKey: InterpretationPublicationPreference.userDefaultsKey)
+    }
+}
+#endif

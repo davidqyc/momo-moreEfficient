@@ -51,6 +51,41 @@ extension RehearsalMode {
     /// Spellings the rehearsal server pretends already have one self-authored
     /// interpretation, so a mixed CREATE/UPDATE batch can be rehearsed.
     static let seededExistingSpellings = ["manning", "certified"]
+
+    /// The one spelling the rehearsal resolver deliberately cannot resolve,
+    /// so batch Query UI coverage can prove the truthful
+    /// 「当前 Open API 无法解析该词条」 inability instead of a false-green
+    /// numeric 0. Normal spellings still resolve as usual.
+    static let unresolvableSpelling = "ghostword"
+
+    /// One row of the deterministic rehearsal study world (#155/#165 UI
+    /// regression). Synthetic, in-process, never a credential or real data.
+    struct RehearsalTodayItem {
+        let spelling: String
+        let isNew: Bool
+        let isFinished: Bool
+        let firstResponse: String?
+    }
+
+    /// The fixed six-item study world behind `studyTodayItems` /
+    /// `studyProgress`:
+    ///
+    ///     finished (3):   alpha (new, FORGET) · beta (VAGUE) · gamma (FAMILIAR)
+    ///     unfinished (3): delta (new) · epsilon · zeta
+    ///
+    /// so the five supported public presets derive deterministic non-empty
+    /// answers: 今天已学 = 3, 今日待复习 = 3, 今天新学 = 2, 今天忘记 = 1
+    /// (alpha), 今天模糊 = 1 (beta). StudyRecord enumeration stays empty —
+    /// those presets are withdrawn from the public UI and must not be
+    /// reintroduced to satisfy tests.
+    static let rehearsalTodayWorld: [RehearsalTodayItem] = [
+        .init(spelling: "alpha", isNew: true, isFinished: true, firstResponse: "FORGET"),
+        .init(spelling: "beta", isNew: false, isFinished: true, firstResponse: "VAGUE"),
+        .init(spelling: "gamma", isNew: false, isFinished: true, firstResponse: "FAMILIAR"),
+        .init(spelling: "delta", isNew: true, isFinished: false, firstResponse: nil),
+        .init(spelling: "epsilon", isNew: false, isFinished: false, firstResponse: nil),
+        .init(spelling: "zeta", isNew: false, isFinished: false, firstResponse: nil),
+    ]
 }
 
 extension CompanionViewModel {
@@ -178,10 +213,17 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
 
         case .vocabularyQuery:
             let spellings = (try? queryPayload(request.body))?["spellings"] as? [String] ?? []
+            // The one deliberate unresolvable spelling stays absent, exactly
+            // like a provider miss; everything else resolves deterministically.
+            let resolvable = spellings.filter {
+                BatchParser.normalizeSpelling($0) != BatchParser.normalizeSpelling(
+                    RehearsalMode.unresolvableSpelling
+                )
+            }
             // The first-party raw envelope: `{ data: { voc: [...] }, ... }`.
             return try json([
                 "data": [
-                    "voc": spellings.map {
+                    "voc": resolvable.map {
                         ["id": vocabularyID(for: $0), "spelling": $0]
                     },
                 ],
@@ -244,14 +286,42 @@ final class RehearsalTransport: HTTPTransport, @unchecked Sendable {
             return try json([:], status: 201)
 
         case .studyProgress:
-            // Rehearsal owns no study data: the read-only export surface sees
-            // an empty, consistent today.
-            return try json(["progress": ["finished": 0, "total": 0, "study_time": 0]])
+            // Deterministic rehearsal study world: 3 of 6 today items are
+            // finished, matching `rehearsalTodayWorld` below.
+            return try json(["progress": ["finished": 3, "total": 6, "study_time": 0]])
 
         case .studyTodayItems:
-            return try json(["today_items": []])
+            // Honors the same documented request filters (`is_finished`,
+            // `is_new`) the production transport sends, over one fixed
+            // six-row world — never a pre-baked unrelated list — so each of
+            // the five supported presets derives its own deterministic
+            // non-empty answer.
+            let payload = try queryPayload(request.body)
+            let wantedFinished = payload["is_finished"] as? Bool
+            let wantedNew = payload["is_new"] as? Bool
+            let rows: [[String: Any]] = RehearsalMode.rehearsalTodayWorld.enumerated()
+                .filter { _, item in
+                    (wantedFinished == nil || wantedFinished == item.isFinished)
+                        && (wantedNew == nil || wantedNew == item.isNew)
+                }
+                .map { index, item in
+                    var row: [String: Any] = [
+                        "voc_id": "REHEARSAL_STUDY_ITEM_\(index + 1)",
+                        "voc_spelling": item.spelling,
+                        "order": index + 1,
+                        "is_new": item.isNew,
+                        "is_finished": item.isFinished,
+                    ]
+                    if let firstResponse = item.firstResponse {
+                        row["first_response"] = firstResponse
+                    }
+                    return row
+                }
+            return try json(["today_items": rows])
 
         case .studyRecords:
+            // StudyRecord enumeration stays empty: those presets are hidden
+            // from the public UI and rehearsal must not resurrect them.
             return try json(["records": [], "count": 0])
         }
     }

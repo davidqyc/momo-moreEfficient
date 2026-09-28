@@ -23,6 +23,12 @@ final class ShellNavigationUITests: XCTestCase {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
         XCTAssertTrue(app.buttons["设置"].exists)
+        // The Home card no longer advertises the withdrawn 新添加 export
+        // (#155 Owner directive 2026-09-28).
+        XCTAssertEqual(
+            app.buttons["单词导出"].value as? String,
+            "今天已学、待复习、忘词等，一键复制或批量查阅"
+        )
         // The #155 directive places 单词导出 *under* the existing read-only
         // 查阅 section; no separate export section exists.
         XCTAssertTrue(app.staticTexts["查阅 · 只读取，不写入"].exists)
@@ -41,11 +47,15 @@ final class ShellNavigationUITests: XCTestCase {
         app.buttons["单词导出"].tap()
 
         XCTAssertTrue(app.staticTexts["单词导出"].waitForExistence(timeout: 5))
-        // The frozen preset list, reachable while disconnected.
-        for preset in ["今天已学", "今日待复习", "今天新添加", "今天新学", "今天忘记", "今天模糊", "顽固词", "熟知词", "全部学习词"] {
+        // The public preset list is exactly the five supported TodayItems-based
+        // exports (#155 Owner directive 2026-09-28). The StudyRecord-dependent
+        // presets and the enumerability probe are withdrawn from normal UI.
+        for preset in ["今天已学", "今日待复习", "今天新学", "今天忘记", "今天模糊"] {
             XCTAssertTrue(app.buttons[preset].exists, preset)
         }
-        XCTAssertTrue(app.buttons["N 天内复习"].exists)
+        for withdrawn in ["今天新添加", "顽固词", "熟知词", "N 天内复习", "全部学习词", "运行完整性探针"] {
+            XCTAssertFalse(app.buttons[withdrawn].exists, withdrawn)
+        }
         // Disconnected: presets are visibly gated with a truthful why-line.
         XCTAssertTrue(app.staticTexts["连接墨墨账号后可导出"].exists)
         // Owner standing rule (#155 unstable): compact on-device diagnostics
@@ -285,6 +295,11 @@ final class ShellNavigationUITests: XCTestCase {
 
     private func launch(contentSize: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
+        // Deterministic Settings/tag baseline (#165): the DEBUG-only reset seam
+        // removes exactly the persisted preference keys at app startup, so a
+        // shared simulator install can never leak one run's selection into
+        // another run's counters.
+        app.launchArguments += ["-MomoUITestResetPreferences"]
         if let contentSize {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize]
         }

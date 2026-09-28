@@ -562,11 +562,11 @@ final class BindingAndExecutionTests: XCTestCase {
             project.components(separatedBy: "INFOPLIST_KEY_CFBundleDisplayName = \"小黑鸟伴侣\";").count - 1,
             2
         )
-        // Tracks the shipped build number, which #176 bumped to 4 without
-        // updating this assertion. #161 changes no build/version/upload state;
-        // this only re-syncs the guard to the value already on main.
+        // Tracks the shipped build number. The branch intentionally bumped the
+        // main app + Share Extension to build 5; this guard re-syncs to that
+        // truth without changing any build/version state.
         XCTAssertEqual(
-            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 4;").count - 1,
+            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 5;").count - 1,
             4 // app Debug/Release + Share Extension Debug/Release
         )
         XCTAssertEqual(
