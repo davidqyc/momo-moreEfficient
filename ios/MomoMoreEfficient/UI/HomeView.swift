@@ -198,7 +198,7 @@ private struct StudyExportCard: View {
                     Text("单词导出")
                         .font(Theme.tileTitle)
                         .foregroundStyle(Theme.ink)
-                    Text("今天已学、新添加、忘词等，一键复制或分享")
+                    Text("今天已学、待复习、忘词等，一键复制或批量查阅")
                         .font(Theme.caption)
                         .foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -218,6 +218,6 @@ private struct StudyExportCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("单词导出")
-        .accessibilityValue("今天已学、新添加、忘词等，一键复制或分享")
+        .accessibilityValue("今天已学、待复习、忘词等，一键复制或批量查阅")
     }
 }

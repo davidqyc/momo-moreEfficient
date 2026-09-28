@@ -16,7 +16,6 @@ struct StudyExportView: View {
     /// no auto-started reads.
     let onOpenInQuery: ([String]) -> Void
 
-    @State private var isReviewWindowExpanded = false
     @State private var toastText: String?
 
     var body: some View {
@@ -119,13 +118,9 @@ struct StudyExportView: View {
                     CaptionLine(text: "连接墨墨账号后可导出")
                 }
                 GroupedCard {
-                    ForEach(Array(StudyExportPreset.all.enumerated()), id: \.element) { index, preset in
+                    ForEach(Array(StudyExportPreset.publicPresets.enumerated()), id: \.element) { index, preset in
                         if index > 0 { RowDivider() }
-                        if case .reviewWithin = preset {
-                            reviewWindowRow
-                        } else {
-                            presetRow(preset)
-                        }
+                        presetRow(preset)
                     }
                 }
                 CaptionLine(
@@ -167,64 +162,6 @@ struct StudyExportView: View {
         .disabled(!canStart)
         .accessibilityLabel(preset.title)
         .accessibilityValue(preset.subtitle)
-    }
-
-    /// The fixed 1 / 3 / 7 / 30-day choices. The row itself only expands the
-    /// choice; a day chip is what actually runs.
-    private var reviewWindowRow: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation { isReviewWindowExpanded.toggle() }
-            } label: {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("N 天内复习")
-                            .font(Theme.row)
-                            .foregroundStyle(Theme.ink)
-                        Text("选择 1 / 3 / 7 / 30 天，导出期间内要复习的词")
-                            .font(Theme.caption)
-                            .foregroundStyle(Theme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: Theme.gapS)
-                    Image(systemName: isReviewWindowExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Theme.textTertiary)
-                }
-                .padding(.horizontal, Theme.rowPaddingH)
-                .padding(.vertical, 14)
-                .frame(minHeight: Theme.minimumTarget)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("N 天内复习")
-            .accessibilityValue(isReviewWindowExpanded ? "已展开" : "未展开")
-            if isReviewWindowExpanded {
-                RowDivider()
-                HStack(spacing: Theme.gapS) {
-                    ForEach(StudyExportPreset.reviewDayChoices, id: \.self) { days in
-                        Button {
-                            run(.reviewWithin(days: days))
-                        } label: {
-                            Text("\(days) 天")
-                                .font(Theme.chip)
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.ink)
-                                .frame(maxWidth: .infinity, minHeight: 36)
-                                .background(
-                                    Theme.surfaceMuted,
-                                    in: RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canStart)
-                        .accessibilityLabel("\(days) 天内复习")
-                    }
-                }
-                .padding(.horizontal, Theme.rowPaddingH)
-                .padding(.vertical, 12)
-            }
-        }
     }
 
     // MARK: - Running
@@ -319,54 +256,12 @@ struct StudyExportView: View {
                     message: failure.message,
                     tone: .stop
                 )
-                // The enumerability probe unlocks only on the coverageGap
-                // failure, and runs only as an explicit user action.
-                if store.showsCoverageProbe {
-                    coverageProbeSection
-                }
                 CaptionLine(text: "不会自动重试；点按下方按钮重试，或返回列表。")
                 Spacer(minLength: Theme.gapL)
             }
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, Theme.gapM)
         }
-    }
-
-    /// The #155 diagnostic-only enumerability probe surface: explicit action,
-    /// read-only copy, counts-only result. No word list is ever produced here.
-    @ViewBuilder
-    private var coverageProbeSection: some View {
-        VStack(alignment: .leading, spacing: Theme.gapS) {
-            GroupedCard(title: "完整性探针") {
-                VStack(alignment: .leading, spacing: Theme.gapS) {
-                    switch store.probePhase {
-                    case .idle:
-                        PrimaryPillButton(title: "运行完整性探针", isEnabled: viewModel.isConnected && !viewModel.isProviderLaneBusy) {
-                            runCoverageProbe()
-                        }
-                        CaptionLine(text: "只读取。将按日期区间核对墨墨 count 与可枚举 records，不会导出或修改学习数据。")
-                    case .running:
-                        HStack(spacing: Theme.gapS) {
-                            ProgressView().controlSize(.small).tint(Theme.ink)
-                            Text("完整性探针运行中…")
-                                .font(Theme.row)
-                                .foregroundStyle(Theme.ink)
-                        }
-                        CaptionLine(text: "最多 32 次只读请求；离开本页会停止探针。")
-                    case let .completed(verdict):
-                        AckLine(text: "完整性探针：已完成 · \(verdict.chineseLabel)")
-                    }
-                }
-                .padding(Theme.rowPaddingH)
-            }
-        }
-    }
-
-    private func runCoverageProbe() {
-        guard viewModel.isConnected, !viewModel.isProviderLaneBusy,
-              let lease = viewModel.beginQueryRead()
-        else { return }
-        store.startCoverageProbe(lease: lease)
     }
 
     // MARK: - Bottom actions

@@ -160,6 +160,18 @@ enum StudyExportPreset: Hashable, Sendable {
         .todayVague, .sticking, .wellFamiliar, .reviewWithin(days: 1), .allWords,
     ]
 
+    /// The presets the normal Study Export UI presents (#155, Owner cleanup
+    /// directive 2026-09-28): exactly the five TodayItems-based presets, whose
+    /// reads are proven complete by today's progress and the short-page rule.
+    /// The StudyRecord-enumeration presets stay in `all` — parked for provider
+    /// follow-up and unit tests — because physical diagnostics closed on
+    /// `COUNT_PARTITION_INCONSISTENT`: the public API cannot prove a complete
+    /// enumeration, so the normal UI must no longer present them as if one
+    /// more retry could fix them.
+    static let publicPresets: [StudyExportPreset] = [
+        .todayLearned, .todayPending, .todayNew, .todayForgotten, .todayVague,
+    ]
+
     var title: String {
         switch self {
         case .todayLearned: return "今天已学"
