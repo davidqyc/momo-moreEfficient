@@ -164,6 +164,15 @@ struct ContentView: View {
                 viewModel.enterBackground()
             }
         }
+#if DEBUG
+        // #183 matrix launch-argument automation: runs the scenario prep (or
+        // arms the one-shot fault) as soon as the connection is restored, so
+        // the physical acceptance tests never need the on-screen keyboard.
+        .onChange(of: viewModel.isConnected) { _, connected in
+            if connected { viewModel.processLaunchExperimentArguments() }
+        }
+        .onAppear { viewModel.processLaunchExperimentArguments() }
+#endif
         .onReceive(captureReviewStore.$review) { review in
             if review != nil, !viewModel.isBusy {
                 viewModel.prepareForCaptureReview()

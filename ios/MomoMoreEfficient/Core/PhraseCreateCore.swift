@@ -845,6 +845,18 @@ struct PhraseWriteExecutor {
                 }
 
                 let proven = create.phrase.flatMap { $0.hardMatches(item.entry) ? $0 : nil }
+#if DEBUG
+                // #183 E2: one-shot, marker-gated crash after a clean phrase
+                // CREATE 2xx, before any readback or durable journal close. A
+                // non-marker phrase never carries the dogfood marker family.
+                if dispatch.isClean2xx,
+                   DogfoodExperimentStore.shared.consumeFault(
+                       .afterPhraseCreate2xxBeforeReadbackOrJournalClose,
+                       markerIn: item.entry.english + "\n" + (item.entry.source ?? "")
+                   ) {
+                    exit(0)
+                }
+#endif
                 let responseCategory: PhraseCreateResponseCategory? = dispatch.isClean2xx
                     ? (proven != nil ? .proven : (create.phrase == nil ? .malformed : .mismatching)) : nil
                 let responseMismatchKeys = responseCategory == .mismatching

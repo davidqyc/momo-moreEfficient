@@ -137,6 +137,238 @@ final class TransportAndPlanningTests: XCTestCase {
         )
     }
 
+    /// #183 round-2 mutation audit: only dispatched mutating routes count, by
+    /// fixed name; a Preview flow leaves every counter untouched.
+    func testLiveMutationAuditCountsOnlyDispatchedMutatingRoutes() async throws {
+        #if DEBUG
+        LiveMutationAudit.reset()
+        XCTAssertEqual(LiveMutationAudit.count(LiveMutationAudit.interpretationCreate), 0)
+
+        let lease = try credentialLease()
+        defer { lease.clear() }
+        let transport = FakeHTTPTransport([
+            vocabularyQueryResponse([(id: "INVALID_VOC_A", spelling: "apple")]),
+            interpretationsResponse([]),
+        ])
+        let api = MaimemoTransport(transport: transport, credential: lease)
+        let snapshot = try await PreflightPlanner(api: api).buildSnapshot(
+            entries: BatchParser.parseDailyInput("apple\nn. 一").entries,
+            tags: [],
+            status: CompanionConstants.status,
+            credentialFingerprint: lease.fingerprint
+        )
+        XCTAssertEqual(snapshot.presentation.counts.create, 1)
+        XCTAssertEqual(transport.postCount, 0, "Preview never dispatches a mutation")
+        XCTAssertEqual(LiveMutationAudit.snapshotText().contains("interpretation_create_post=0"), true)
+
+        // A dispatched interpretation CREATE counts exactly once, by name.
+        let writeTransport = FakeHTTPTransport([jsonResponse([:], status: 201)])
+        let writeAPI = MaimemoTransport(transport: writeTransport, credential: lease)
+        let control = ExecutionControl()
+        let body = try ConfirmationBinding.canonicalData([
+            "interpretation": [
+                "voc_id": "INVALID_VOC_A",
+                "interpretation": "n. 二",
+                "tags": [String](),
+                "status": "PUBLISHED",
+            ],
+        ])
+        let dispatch = await writeAPI.post(route: .createInterpretation, body: body, control: control)
+        control.finishPostResolution()
+        XCTAssertTrue(dispatch.isClean2xx)
+        XCTAssertEqual(LiveMutationAudit.count(LiveMutationAudit.interpretationCreate), 1)
+        XCTAssertEqual(LiveMutationAudit.count(LiveMutationAudit.interpretationUpdate), 0)
+        XCTAssertEqual(LiveMutationAudit.count(LiveMutationAudit.phraseCreate), 0)
+        LiveMutationAudit.reset()
+        #else
+        throw XCTSkip("DEBUG-only mutation audit")
+        #endif
+    }
+
+    /// The one-shot fault store is boundary-matched and marker-gated, and a
+    /// fired fault never fires twice. Non-marker content can never be killed.
+    func testDogfoodFaultStoreIsOneShotBoundaryMatchedAndMarkerGated() {
+        #if DEBUG
+        let directory = NSTemporaryDirectory()
+            .appending("DogfoodFaultTests-\(UUID().uuidString)")
+        let directoryURL = URL(fileURLWithPath: directory)
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let store = DogfoodExperimentStore(applicationSupportDirectory: directoryURL)
+        XCTAssertEqual(store.armedDescription, "none")
+
+        // Non-marker content never fires even when armed.
+        store.arm(.afterInterpretationMutation2xxBeforeReadback)
+        XCTAssertFalse(store.consumeFault(
+            .afterInterpretationMutation2xxBeforeReadback,
+            markerIn: "n. Owner 的真实释义"
+        ))
+        XCTAssertEqual(store.armedDescription, "I1")
+
+        // Wrong boundary never fires.
+        XCTAssertFalse(store.consumeFault(
+            .afterPhraseCreate2xxBeforeReadbackOrJournalClose,
+            markerIn: "n. __XHN_DOGFOOD_V1__ B1"
+        ))
+
+        // Matching boundary + marker content fires exactly once.
+        XCTAssertTrue(store.consumeFault(
+            .afterInterpretationMutation2xxBeforeReadback,
+            markerIn: "n. __XHN_DOGFOOD_V1__ B1"
+        ))
+        XCTAssertEqual(store.armedDescription, "none")
+        XCTAssertFalse(store.consumeFault(
+            .afterInterpretationMutation2xxBeforeReadback,
+            markerIn: "n. __XHN_DOGFOOD_V1__ B1"
+        ), "a fired fault is consumed")
+
+        // The phrase-family marker gates too, and arming survives relaunch.
+        store.arm(.afterPhraseCreate2xxBeforeReadbackOrJournalClose)
+        let relaunched = DogfoodExperimentStore(applicationSupportDirectory: directoryURL)
+        XCTAssertEqual(relaunched.armedDescription, "P1")
+        XCTAssertTrue(relaunched.consumeFault(
+            .afterPhraseCreate2xxBeforeReadbackOrJournalClose,
+            markerIn: "The apple hums.\nXHN-DOGFOOD-ABC"
+        ))
+        #else
+        throw XCTSkip("DEBUG-only fault store")
+        #endif
+    }
+
+    /// GET-only ledger reconciliation (#183 E3): an active entry whose record
+    /// disappeared from the fresh authenticated lists retires; a still-visible
+    /// record does not.
+    func testDogfoodLedgerRetiresAbsentEntriesOnly() {
+        #if DEBUG
+        let directory = NSTemporaryDirectory()
+            .appending("DogfoodLedgerAbsentTests-\(UUID().uuidString)")
+        let directoryURL = URL(fileURLWithPath: directory)
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let ledger = DogfoodLedger(applicationSupportDirectory: directoryURL)
+        ledger.recordActive(runID: "R1", kind: "interpretation", recordID: "GONE", spelling: "apple")
+        ledger.recordActive(runID: "R1", kind: "phrase", recordID: "STAYS", spelling: "apple")
+
+        ledger.retireAbsent(visibleActiveRecordIDs: ["STAYS", "OTHER"])
+        let entries = ledger.load()
+        XCTAssertEqual(entries.first { $0.recordID == "GONE" }?.state, "deleted")
+        XCTAssertEqual(entries.first { $0.recordID == "STAYS" }?.state, "active")
+        #else
+        throw XCTSkip("DEBUG-only dogfood ledger")
+        #endif
+    }
+
+    /// Every scenario document this harness can emit must parse with the real
+    /// production parsers, including the mixed batch and the smart-quote
+    /// variant.
+    func testExperimentScenarioDocumentsParseWithProductionParsers() throws {
+        #if DEBUG
+        let nonce = "ABC123"
+        let marker = LiveDogfoodRunner.marker
+
+        let b1 = "banana\nn. \(marker) B1 \(nonce)"
+        XCTAssertEqual(try BatchParser.parseDailyInput(b1).entries.count, 1)
+
+        let d = [
+            "garden\nn. \(marker) Dcreate \(nonce)",
+            "window\nn. \(marker) Dnew \(nonce)",
+            "market\nn. \(marker) Dmatch \(nonce)",
+            "qzxwvjkq\nn. \(marker) Dblock \(nonce)",
+        ].joined(separator: "\n")
+        XCTAssertEqual(try BatchParser.parseDailyInput(d).entries.count, 4)
+
+        let c1 = LiveExperimentRunner.phraseDoc(word: "ocean", nonce: nonce, suffix: "C1")
+        XCTAssertTrue(c1.contains("## ocean"))
+        XCTAssertTrue(c1.contains("The ocean hums"))
+        XCTAssertTrue(c1.contains(LiveDogfoodRunner.phraseMarker))
+        let c1Parsed = try PhraseBatchParser.parse(c1)
+        XCTAssertEqual(c1Parsed.count, 1)
+
+        // The C5 apostrophe/quote document and its smart-quote equivalent.
+        let c5 = LiveExperimentRunner.phraseDoc(
+            word: "river",
+            english: "She said the river's 'rule' was \"fair\".",
+            chinese: "矩阵引号例句。",
+            origin: "\(LiveDogfoodRunner.phraseMarker)\(nonce)-C5"
+        )
+        let parsed = try PhraseBatchParser.parse(c5)
+        XCTAssertEqual(parsed.first?.english, "She said the river's 'rule' was \"fair\".")
+
+        let smart = "She said the river\u{2019}s \u{2018}rule\u{2019} was \u{201C}fair\u{201D}."
+        XCTAssertEqual(
+            PhraseEnglishIdentity.canonical(smart),
+            PhraseEnglishIdentity.canonical("She said the river's 'rule' was \"fair\"."),
+            "smart quotes canonicalize to the same provider-state identity"
+        )
+        #else
+        throw XCTSkip("DEBUG-only experiment harness")
+        #endif
+    }
+
+    /// Baseline verification proves exact non-marker restore: an unchanged
+    /// word verifies, a word whose non-marker set changed does not.
+    func testExperimentBaselineVerificationDetectsExactRestore() async throws {
+        #if DEBUG
+        let directory = NSTemporaryDirectory()
+            .appending("DogfoodExperimentTests-\(UUID().uuidString)")
+        let directoryURL = URL(fileURLWithPath: directory)
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let store = DogfoodExperimentStore(applicationSupportDirectory: directoryURL)
+        let ledger = DogfoodLedger(applicationSupportDirectory: directoryURL)
+        let lease = try credentialLease()
+        defer { lease.clear() }
+
+        func makeRunner(_ transport: FakeHTTPTransport) -> LiveExperimentRunner {
+            LiveExperimentRunner(
+                api: MaimemoTransport(transport: transport, credential: lease),
+                ledger: ledger,
+                experiment: store
+            )
+        }
+
+        store.register(
+            DogfoodScenarioBaseline(
+                spelling: "apple",
+                nonMarkerInterpretationIDs: ["REC_OWNER_1"],
+                nonMarkerPhraseIDs: ["REC_PHRASE_1"]
+            )
+        )
+
+        // Unchanged non-marker state: exact restore verifies.
+        let sameTransport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC_A", "apple"),
+            interpretationsResponse([interpretation("REC_OWNER_1", "n. 原释义")]),
+            phrasesResponse([
+                phraseRecordPayload("REC_PHRASE_1", english: "An apple a day.", chinese: "日一苹果。", origin: "自编"),
+            ]),
+        ])
+        let verified = await makeRunner(sameTransport).verifyBaselines()
+        XCTAssertTrue(verified.succeeded, verified.diagnostic)
+
+        // A second non-marker interpretation appeared: verification must fail
+        // and name the word.
+        let changedTransport = FakeHTTPTransport([
+            vocabularyResponse("INVALID_VOC_A", "apple"),
+            interpretationsResponse([
+                interpretation("REC_OWNER_1", "n. 原释义"),
+                interpretation("REC_OWNER_2", "n. 多出来的"),
+            ]),
+            phrasesResponse([
+                phraseRecordPayload("REC_PHRASE_1", english: "An apple a day.", chinese: "日一苹果。", origin: "自编"),
+            ]),
+        ])
+        let failed = await makeRunner(changedTransport).verifyBaselines()
+        XCTAssertFalse(failed.succeeded)
+        XCTAssertTrue(failed.message.contains("apple"), failed.message)
+        #else
+        throw XCTSkip("DEBUG-only experiment harness")
+        #endif
+    }
+
     func testGETCannotCarryBodyAndPOSTRequiresBody() {
         XCTAssertThrowsError(
             try TransportRequest(route: .vocabulary(spelling: "word"), body: Data())

@@ -593,6 +593,24 @@ final class DogfoodLedger: @unchecked Sendable {
         if changed { persistLocked(entries) }
     }
 
+    /// GET-only reconciliation for a crash between provider DELETE and ledger
+    /// retire (#183 E3): an active entry whose record ID no longer exists in
+    /// the fresh authenticated lists is stale and retired here. This is
+    /// bookkeeping only — it never dispatches anything.
+    func retireAbsent(visibleActiveRecordIDs: Set<String>) {
+        lock.lock()
+        defer { lock.unlock() }
+        var entries = loadLocked()
+        var changed = false
+        for index in entries.indices where entries[index].state == "active" {
+            if let id = entries[index].recordID, !visibleActiveRecordIDs.contains(id) {
+                entries[index].state = "deleted"
+                changed = true
+            }
+        }
+        if changed { persistLocked(entries) }
+    }
+
     func spellings() -> Set<String> {
         Set(load().map(\.spelling))
     }
@@ -820,13 +838,16 @@ struct LiveDogfoodRunner {
 
     /// Every spelling this app's dogfood could ever have touched: the whole
     /// allowlist (a crashed run's target is always inside it) plus whatever
-    /// the ledger remembers from earlier runs.
+    /// the ledger and the #183 round-2 experiment manifest remember.
     private var scanSpellings: Set<String> {
-        Set(Self.candidateSpellings).union(ledger.spellings())
+        Set(Self.candidateSpellings)
+            .union(ledger.spellings())
+            .union(DogfoodExperimentStore.shared.baselines().map(\.spelling))
     }
 
     private func countActiveMarkerRecords(events: inout [String]) async throws -> Int {
         var total = 0
+        var visibleActiveRecordIDs = Set<String>()
         for spelling in scanSpellings.sorted() {
             guard let vocabulary = try? await api.vocabulary(spelling: spelling) else { continue }
             guard let interpretations = try? await api.interpretations(vocabularyID: vocabulary.id),
@@ -838,6 +859,12 @@ struct LiveDogfoodRunner {
                 total += 1
                 continue
             }
+            for record in interpretations where record.status != "DELETED" {
+                visibleActiveRecordIDs.insert(record.id)
+            }
+            for record in phrases where record.status != "DELETED" {
+                visibleActiveRecordIDs.insert(record.id)
+            }
             let activeMarkerInterpretations = interpretations.count {
                 $0.status != "DELETED" && $0.interpretation.contains(Self.marker)
             }
@@ -846,6 +873,10 @@ struct LiveDogfoodRunner {
             }
             total += activeMarkerInterpretations + activeMarkerPhrases
         }
+        // GET-only ledger reconciliation (#183 E3): a stale active entry whose
+        // record is provably absent from the fresh lists retires here. Never a
+        // mutation, never a blind repeat.
+        ledger.retireAbsent(visibleActiveRecordIDs: visibleActiveRecordIDs)
         return total
     }
 
@@ -1037,8 +1068,11 @@ struct LiveDogfoodRunner {
     /// carries the exact marker are ever passed to the documented DELETE. Each
     /// clean DELETE is followed by an authenticated GET settle window that must
     /// show the record absent or a `DELETED` tombstone — never an active marker.
-    private func sweepDeletes(events: inout [String]) async -> Set<String> {
+    private func sweepDeletes(
+        events: inout [String]
+    ) async -> (verified: Set<String>, dispatchedDeletes: Int) {
         var verifiedRecordIDs = Set<String>()
+        var dispatchedDeletes = 0
         for spelling in scanSpellings.sorted() {
             guard let vocabulary = try? await api.vocabulary(spelling: spelling) else { continue }
             guard let interpretations = try? await api.interpretations(vocabularyID: vocabulary.id),
@@ -1062,6 +1096,7 @@ struct LiveDogfoodRunner {
             for id in interpretationIDs {
                 let control = ExecutionControl()
                 let dispatch = await api.deleteDogfoodInterpretation(recordID: id, control: control)
+                if dispatch.isClean2xx { dispatchedDeletes += 1 }
                 events.append("delete interpretation dispatch=\(dispatchEvent(dispatch))")
                 var verified = false
                 if dispatch.isClean2xx {
@@ -1083,6 +1118,7 @@ struct LiveDogfoodRunner {
             for id in phraseIDs {
                 let control = ExecutionControl()
                 let dispatch = await api.deleteDogfoodPhrase(recordID: id, control: control)
+                if dispatch.isClean2xx { dispatchedDeletes += 1 }
                 events.append("delete phrase dispatch=\(dispatchEvent(dispatch))")
                 var verified = false
                 if dispatch.isClean2xx {
@@ -1101,13 +1137,26 @@ struct LiveDogfoodRunner {
                 if verified { verifiedRecordIDs.insert(id) }
             }
         }
-        return verifiedRecordIDs
+        return (verifiedRecordIDs, dispatchedDeletes)
     }
 
     private func cleanupAll() async -> (remaining: Int, events: [String]) {
         var events: [String] = ["cleanup_start ledger_active=\(ledger.activeCount())"]
         do {
-            let verifiedRecordIDs = await sweepDeletes(events: &events)
+            let (verifiedRecordIDs, dispatchedDeletes) = await sweepDeletes(events: &events)
+#if DEBUG
+            // #183 E3: one-shot crash after a clean provider DELETE, before the
+            // ledger retire. Gated on this sweep having dispatched at least one
+            // clean DELETE on marker-owned records, so an empty sweep never
+            // fires and readback lag cannot suppress the boundary.
+            if dispatchedDeletes > 0,
+               DogfoodExperimentStore.shared.consumeFault(
+                   .afterDogfoodDelete2xxBeforeLedgerRetire,
+                   markerIn: Self.marker
+               ) {
+                exit(0)
+            }
+#endif
             ledger.retire(recordIDs: verifiedRecordIDs)
 
             var remainingEvents: [String] = []
@@ -1120,7 +1169,7 @@ struct LiveDogfoodRunner {
             if remaining > 0 {
                 events.append("cleanup_settle remaining=\(remaining)")
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                let reverified = await sweepDeletes(events: &events)
+                let (reverified, _) = await sweepDeletes(events: &events)
                 ledger.retire(recordIDs: reverified)
                 remaining = try await countActiveMarkerRecords(events: &remainingEvents)
                 events.append("cleanup_recount remaining=\(remaining)")
@@ -1143,6 +1192,782 @@ struct LiveDogfoodRunner {
             succeeded: succeeded,
             message: message,
             diagnostic: (["小黑鸟伴侣 Live Dogfood Diagnostic v1"] + events).joined(separator: "\n"),
+            remainingActiveRecords: remaining
+        )
+    }
+
+    private func sanitized(_ error: Error) -> String {
+        (error as? CompanionError)?.rawValue ?? "other"
+    }
+}
+
+// MARK: - High-level live state matrix (#183 round 2)
+
+/// DEBUG-only, in-memory mutation audit. Counts dispatched mutating requests by
+/// fixed route name only — never a Token, record ID or request body. Blocked /
+/// no-op UI paths must show a delta of zero here.
+enum LiveMutationAudit {
+    static let interpretationCreate = "interpretation_create_post"
+    static let interpretationUpdate = "interpretation_update_post"
+    static let phraseCreate = "phrase_create_post"
+    static let dogfoodDeleteInterpretation = "dogfood_delete_interpretation"
+    static let dogfoodDeletePhrase = "dogfood_delete_phrase"
+
+    private static let lock = NSLock()
+    private static var counts: [String: Int] = [:]
+
+    static func noteDispatched(route: InterpretationRoute) {
+        let name: String
+        switch route {
+        case .createInterpretation: name = interpretationCreate
+        case .updateInterpretation: name = interpretationUpdate
+        case .createPhrase: name = phraseCreate
+        case .dogfoodDeleteInterpretation: name = dogfoodDeleteInterpretation
+        case .dogfoodDeletePhrase: name = dogfoodDeletePhrase
+        default: return
+        }
+        lock.lock()
+        counts[name, default: 0] += 1
+        lock.unlock()
+    }
+
+    static func count(_ name: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts[name, default: 0]
+    }
+
+    static func snapshotText() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return [
+            interpretationCreate,
+            interpretationUpdate,
+            phraseCreate,
+            dogfoodDeleteInterpretation,
+            dogfoodDeletePhrase,
+        ]
+        .map { "\($0)=\(counts[$0, default: 0])" }
+        .joined(separator: "\n")
+    }
+
+    static func reset() {
+        lock.lock()
+        counts.removeAll()
+        lock.unlock()
+    }
+}
+
+/// The three crash boundaries this round attacks (#183 Part E / pilot §D/§E).
+enum DogfoodFaultBoundary: String, Codable, CaseIterable {
+    case afterInterpretationMutation2xxBeforeReadback = "I1"
+    case afterPhraseCreate2xxBeforeReadbackOrJournalClose = "P1"
+    case afterDogfoodDelete2xxBeforeLedgerRetire = "D1"
+
+    var armLabel: String {
+        switch self {
+        case .afterInterpretationMutation2xxBeforeReadback:
+            return "武装：释义写入后崩溃"
+        case .afterPhraseCreate2xxBeforeReadbackOrJournalClose:
+            return "武装：例句写入后崩溃"
+        case .afterDogfoodDelete2xxBeforeLedgerRetire:
+            return "武装：清理删除后崩溃"
+        }
+    }
+}
+
+/// One registered scenario word's pre-mutation truth: every NON-marker active
+/// record ID, so after cleanup the exact baseline can be verified.
+struct DogfoodScenarioBaseline: Codable, Equatable {
+    var spelling: String
+    var nonMarkerInterpretationIDs: Set<String>
+    var nonMarkerPhraseIDs: Set<String>
+}
+
+/// DEBUG-only experiment state, persisted beside the dogfood ledger: the armed
+/// one-shot fault plus every registered scenario baseline. Marker content is
+/// never persisted — only spelling + record-ID sets.
+final class DogfoodExperimentStore: @unchecked Sendable {
+    static let shared = DogfoodExperimentStore()
+
+    private struct State: Codable {
+        var armedFault: String?
+        var baselines: [DogfoodScenarioBaseline] = []
+        var usedWords: [String] = []
+    }
+
+    private let fileURL: URL
+    private let lock = NSLock()
+    private var state: State
+
+    init(applicationSupportDirectory: URL? = nil) {
+        let base = applicationSupportDirectory ?? (try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? FileManager.default.temporaryDirectory
+        fileURL = base.appendingPathComponent("DogfoodExperiment-v1.json")
+        lock.lock()
+        defer { lock.unlock() }
+        if let data = try? Data(contentsOf: fileURL),
+           let loaded = try? JSONDecoder().decode(State.self, from: data) {
+            state = loaded
+        } else {
+            state = State(armedFault: nil)
+        }
+    }
+
+    private func persistLocked() {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+        var url = fileURL
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
+
+    func arm(_ boundary: DogfoodFaultBoundary) {
+        lock.lock()
+        state.armedFault = boundary.rawValue
+        persistLocked()
+        lock.unlock()
+    }
+
+    func cancelArm() {
+        lock.lock()
+        state.armedFault = nil
+        persistLocked()
+        lock.unlock()
+    }
+
+    var armedDescription: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.armedFault ?? "none"
+    }
+
+    /// One-shot, marker-gated fault consumption. Fires only when the armed
+    /// boundary matches AND the just-dispatched content carries this app's
+    /// dogfood marker family, so a non-marker Owner write can never be killed.
+    @discardableResult
+    func consumeFault(_ boundary: DogfoodFaultBoundary, markerIn content: String) -> Bool {
+        let owned = content.contains(LiveDogfoodRunner.marker)
+            || content.contains(LiveDogfoodRunner.phraseMarker)
+        lock.lock()
+        defer { lock.unlock() }
+        guard state.armedFault == boundary.rawValue, owned else { return false }
+        state.armedFault = nil
+        persistLocked()
+        return true
+    }
+
+    func register(_ baseline: DogfoodScenarioBaseline) {
+        lock.lock()
+        state.baselines.removeAll { $0.spelling == baseline.spelling }
+        state.baselines.append(baseline)
+        if !state.usedWords.contains(baseline.spelling) {
+            state.usedWords.append(baseline.spelling)
+        }
+        persistLocked()
+        lock.unlock()
+    }
+
+    func baselines() -> [DogfoodScenarioBaseline] {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.baselines
+    }
+
+    func usedWords() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.usedWords
+    }
+}
+
+/// Prepares and verifies the #183 round-2 state-matrix scenarios. Setup
+/// mutations are marker-owned only and go through the same transport; the
+/// mutations under test are NOT performed here — they must run through the
+/// normal product UI. Reports are machine-readable so a physical UI test can
+/// parse the exact editor document to type.
+struct LiveExperimentRunner {
+    static let allowlist = [
+        "apple", "banana", "national", "ocean", "river", "garden", "window",
+        "market", "silver", "corner", "teacher", "coffee", "bright", "quiet",
+        "hammer", "meadow", "planet", "tunnel", "velvet", "copper", "ladder",
+        "marble", "ribbon", "saddle", "walnut",
+    ]
+    /// A spelling the real provider cannot resolve (nonsense string, never a
+    /// real word, so it can never collide with Owner data).
+    static let unresolvableSpelling = "qzxwvjkq"
+
+    let api: MaimemoTransport
+    let ledger: DogfoodLedger
+    let experiment: DogfoodExperimentStore
+
+    init(
+        api: MaimemoTransport,
+        ledger: DogfoodLedger = DogfoodLedger(),
+        experiment: DogfoodExperimentStore = .shared
+    ) {
+        self.api = api
+        self.ledger = ledger
+        self.experiment = experiment
+    }
+
+    // MARK: Scenario prep
+
+    func prepare(_ code: String) async -> LiveDogfoodReport {
+        var events = ["exp_start scenario=\(code)"]
+        do {
+            // Recovery-first: never build a precondition on top of a residue.
+            let pre = await LiveDogfoodRunner(api: api, ledger: ledger).cleanup()
+            events.append(contentsOf: pre.diagnostic.components(separatedBy: "\n").dropFirst())
+            guard pre.remainingActiveRecords == 0 else {
+                return report(false, "EXP BLOCKED \(code) 预清理未闭环", events, pre.remainingActiveRecords)
+            }
+            let nonce = Self.nonce()
+            switch code {
+            case "B1", "F2A", "F2B":
+                return try await prepareInterpretationCreate(
+                    code: code, nonce: nonce, events: &events,
+                    requireToday: code == "F2A" ? true : (code == "F2B" ? false : nil)
+                )
+            case "B2":
+                return try await prepareB2(nonce: nonce, events: &events)
+            case "B3":
+                return try await prepareB3(nonce: nonce, events: &events)
+            case "B4":
+                return try await prepareB4(nonce: nonce, events: &events)
+            case "B5":
+                return try await prepareB5(nonce: nonce, events: &events)
+            case "C1", "E2":
+                return try await preparePhraseCreate(code: code, nonce: nonce, events: &events)
+            case "C2":
+                return try await preparePhraseTop(code: code, nonce: nonce, target: 1, events: &events)
+            case "C3":
+                return try await preparePhraseTop(code: code, nonce: nonce, target: 4, events: &events)
+            case "C4":
+                return try await preparePhraseTop(code: code, nonce: nonce, target: 5, events: &events)
+            case "C5":
+                return try await prepareC5(nonce: nonce, events: &events)
+            case "D":
+                return try await prepareD(nonce: nonce, events: &events)
+            case "E1":
+                return try await prepareE1(nonce: nonce, events: &events)
+            case "E3":
+                return try await prepareE3(nonce: nonce, events: &events)
+            default:
+                return report(false, "EXP UNKNOWN scenario=\(code)", events, 0)
+            }
+        } catch {
+            events.append("exp_error category=\(sanitized(error))")
+            return report(false, "EXP FAILED \(code)", events, -1)
+        }
+    }
+
+    // MARK: Baseline verification
+
+    func verifyBaselines() async -> LiveDogfoodReport {
+        var events = ["verify_start"]
+        var mismatches: [String] = []
+        for baseline in experiment.baselines() {
+            do {
+                let vocabulary = try await api.vocabulary(spelling: baseline.spelling)
+                let interpretations = try await api.interpretations(vocabularyID: vocabulary.id)
+                let phrases = try await api.phrases(vocabularyID: vocabulary.id)
+                let currentInterp = Set(
+                    interpretations
+                        .filter { $0.status != "DELETED" && !$0.interpretation.contains(LiveDogfoodRunner.marker) }
+                        .map(\.id)
+                )
+                let currentPhrase = Set(
+                    phrases
+                        .filter { $0.status != "DELETED" && !isMarkerOwnedPhrase($0) }
+                        .map(\.id)
+                )
+                if currentInterp == baseline.nonMarkerInterpretationIDs,
+                   currentPhrase == baseline.nonMarkerPhraseIDs {
+                    events.append("baseline_ok \(baseline.spelling)")
+                } else {
+                    let missingInterp = baseline.nonMarkerInterpretationIDs.subtracting(currentInterp).count
+                    let extraInterp = currentInterp.subtracting(baseline.nonMarkerInterpretationIDs).count
+                    let missingPhrase = baseline.nonMarkerPhraseIDs.subtracting(currentPhrase).count
+                    let extraPhrase = currentPhrase.subtracting(baseline.nonMarkerPhraseIDs).count
+                    mismatches.append(
+                        "\(baseline.spelling) interp-\(missingInterp)+\(extraInterp) phrase-\(missingPhrase)+\(extraPhrase)"
+                    )
+                }
+            } catch {
+                mismatches.append("\(baseline.spelling) unreadable")
+            }
+        }
+        if mismatches.isEmpty {
+            events.append("verify_done exact=\(experiment.baselines().count)")
+            return report(true, "基线核对一致 · \(experiment.baselines().count) 个词", events, 0)
+        }
+        events.append("verify_done mismatch=\(mismatches.joined(separator: ","))")
+        return report(false, "基线不一致 · \(mismatches.joined(separator: "、"))", events, -1)
+    }
+
+    // MARK: F2 study-membership classification (read-only)
+
+    func classifyStudyMembership() async -> LiveDogfoodReport {
+        var events = ["classify_start"]
+        do {
+            let words = experiment.usedWords() + Self.allowlist
+            let unique = Array(Set(words)).sorted()
+            var lines: [String] = []
+            var inPlan: [String] = []
+            var outPlan: [String] = []
+            for word in unique where word != Self.unresolvableSpelling {
+                guard let vocabulary = try? await api.vocabulary(spelling: word) else {
+                    lines.append("word=\(word) resolved=no")
+                    continue
+                }
+                let interpretations = (try? await api.interpretations(vocabularyID: vocabulary.id)) ?? []
+                let phrases = (try? await api.phrases(vocabularyID: vocabulary.id)) ?? []
+                let activeInterp = interpretations.filter { $0.status != "DELETED" }.count
+                let activePhrase = phrases.filter { $0.status != "DELETED" }.count
+                let today = try await api.studyTodayItems(spellings: [word])
+                let inToday = !today.isEmpty
+                if inToday { inPlan.append(word) } else { outPlan.append(word) }
+                lines.append(
+                    "word=\(word) resolved=yes today=\(inToday ? "yes" : "no") interp=\(activeInterp) phrase=\(activePhrase)"
+                )
+            }
+            events.append(contentsOf: lines)
+            events.append("classify_done in=\(inPlan.count) out=\(outPlan.count)")
+            return report(true, "分类完成 · in=\(inPlan.count) out=\(outPlan.count)", events, 0)
+        } catch {
+            events.append("classify_error category=\(sanitized(error))")
+            return report(false, "分类失败", events, -1)
+        }
+    }
+
+    // MARK: - Scenario implementations
+
+    private func prepareInterpretationCreate(
+        code: String,
+        nonce: String,
+        events: inout [String],
+        requireToday: Bool?
+    ) async throws -> LiveDogfoodReport {
+        let content = "n. \(LiveDogfoodRunner.marker) \(code) \(nonce)"
+        let word = try await pickWord(
+            requireCleanInterpretations: true,
+            requireToday: requireToday,
+            events: &events
+        )
+        try await registerBaseline(word: word, events: &events)
+        let doc = "\(word)\n\(content)"
+        events.append("exp_ready scenario=\(code) word=\(word)")
+        return report(
+            true,
+            "EXP READY \(code) word=\(word)",
+            events + ["doc>>", doc, "<<doc"],
+            0
+        )
+    }
+
+    private func prepareB2(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        let old = "n. \(LiveDogfoodRunner.marker) B2old \(nonce)"
+        let proposed = "n. \(LiveDogfoodRunner.marker) B2new \(nonce)"
+        let word = try await pickWord(requireCleanInterpretations: true, events: &events)
+        try await registerBaseline(word: word, events: &events)
+        let vocabulary = try await api.vocabulary(spelling: word)
+        _ = try await createMarkerInterpretation(vocabularyID: vocabulary.id, content: old)
+        events.append("setup_interpretation=1 word=\(word)")
+        let doc = "\(word)\n\(proposed)"
+        events.append("exp_ready scenario=B2 word=\(word)")
+        return report(true, "EXP READY B2 word=\(word)", events + ["doc>>", doc, "<<doc"], 0)
+    }
+
+    private func prepareB3(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        let content = "n. \(LiveDogfoodRunner.marker) B3 \(nonce)"
+        let word = try await pickWord(requireCleanInterpretations: true, events: &events)
+        try await registerBaseline(word: word, events: &events)
+        let vocabulary = try await api.vocabulary(spelling: word)
+        _ = try await createMarkerInterpretation(vocabularyID: vocabulary.id, content: content)
+        events.append("setup_interpretation=1 word=\(word)")
+        let doc = "\(word)\n\(content)"
+        events.append("exp_ready scenario=B3 word=\(word)")
+        return report(true, "EXP READY B3 word=\(word)", events + ["doc>>", doc, "<<doc"], 0)
+    }
+
+    private func prepareB4(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        let word = try await pickWord(requireCleanInterpretations: true, events: &events)
+        try await registerBaseline(word: word, events: &events)
+        let vocabulary = try await api.vocabulary(spelling: word)
+        _ = try await createMarkerInterpretation(
+            vocabularyID: vocabulary.id,
+            content: "n. \(LiveDogfoodRunner.marker) B4a \(nonce)"
+        )
+        do {
+            _ = try await createMarkerInterpretation(
+                vocabularyID: vocabulary.id,
+                content: "n. \(LiveDogfoodRunner.marker) B4b \(nonce)"
+            )
+        } catch {
+            // If the provider refuses a second self-authored interpretation on
+            // one word, the ambiguity state is unreachable on this account —
+            // report it honestly instead of forcing the state.
+            let cleanup = await LiveDogfoodRunner(api: api, ledger: ledger).cleanup()
+            events.append("second_interpretation=refused provider_single_interp")
+            return report(
+                false,
+                "EXP N/A B4 provider 拒绝同一词条的第二条自建释义",
+                events + ["note=ambiguity unreachable on this account"],
+                cleanup.remainingActiveRecords
+            )
+        }
+        events.append("setup_interpretation=2 word=\(word)")
+        let doc = "\(word)\nn. \(LiveDogfoodRunner.marker) B4new \(nonce)"
+        events.append("exp_ready scenario=B4 word=\(word)")
+        return report(true, "EXP READY B4 word=\(word)", events + ["doc>>", doc, "<<doc"], 0)
+    }
+
+    private func prepareB5(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        // No setup, no baseline: the provider itself must prove the word
+        // unresolvable, and the product path must fail closed with zero writes.
+        let doc = "\(Self.unresolvableSpelling)\nn. \(LiveDogfoodRunner.marker) B5 \(nonce)"
+        events.append("exp_ready scenario=B5 word=\(Self.unresolvableSpelling)")
+        return report(true, "EXP READY B5 word=\(Self.unresolvableSpelling)", events + ["doc>>", doc, "<<doc"], 0)
+    }
+
+    private func preparePhraseCreate(
+        code: String,
+        nonce: String,
+        events: inout [String]
+    ) async throws -> LiveDogfoodReport {
+        let word = try await pickWord(requireCleanInterpretations: false, maxOwnerPhrases: 0, events: &events)
+        try await registerBaseline(word: word, events: &events)
+        let doc = Self.phraseDoc(word: word, nonce: nonce, suffix: code)
+        events.append("exp_ready scenario=\(code) word=\(word)")
+        return report(true, "EXP READY \(code) word=\(word)", events + ["doc>>", doc, "<<doc"], 0)
+    }
+
+    private func preparePhraseTop(
+        code: String,
+        nonce: String,
+        target: Int,
+        events: inout [String]
+    ) async throws -> LiveDogfoodReport {
+        let word = try await pickWord(
+            requireCleanInterpretations: false,
+            maxOwnerPhrases: target,
+            events: &events
+        )
+        try await registerBaseline(word: word, events: &events)
+        let vocabulary = try await api.vocabulary(spelling: word)
+        let phrases = try await api.phrases(vocabularyID: vocabulary.id)
+        let ownerActive = phrases.filter { $0.status != "DELETED" && !isMarkerOwnedPhrase($0) }.count
+        let needed = target - ownerActive
+        for index in 0..<max(needed, 0) {
+            let origin = "\(LiveDogfoodRunner.phraseMarker)\(nonce)-\(code)\(index)"
+            _ = try await createMarkerPhrase(
+                vocabularyID: vocabulary.id,
+                english: "The \(word) waits here. (setup \(index) \(nonce))",
+                chinese: "矩阵预置例句。",
+                origin: origin
+            )
+        }
+        events.append("setup_phrase_topup=\(max(needed, 0)) word=\(word) target=\(target)")
+        let doc = Self.phraseDoc(word: word, nonce: nonce, suffix: "\(code)main")
+        events.append("exp_ready scenario=\(code) word=\(word)")
+        return report(true, "EXP READY \(code) word=\(word)", events + ["doc>>", doc, "<<doc"], 0)
+    }
+
+    private func prepareC5(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        let word = try await pickWord(requireCleanInterpretations: false, maxOwnerPhrases: 0, events: &events)
+        try await registerBaseline(word: word, events: &events)
+        let origin = "\(LiveDogfoodRunner.phraseMarker)\(nonce)-C5"
+        let base = "She said the \(word)'s 'rule' was \"fair\"."
+        // Variant 2: only smart quotes differ; the product canonicalizes them,
+        // so it must classify the row as already matching, never a new CREATE.
+        let smart = "She said the \(word)\u{2019}s \u{2018}rule\u{2019} was \u{201C}fair\u{201D}."
+        let doc = Self.phraseDoc(word: word, english: base, chinese: "矩阵引号例句。", origin: origin)
+        let doc2 = Self.phraseDoc(word: word, english: smart, chinese: "矩阵引号例句。", origin: origin)
+        let doc3 = Self.phraseDoc(word: word, english: base, chinese: "不同的中文翻译。", origin: origin)
+        events.append("exp_ready scenario=C5 word=\(word)")
+        return report(
+            true,
+            "EXP READY C5 word=\(word)",
+            events + ["doc>>", doc, "<<doc", "doc2>>", doc2, "<<doc", "doc3>>", doc3, "<<doc"],
+            0
+        )
+    }
+
+    private func prepareD(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        let createWord = try await pickWord(requireCleanInterpretations: true, events: &events)
+        let updateWord = try await pickWord(requireCleanInterpretations: true, events: &events)
+        let matchWord = try await pickWord(requireCleanInterpretations: true, events: &events)
+        try await registerBaseline(word: createWord, events: &events)
+        try await registerBaseline(word: updateWord, events: &events)
+        try await registerBaseline(word: matchWord, events: &events)
+
+        let updateVocabulary = try await api.vocabulary(spelling: updateWord)
+        _ = try await createMarkerInterpretation(
+            vocabularyID: updateVocabulary.id,
+            content: "n. \(LiveDogfoodRunner.marker) Dold \(nonce)"
+        )
+        let matchContent = "n. \(LiveDogfoodRunner.marker) Dmatch \(nonce)"
+        let matchVocabulary = try await api.vocabulary(spelling: matchWord)
+        _ = try await createMarkerInterpretation(
+            vocabularyID: matchVocabulary.id,
+            content: matchContent
+        )
+        events.append("setup_interpretation=2")
+
+        let doc = [
+            "\(createWord)\nn. \(LiveDogfoodRunner.marker) Dcreate \(nonce)",
+            "\(updateWord)\nn. \(LiveDogfoodRunner.marker) Dnew \(nonce)",
+            "\(matchWord)\n\(matchContent)",
+            "\(Self.unresolvableSpelling)\nn. \(LiveDogfoodRunner.marker) Dblock \(nonce)",
+        ].joined(separator: "\n")
+        events.append("exp_ready scenario=D create=\(createWord) update=\(updateWord) match=\(matchWord)")
+        return report(
+            true,
+            "EXP READY D create=\(createWord) update=\(updateWord) match=\(matchWord)",
+            events + ["doc>>", doc, "<<doc"],
+            0
+        )
+    }
+
+    private func prepareE1(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        try await prepareInterpretationCreate(code: "E1", nonce: nonce, events: &events, requireToday: nil)
+    }
+
+    private func prepareE3(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
+        let word = try await pickWord(requireCleanInterpretations: true, events: &events)
+        try await registerBaseline(word: word, events: &events)
+        let vocabulary = try await api.vocabulary(spelling: word)
+        let recordID = try await createMarkerInterpretation(
+            vocabularyID: vocabulary.id,
+            content: "n. \(LiveDogfoodRunner.marker) E3 \(nonce)"
+        )
+        ledger.recordActive(
+            runID: LiveDogfoodRunner.marker + nonce,
+            kind: "interpretation",
+            recordID: recordID,
+            spelling: word
+        )
+        events.append("exp_ready scenario=E3 word=\(word)")
+        return report(true, "EXP READY E3 word=\(word)", events, 0)
+    }
+
+    // MARK: - Shared helpers
+
+    static func phraseDoc(
+        word: String,
+        english: String? = nil,
+        chinese: String,
+        origin: String
+    ) -> String {
+        let sentence = english ?? "The \(word) hums a quiet tune here."
+        return "## \(word)\nEN: \(sentence)\nZH: \(chinese)\nSOURCE: \(origin)"
+    }
+
+    /// The normal-path phrase document for a scenario: a natural sentence
+    /// containing the actual headword, with the run marker in SOURCE/origin.
+    static func phraseDoc(word: String, nonce: String, suffix: String) -> String {
+        phraseDoc(
+            word: word,
+            english: nil,
+            chinese: "矩阵测试例句。",
+            origin: "\(LiveDogfoodRunner.phraseMarker)\(nonce)-\(suffix)"
+        )
+    }
+
+    static func nonce() -> String {
+        String(UUID().uuidString.prefix(6))
+    }
+
+    private func isMarkerOwnedPhrase(_ record: PhraseRecord) -> Bool {
+        record.phrase.contains(LiveDogfoodRunner.marker)
+            || record.origin.contains(LiveDogfoodRunner.marker)
+            || record.phrase.contains(LiveDogfoodRunner.phraseMarker)
+            || record.origin.contains(LiveDogfoodRunner.phraseMarker)
+    }
+
+    /// Read-only word selection. `requireToday` filters by the exact-spelling
+    /// today-items read (F2). Words are freely reusable across scenarios: every
+    /// prep begins with a marker cleanup and registers a fresh non-marker
+    /// baseline, so a previously used word is exactly as safe as a fresh one.
+    private func pickWord(
+        requireCleanInterpretations: Bool,
+        maxOwnerPhrases: Int = .max,
+        requireToday: Bool? = nil,
+        events: inout [String]
+    ) async throws -> String {
+        // A transient 429 right after a burst would otherwise make every
+        // candidate look unresolvable; retry the whole bounded scan a couple
+        // of times with a settle gap before concluding no candidate exists.
+        for passIndex in 0..<3 {
+            if passIndex > 0 {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                events.append("pick_retry pass=\(passIndex)")
+            }
+            if let word = try await pickWordOnce(
+                requireCleanInterpretations: requireCleanInterpretations,
+                maxOwnerPhrases: maxOwnerPhrases,
+                requireToday: requireToday,
+                events: &events
+            ) {
+                return word
+            }
+        }
+        events.append("pick_failed")
+        throw CompanionError.blocked
+    }
+
+    private func pickWordOnce(
+        requireCleanInterpretations: Bool,
+        maxOwnerPhrases: Int,
+        requireToday: Bool?,
+        events: inout [String]
+    ) async throws -> String? {
+        for word in Self.allowlist {
+            guard let vocabulary = try? await api.vocabulary(spelling: word) else { continue }
+            guard let interpretations = try? await api.interpretations(vocabularyID: vocabulary.id),
+                  let phrases = try? await api.phrases(vocabularyID: vocabulary.id)
+            else { continue }
+            let activeInterp = interpretations.filter { $0.status != "DELETED" }
+            let ownerActivePhrases = phrases.filter { $0.status != "DELETED" && !isMarkerOwnedPhrase($0) }
+            if requireCleanInterpretations, !activeInterp.isEmpty { continue }
+            if ownerActivePhrases.count > maxOwnerPhrases { continue }
+            if let requireToday {
+                let today = try await api.studyTodayItems(spellings: [word])
+                if !today.isEmpty != requireToday { continue }
+            }
+            events.append("picked \(word)")
+            return word
+        }
+        return nil
+    }
+
+    /// Durable registration BEFORE any scenario mutation (global recovery
+    /// invariant): non-marker active IDs are captured and persisted first.
+    private func registerBaseline(word: String, events: inout [String]) async throws {
+        let vocabulary = try await api.vocabulary(spelling: word)
+        let interpretations = try await api.interpretations(vocabularyID: vocabulary.id)
+        let phrases = try await api.phrases(vocabularyID: vocabulary.id)
+        let baseline = DogfoodScenarioBaseline(
+            spelling: word,
+            nonMarkerInterpretationIDs: Set(
+                interpretations
+                    .filter { $0.status != "DELETED" && !$0.interpretation.contains(LiveDogfoodRunner.marker) }
+                    .map(\.id)
+            ),
+            nonMarkerPhraseIDs: Set(
+                phrases
+                    .filter { $0.status != "DELETED" && !isMarkerOwnedPhrase($0) }
+                    .map(\.id)
+            )
+        )
+        experiment.register(baseline)
+        events.append("baseline_registered \(word) interp=\(baseline.nonMarkerInterpretationIDs.count) phrase=\(baseline.nonMarkerPhraseIDs.count)")
+    }
+
+    private func settleReadback<T>(
+        attempts: Int = 4,
+        intervalNanoseconds: UInt64 = 3_000_000_000,
+        _ read: () async throws -> T?
+    ) async throws -> T {
+        for attempt in 0..<attempts {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: intervalNanoseconds)
+            }
+            if let value = try await read() {
+                return value
+            }
+        }
+        throw CompanionError.uncertainWriteOutcome
+    }
+
+    @discardableResult
+    private func createMarkerInterpretation(
+        vocabularyID: String,
+        content: String,
+        status: String = "PUBLISHED"
+    ) async throws -> String {
+        let body = try JSONSerialization.data(
+            withJSONObject: [
+                "interpretation": [
+                    "voc_id": vocabularyID,
+                    "interpretation": content,
+                    "tags": [String](),
+                    "status": status,
+                ],
+            ],
+            options: [.sortedKeys]
+        )
+        let control = ExecutionControl()
+        let dispatch = await api.post(route: .createInterpretation, body: body, control: control)
+        guard dispatch.isClean2xx else {
+            control.finishPostResolution()
+            throw CompanionError.uncertainWriteOutcome
+        }
+        defer { control.finishPostResolution() }
+        return try await settleReadback {
+            let records = try await api.interpretations(
+                vocabularyID: vocabularyID,
+                control: control,
+                readback: true
+            )
+            let matches = records.filter { $0.status != "DELETED" && $0.interpretation == content }
+            return matches.count == 1 ? matches[0].id : nil
+        }
+    }
+
+    @discardableResult
+    private func createMarkerPhrase(
+        vocabularyID: String,
+        english: String,
+        chinese: String,
+        origin: String
+    ) async throws -> String {
+        let body = try JSONSerialization.data(
+            withJSONObject: [
+                "phrase": [
+                    "voc_id": vocabularyID,
+                    "phrase": english,
+                    "interpretation": chinese,
+                    "tags": [String](),
+                    "origin": origin,
+                ],
+            ],
+            options: [.sortedKeys]
+        )
+        let control = ExecutionControl()
+        let dispatch = await api.createPhrase(body: body, control: control)
+        guard dispatch.dispatch.isClean2xx else {
+            control.finishPostResolution()
+            throw CompanionError.uncertainWriteOutcome
+        }
+        defer { control.finishPostResolution() }
+        return try await settleReadback {
+            let records = try await api.phrases(
+                vocabularyID: vocabularyID,
+                control: control,
+                readback: true
+            )
+            let matches = records.filter { $0.status != "DELETED" && $0.phrase == english }
+            return matches.count == 1 ? matches[0].id : nil
+        }
+    }
+
+    private func report(
+        _ succeeded: Bool,
+        _ message: String,
+        _ events: [String],
+        _ remaining: Int
+    ) -> LiveDogfoodReport {
+        LiveDogfoodReport(
+            succeeded: succeeded,
+            message: message,
+            diagnostic: (["小黑鸟伴侣 Live Experiment Diagnostic v1"] + events).joined(separator: "\n"),
             remainingActiveRecords: remaining
         )
     }

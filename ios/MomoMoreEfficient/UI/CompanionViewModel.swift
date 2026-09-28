@@ -73,6 +73,9 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// content-free: counts/stages only, never Token or provider record IDs.
     @Published private(set) var liveDogfoodReport: LiveDogfoodReport?
     @Published private(set) var isLiveDogfoodRunning = false
+    /// The #183 round-2 state-matrix experiment surface. Setup/verify/fault
+    /// reports only; the mutations under test run through the normal UI.
+    @Published private(set) var liveExperimentReport: LiveDogfoodReport?
 #endif
 
     private let credentialSession = CredentialSession()
@@ -356,6 +359,141 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
 
     func cleanupLiveDogfood() async {
         await performLiveDogfood(.cleanup)
+    }
+
+    // MARK: #183 round-2 state-matrix experiment ops (DEBUG-only)
+
+    func prepareExperiment(scenarioCode: String) async {
+        await performLiveExperiment { api in
+            await LiveExperimentRunner(api: api).prepare(scenarioCode)
+        }
+    }
+
+    func verifyExperimentBaselines() async {
+        await performLiveExperiment { api in
+            await LiveExperimentRunner(api: api).verifyBaselines()
+        }
+    }
+
+    func classifyExperimentStudyMembership() async {
+        await performLiveExperiment { api in
+            await LiveExperimentRunner(api: api).classifyStudyMembership()
+        }
+    }
+
+    func armExperimentFault(_ boundary: DogfoodFaultBoundary) async {
+        DogfoodExperimentStore.shared.arm(boundary)
+        liveExperimentReport = LiveDogfoodReport(
+            succeeded: true,
+            message: "EXP ARMED \(boundary.rawValue)",
+            diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\narmed=\(boundary.rawValue) one_shot=yes marker_gated=yes",
+            remainingActiveRecords: -1
+        )
+    }
+
+    /// DEBUG-only launch-argument automation for the #183 matrix tests, so a
+    /// physical UI test never needs the on-screen keyboard: when launched with
+    /// `-MomoExperimentScenario <code>` the scenario prep runs automatically
+    /// once the connection is restored; `-MomoExperimentArm <I1|P1|D1>` arms
+    /// the one-shot fault at launch instead.
+    private var launchExperimentArgumentsConsumed = false
+
+    func processLaunchExperimentArguments() {
+        guard !launchExperimentArgumentsConsumed else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        func value(after flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag),
+                  index + 1 < arguments.count
+            else { return nil }
+            return arguments[index + 1]
+        }
+        if let code = value(after: "-MomoExperimentScenario") {
+            launchExperimentArgumentsConsumed = true
+            Task { @MainActor in
+                // The trigger fires as soon as isConnected flips, which can
+                // race the credential-restore lane release. Retry the blocked
+                // case, but NEVER while a prep is already running — rerunning
+                // would stomp the in-flight report with a blocked message.
+                for _ in 0..<90 {
+                    if self.isLiveDogfoodRunning {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    await self.prepareExperiment(scenarioCode: code)
+                    if self.liveExperimentReport?.message != "实验当前不可运行" { return }
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+        } else if let raw = value(after: "-MomoExperimentArm"),
+                  let boundary = DogfoodFaultBoundary(rawValue: raw) {
+            launchExperimentArgumentsConsumed = true
+            Task { await armExperimentFault(boundary) }
+        }
+    }
+
+    func resetMutationAudit() {
+        LiveMutationAudit.reset()
+    }
+
+    var mutationAuditSnapshot: String {
+        LiveMutationAudit.snapshotText()
+    }
+
+    @discardableResult
+    private func performLiveExperiment(
+        _ operation: @escaping @Sendable (MaimemoTransport) async -> LiveDogfoodReport
+    ) async -> Bool {
+        guard !isLiveDogfoodRunning, !isBusy, isConnected,
+              beginProviderOperation(.write)
+        else {
+            liveExperimentReport = LiveDogfoodReport(
+                succeeded: false,
+                message: "实验当前不可运行",
+                diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nblocked=busy_or_disconnected",
+                remainingActiveRecords: -1
+            )
+            return false
+        }
+
+        isLiveDogfoodRunning = true
+        isBusy = true
+        isExecuting = true
+        defer {
+            isExecuting = false
+            isBusy = false
+            isLiveDogfoodRunning = false
+            endProviderOperation(.write)
+            settleDeferredBackgroundTeardown()
+        }
+
+        do {
+            let lease = try credentialSession.makeOperationLease()
+            defer { lease.clear() }
+            let api = MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
+            )
+            liveExperimentReport = await operation(api)
+            return liveExperimentReport?.succeeded ?? false
+        } catch let error as CompanionError {
+            liveExperimentReport = LiveDogfoodReport(
+                succeeded: false,
+                message: "实验无法开始 · \(error.description)",
+                diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nstart_error=\(error.rawValue)",
+                remainingActiveRecords: -1
+            )
+        } catch {
+            liveExperimentReport = LiveDogfoodReport(
+                succeeded: false,
+                message: "实验无法开始",
+                diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nstart_error=other",
+                remainingActiveRecords: -1
+            )
+        }
+        return false
     }
 
     private enum LiveDogfoodAction {

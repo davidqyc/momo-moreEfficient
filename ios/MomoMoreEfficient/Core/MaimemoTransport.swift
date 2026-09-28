@@ -414,19 +414,20 @@ final class MaimemoTransport {
     /// `POST /study/get_today_items`. The request body follows the
     /// proto-derived official request type (`GetTodayItemsRequest`) and the
     /// official CLI's construction: the required `voc_ids` / `spellings`
-    /// arrays are always sent empty (v1 has no word filtering), `limit` is
-    /// always the documented maximum 1000, and `is_finished` / `is_new` are
-    /// added only when requested. A caller that receives 1000 rows cannot
-    /// prove completeness and must say so — that policy lives in the runner,
-    /// not here.
+    /// arrays are always sent (`limit` is always the documented maximum 1000)
+    /// and `is_finished` / `is_new` are added only when requested. Production
+    /// callers pass no spellings (v1 has no word filtering). The documented
+    /// exact-spelling read is used only by the DEBUG #183 experiment
+    /// classifier; it stays read-semantic either way.
     func studyTodayItems(
+        spellings: [String] = [],
         isFinished: Bool? = nil,
         isNew: Bool? = nil,
         control: ExecutionControl? = nil
     ) async throws -> [StudyTodayItem] {
         var payload: [String: Any] = [
             "voc_ids": [String](),
-            "spellings": [String](),
+            "spellings": spellings,
             "limit": CompanionConstants.studyPageSize,
         ]
         if let isFinished { payload["is_finished"] = isFinished }
@@ -650,6 +651,9 @@ final class MaimemoTransport {
             let request = try TransportRequest(route: route)
             dispatched = true
             scheduler.confirmDispatch(ticket)
+#if DEBUG
+            LiveMutationAudit.noteDispatched(route: route)
+#endif
             do {
                 let response = try await transport.send(request, credential: credential)
                 return (200..<300).contains(response.status)
@@ -686,6 +690,9 @@ final class MaimemoTransport {
             let request = try TransportRequest(route: route, body: body)
             dispatched = true
             scheduler.confirmDispatch(ticket)
+#if DEBUG
+            LiveMutationAudit.noteDispatched(route: route)
+#endif
             do {
                 let response = try await transport.send(request, credential: credential)
                 return (200..<300).contains(response.status)
