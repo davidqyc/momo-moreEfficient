@@ -213,6 +213,229 @@ final class StudyExportQueryRegressionUITests: XCTestCase {
         )
     }
 
+    // MARK: - Physical-device live acceptance
+
+    /// Real provider read-only smoke on the Owner phone. Simulator runs skip it;
+    /// the deterministic rehearsal tests above remain the ordinary CI gate.
+    func testPhysicalLiveReadOnlyCoreSurfaces() throws {
+        try requirePhysicalDevice()
+        let app = launchLive()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+
+        app.buttons["单词导出"].tap()
+        XCTAssertTrue(app.staticTexts["单词导出"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitEnabled(app.buttons["今天已学"], timeout: 20))
+
+        // Exactly the five supported presets: the withdrawn StudyRecord
+        // surface (#155 Owner directive) must be absent on the real phone too.
+        for preset in Self.supportedPresets {
+            XCTAssertTrue(app.buttons[preset].exists, preset)
+        }
+        for withdrawn in [
+            "今天新添加", "顽固词", "熟知词", "N 天内复习", "全部学习词",
+            "运行完整性探针", "1 天内复习", "3 天内复习", "7 天内复习", "30 天内复习",
+        ] {
+            XCTAssertFalse(app.buttons[withdrawn].exists, withdrawn)
+        }
+
+        for preset in Self.supportedPresets {
+            app.buttons[preset].tap()
+            let header = app.staticTexts.matching(
+                NSPredicate(format: "label BEGINSWITH %@", preset + " · ")
+            ).firstMatch
+            XCTAssertTrue(header.waitForExistence(timeout: 45), preset)
+            XCTAssertFalse(app.staticTexts["读取失败"].exists, preset)
+            XCTAssertFalse(app.staticTexts["无法证明读取完整"].exists, preset)
+            app.buttons["返回列表"].tap()
+            XCTAssertTrue(app.buttons[preset].waitForExistence(timeout: 10), preset)
+        }
+
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
+        app.buttons["批量查阅"].tap()
+        let editor = app.textViews["批量查阅输入"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        editor.tap()
+        editor.typeText("apple")
+        let start = app.buttons["查阅 1 项"]
+        XCTAssertTrue(waitEnabled(start, timeout: 20))
+        start.tap()
+        let completed = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "读取完成")
+        ).firstMatch
+        XCTAssertTrue(completed.waitForExistence(timeout: 60))
+        XCTAssertTrue(app.buttons["apple"].waitForExistence(timeout: 10))
+    }
+
+    /// Real Export → Query handoff on a live study day. The first preset whose
+    /// result is non-empty shows `批量查阅 N 个`; the handoff must install the
+    /// exact words and never auto-start a read. When every real preset is
+    /// empty today, this falls back to the simulator rehearsal proof (D3)
+    /// instead of manufacturing study state.
+    func testPhysicalLiveExportToQueryHandoffWhenWordsExist() throws {
+        try requirePhysicalDevice()
+        let app = launchLive()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+        app.buttons["单词导出"].tap()
+        XCTAssertTrue(waitEnabled(app.buttons["今天已学"], timeout: 20))
+
+        for preset in Self.supportedPresets {
+            app.buttons[preset].tap()
+            let header = app.staticTexts.matching(
+                NSPredicate(format: "label BEGINSWITH %@", preset + " · ")
+            ).firstMatch
+            XCTAssertTrue(header.waitForExistence(timeout: 45), preset)
+
+            let handoff = app.buttons.matching(
+                NSPredicate(format: "label BEGINSWITH %@", "批量查阅 ")
+            ).firstMatch
+            if handoff.waitForExistence(timeout: 3) {
+                let countLabel = handoff.label
+                app.buttons[countLabel].tap()
+                XCTAssertTrue(app.staticTexts["批量查阅"].waitForExistence(timeout: 10))
+                let sourceNote = app.staticTexts.matching(
+                    NSPredicate(format: "label CONTAINS %@", "尚未发起查阅")
+                ).firstMatch
+                XCTAssertTrue(sourceNote.waitForExistence(timeout: 5), countLabel)
+                // The action count matches the handed-off words exactly.
+                let start = app.buttons[countLabel.replacingOccurrences(
+                    of: "批量查阅", with: "查阅"
+                ).replacingOccurrences(of: " 个", with: " 项")]
+                XCTAssertTrue(start.waitForExistence(timeout: 5), countLabel)
+                XCTAssertTrue(waitEnabled(start))
+                // Still the input/pre-read phase: nothing is running and no
+                // provider read has started before an explicit action.
+                XCTAssertFalse(app.buttons["停止"].exists)
+                let editor = app.textViews["批量查阅输入"]
+                XCTAssertTrue(editor.waitForExistence(timeout: 5))
+                let installed = (editor.value as? String) ?? ""
+                XCTAssertFalse(installed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, countLabel)
+                // The real end-to-end read on live data is proven by the
+                // dedicated physical Batch Query test; the handoff proof here
+                // stops at the exact-count/no-auto-start boundary, like D3.
+                return
+            }
+
+            app.buttons["返回列表"].tap()
+            XCTAssertTrue(app.buttons[preset].waitForExistence(timeout: 10), preset)
+        }
+        throw XCTSkip("所有真实 Study Export 结果今天为空；Export→Query 交接由模拟器 rehearsal D3 证明")
+    }
+
+    /// #180 cross-mode guard on the real phone, both directions. Purely local:
+    /// no Preview, no network, no write — the guard must block before either.
+    func testPhysicalLiveGuardBlocksPhraseDocumentInInterpretationMode() throws {
+        try requirePhysicalDevice()
+        let app = launchLive()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+        app.buttons["释义录入"].tap()
+        let document = "## guard sample\nEN: A guard fixture sentence.\nZH: 守卫样例。\nSOURCE: Offline fixture"
+        typeInto(app.textViews["批次释义输入"], document)
+
+        XCTAssertTrue(
+            app.staticTexts["检测到例句格式，当前是释义录入。为防止写错，已阻止预览。"]
+                .waitForExistence(timeout: 5)
+        )
+        assertPreviewBlocked(app)
+
+        app.buttons["切换到例句并保留内容"].tap()
+        XCTAssertTrue(app.staticTexts["例句录入"].waitForExistence(timeout: 5))
+        let phraseEditor = app.textViews["批次例句输入"]
+        XCTAssertTrue(phraseEditor.waitForExistence(timeout: 5))
+        XCTAssertEqual(phraseEditor.value as? String, document)
+        XCTAssertTrue(waitEnabled(firstPreviewButton(app), timeout: 5))
+    }
+
+    func testPhysicalLiveGuardBlocksInterpretationDocumentInPhraseMode() throws {
+        try requirePhysicalDevice()
+        let app = launchLive()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+        app.buttons["例句录入"].tap()
+        let document = "guardword\nn. 守卫样例释义"
+        typeInto(app.textViews["批次例句输入"], document)
+
+        XCTAssertTrue(
+            app.staticTexts["检测到释义格式，当前是例句录入。为防止写错，已阻止预览。"]
+                .waitForExistence(timeout: 5)
+        )
+        assertPreviewBlocked(app)
+
+        app.buttons["切换到释义并保留内容"].tap()
+        XCTAssertTrue(app.staticTexts["释义录入"].waitForExistence(timeout: 5))
+        let interpretationEditor = app.textViews["批次释义输入"]
+        XCTAssertTrue(interpretationEditor.waitForExistence(timeout: 5))
+        XCTAssertEqual(interpretationEditor.value as? String, document)
+        XCTAssertTrue(waitEnabled(firstPreviewButton(app), timeout: 5))
+    }
+
+    /// Authorized live dogfood: create interpretation -> update the same marker
+    /// record -> create phrase -> delete every marker record -> verify the
+    /// original active-record baseline is exact again. The independent cleanup
+    /// button is exercised before and after the run so an interrupted prior run
+    /// never depends on this test process surviving, and the GET-only scan
+    /// entry truthfully reports 残留 0 at the end.
+    func testPhysicalLiveDogfoodRoundTripRestoresDatabase() throws {
+        try requirePhysicalDevice()
+        let app = launchLive()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+        app.buttons["设置"].tap()
+        XCTAssertTrue(app.staticTexts["设置"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["已连接"].waitForExistence(timeout: 20))
+
+        let cleanup = app.buttons["撤回所有 Dogfood"]
+        let scan = app.buttons["扫描验收残留"]
+        makeHittable(cleanup, in: app)
+        makeHittable(scan, in: app)
+        XCTAssertTrue(cleanup.isHittable)
+        XCTAssertTrue(scan.isHittable)
+        cleanup.tap()
+        let status = app.staticTexts["liveDogfoodStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        let precleanClosed = waitForLabel(
+            status,
+            equals: "Dogfood 已清理 · 剩余 0",
+            timeout: 240
+        )
+
+        var runClosed = false
+        if precleanClosed {
+            let run = app.buttons["运行真实 Dogfood"]
+            makeHittable(run, in: app)
+            XCTAssertTrue(run.isHittable)
+            run.tap()
+            runClosed = waitForLabel(
+                status,
+                equals: "Dogfood 验证通过 · 数据已恢复原样 · 剩余 0",
+                timeout: 480
+            )
+        }
+
+        // Always perform an independent final sweep even when the run failed.
+        makeHittable(cleanup, in: app)
+        XCTAssertTrue(cleanup.isHittable)
+        cleanup.tap()
+        let finalCleanupClosed = waitForLabel(
+            status,
+            equals: "Dogfood 已清理 · 剩余 0",
+            timeout: 240
+        )
+
+        // The independent GET-only scan must confirm the same truthful zero.
+        makeHittable(scan, in: app)
+        XCTAssertTrue(scan.isHittable)
+        scan.tap()
+        let scanClosed = waitForLabel(
+            status,
+            equals: "扫描完成 · 活跃残留 0",
+            timeout: 240
+        )
+
+        XCTAssertTrue(precleanClosed, "pre-clean must close before dogfood")
+        XCTAssertTrue(runClosed, "dogfood create/update/create/delete/baseline closure must pass")
+        XCTAssertTrue(finalCleanupClosed, "final cleanup must leave zero active marker records")
+        XCTAssertTrue(scanClosed, "independent scan must report 活跃残留 0")
+    }
+
     // MARK: - Helpers
 
     private static let supportedPresets = ["今天已学", "今日待复习", "今天新学", "今天忘记", "今天模糊"]
@@ -225,6 +448,38 @@ final class StudyExportQueryRegressionUITests: XCTestCase {
         ]
         app.launch()
         return app
+    }
+
+    private func launchLive() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments += ["-MomoUITestResetPreferences"]
+        app.launch()
+        return app
+    }
+
+    private func requirePhysicalDevice() throws {
+        if ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil {
+            throw XCTSkip("physical-device live acceptance")
+        }
+    }
+
+    private func makeHittable(_ element: XCUIElement, in app: XCUIApplication) {
+        for _ in 0..<6 {
+            if element.exists && element.isHittable { return }
+            app.swipeUp()
+        }
+    }
+
+    private func waitForLabel(
+        _ element: XCUIElement,
+        equals expected: String,
+        timeout: TimeInterval
+    ) -> Bool {
+        let predicate = NSPredicate { _, _ in
+            element.exists && element.label == expected
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: nil)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     /// The write surface Preview button, titled `预览` before a valid parse

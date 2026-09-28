@@ -131,13 +131,13 @@ final class ShellNavigationUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["释义录入"].exists)
 
         // One back returns to Home, proving the mode switch pushed nothing.
-        back(app)
+        back(app, until: app.staticTexts["小黑鸟伴侣"])
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
 
         // Entering the other tile also lands on the same single destination.
         app.buttons["例句录入"].tap()
         XCTAssertTrue(app.staticTexts["例句录入"].waitForExistence(timeout: 5))
-        back(app)
+        back(app, until: app.staticTexts["小黑鸟伴侣"])
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
     }
 
@@ -193,7 +193,7 @@ final class ShellNavigationUITests: XCTestCase {
         editor.typeText("alpha")
         XCTAssertTrue(app.buttons["查阅 1 项"].waitForExistence(timeout: 5))
 
-        back(app)
+        back(app, until: app.staticTexts["小黑鸟伴侣"])
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
         app.buttons["批量查阅"].tap()
 
@@ -299,7 +299,10 @@ final class ShellNavigationUITests: XCTestCase {
         // removes exactly the persisted preference keys at app startup, so a
         // shared simulator install can never leak one run's selection into
         // another run's counters.
-        app.launchArguments += ["-MomoUITestResetPreferences"]
+        app.launchArguments += [
+            "-MomoUITestResetPreferences",
+            "-MomoUITestForceDisconnected",
+        ]
         if let contentSize {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize]
         }
@@ -308,7 +311,18 @@ final class ShellNavigationUITests: XCTestCase {
     }
 
     /// The shell uses a circular back control instead of a system back button.
-    private func back(_ app: XCUIApplication) {
-        app.buttons["返回"].firstMatch.tap()
+    /// On a physical device the tap occasionally lands during a SwiftUI
+    /// transition, so an `until` destination re-taps bounded until that screen
+    /// actually appears; without one, behavior is the original single tap.
+    private func back(_ app: XCUIApplication, until expected: XCUIElement? = nil) {
+        let control = app.buttons["返回"].firstMatch
+        for _ in 0..<3 {
+            control.tap()
+            if let expected {
+                if expected.waitForExistence(timeout: 3) { return }
+            } else {
+                return
+            }
+        }
     }
 }
