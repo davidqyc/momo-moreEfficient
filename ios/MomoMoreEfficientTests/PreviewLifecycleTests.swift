@@ -231,13 +231,14 @@ final class PreviewLifecycleTests: XCTestCase {
         // Only the first run is gated; the retry must not block on a spent gate.
         var sleepers: [RequestSleeper] = [gate]
         let assertion = FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleepers.isEmpty ? RecordingSleeper() : sleepers.removeFirst() },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -317,13 +318,14 @@ final class PreviewLifecycleTests: XCTestCase {
         let gate = FirstPauseGateSleeper()
         // Only the Preview is gated; execution must run to completion unblocked.
         var sleepers: [RequestSleeper] = [gate]
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             historyStore: InMemoryHistoryStore(),
             transportFactory: { remaining.removeFirst() },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleepers.isEmpty ? RecordingSleeper() : sleepers.removeFirst() },
-            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() }
+            backgroundAssertionFactory: { FakeBackgroundExecutionAssertion() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)
@@ -424,16 +426,18 @@ final class PreviewLifecycleTests: XCTestCase {
         transport: HTTPTransport,
         sleeper: RequestSleeper,
         tokenStore: FakeTokenStore = FakeTokenStore(),
-        assertion: FakeBackgroundExecutionAssertion? = nil
+        assertion: FakeBackgroundExecutionAssertion? = nil,
+        preferenceDefaults: UserDefaults = isolatedPreferenceDefaults()
     ) -> CompanionViewModel {
         let assertion = assertion ?? FakeBackgroundExecutionAssertion()
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: tokenStore,
             historyStore: InMemoryHistoryStore(),
             transportFactory: { transport },
             credentialValidationTransportFactory: successfulCredentialValidationTransport,
             sleeperFactory: { sleeper },
-            backgroundAssertionFactory: { assertion }
+            backgroundAssertionFactory: { assertion },
+            preferenceDefaults: preferenceDefaults
         )
         var draft = fakeToken
         model.installVerifiedCredentialForTesting(token: &draft)

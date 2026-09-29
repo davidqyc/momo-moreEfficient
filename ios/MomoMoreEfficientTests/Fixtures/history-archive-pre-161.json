@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "receipts": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "timestamp": "2026-08-01T09:15:00Z",
+      "operationGroup": "create",
+      "succeeded": 1,
+      "failed": 0,
+      "notAttempted": 0,
+      "stopped": false,
+      "items": [
+        {
+          "spelling": "legacy",
+          "finalOutcome": "confirmed"
+        }
+      ]
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "timestamp": "2026-08-15T11:00:00Z",
+      "contentKind": "interpretation",
+      "operationGroup": "update",
+      "succeeded": 1,
+      "failed": 0,
+      "unconfirmed": 1,
+      "notAttempted": 1,
+      "stopped": true,
+      "items": [
+        {
+          "ordinal": 1,
+          "spelling": "merchandise",
+          "finalOutcome": "confirmed",
+          "diagnostic": {
+            "ordinal": 1,
+            "postDispatch": {
+              "clean2xx": {
+                "status": 200
+              }
+            },
+            "readbackAttempts": [
+              {
+                "category": "success"
+              }
+            ]
+          }
+        },
+        {
+          "ordinal": 2,
+          "spelling": "consideration",
+          "finalOutcome": "notVerified",
+          "diagnostic": {
+            "ordinal": 2,
+            "postDispatch": {
+              "clean2xx": {
+                "status": 200
+              }
+            },
+            "readbackAttempts": [
+              {
+                "category": "targetNotVisible"
+              }
+            ],
+            "terminalErrorCategory": "uncertainWriteOutcome"
+          }
+        },
+        {
+          "ordinal": 3,
+          "spelling": "prudent",
+          "finalOutcome": "notAttempted"
+        }
+      ],
+      "diagnosticEnvironment": {
+        "appVersion": "1.0",
+        "appBuild": "3",
+        "systemVersion": "Version 26.0 (Build 23A000)"
+      }
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "timestamp": "2026-08-20T08:30:00Z",
+      "contentKind": "phrase",
+      "operationGroup": "create",
+      "succeeded": 2,
+      "failed": 0,
+      "unconfirmed": 0,
+      "notAttempted": 0,
+      "stopped": false,
+      "items": [
+        {
+          "ordinal": 1,
+          "spelling": "take into account",
+          "finalOutcome": "confirmed",
+          "diagnostic": {
+            "ordinal": 1,
+            "postDispatch": {
+              "clean2xx": {
+                "status": 200
+              }
+            },
+            "readbackAttempts": [
+              {
+                "category": "success",
+                "phraseFacts": {
+                  "activeRecordCount": 1,
+                  "sameEnglishCount": 1,
+                  "mismatchKeys": []
+                }
+              }
+            ]
+          }
+        },
+        {
+          "ordinal": 2,
+          "spelling": "bear in mind",
+          "finalOutcome": "recovered",
+          "diagnostic": {
+            "ordinal": 2,
+            "postDispatch": {
+              "transportFailure": {
+                "errorCategory": "transport"
+              }
+            },
+            "readbackAttempts": [
+              {
+                "category": "targetNotVisible"
+              },
+              {
+                "category": "success",
+                "phraseFacts": {
+                  "activeRecordCount": 1,
+                  "sameEnglishCount": 1,
+                  "mismatchKeys": ["source"]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "diagnosticEnvironment": {
+        "appVersion": "1.0",
+        "appBuild": "3",
+        "systemVersion": "Version 26.0 (Build 23A000)"
+      }
+    }
+  ]
+}

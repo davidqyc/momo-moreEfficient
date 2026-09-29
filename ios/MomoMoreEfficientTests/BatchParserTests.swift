@@ -97,10 +97,11 @@ final class BatchParserTests: XCTestCase {
     @MainActor
     func testCredentialMovesToDedicatedObjectAndEditableStringClears() throws {
         var draft = fakeToken
-        let model = CompanionViewModel(
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
             tokenStore: FakeTokenStore(),
             transportFactory: { FakeHTTPTransport([]) },
-            sleeperFactory: { RecordingSleeper() }
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
         )
         model.installVerifiedCredentialForTesting(token: &draft)
         XCTAssertTrue(model.isConnected)

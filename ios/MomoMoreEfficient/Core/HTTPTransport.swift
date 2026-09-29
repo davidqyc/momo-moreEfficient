@@ -13,10 +13,15 @@ enum InterpretationRoute: Equatable, Sendable {
     case updateInterpretation(recordID: String)
     case phrases(vocabularyID: String)
     case createPhrase
+    /// Read-only notes list (#161). The public coordinate is proven by the
+    /// current first-party `maimemo/memo-api-cli` (`src/commands/note.ts`),
+    /// whose base URL is `https://open.maimemo.com/open/` and which lists notes
+    /// with `GET /api/v1/notes?voc_id=…`. No note mutation route exists here.
+    case notes(vocabularyID: String)
 
     var method: HTTPMethod {
         switch self {
-        case .vocabulary, .interpretations, .phrases:
+        case .vocabulary, .interpretations, .phrases, .notes:
             return .get
         case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase:
             return .post
@@ -33,7 +38,7 @@ enum InterpretationRoute: Equatable, Sendable {
     /// accounted for or retried as a mutation.
     var isMutating: Bool {
         switch self {
-        case .vocabulary, .vocabularyQuery, .interpretations, .phrases:
+        case .vocabulary, .vocabularyQuery, .interpretations, .phrases, .notes:
             return false
         case .createInterpretation, .updateInterpretation, .createPhrase:
             return true
@@ -54,6 +59,8 @@ enum InterpretationRoute: Equatable, Sendable {
             return "/open/api/v1/interpretations/\(recordID)"
         case .phrases, .createPhrase:
             return "/open/api/v1/phrases"
+        case .notes:
+            return "/open/api/v1/notes"
         }
     }
 
@@ -71,6 +78,9 @@ enum InterpretationRoute: Equatable, Sendable {
             guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
         case let .phrases(vocabularyID):
+            guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
+            components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
+        case let .notes(vocabularyID):
             guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
         case .vocabularyQuery, .createInterpretation, .createPhrase:

@@ -67,6 +67,7 @@ struct WriteExecutor {
             let fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: entries,
                 tags: displayedSnapshot.bindingContext.tags,
+                status: displayedSnapshot.bindingContext.status,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
@@ -135,6 +136,7 @@ struct WriteExecutor {
             fresh = try await PreflightPlanner(api: api).buildSnapshot(
                 entries: displayedSnapshot.items.map(\.entry),
                 tags: displayedSnapshot.bindingContext.tags,
+                status: displayedSnapshot.bindingContext.status,
                 credentialFingerprint: displayedSnapshot.credentialFingerprint,
                 control: control
             )
@@ -252,6 +254,7 @@ struct WriteExecutor {
         let fresh = try await PreflightPlanner(api: api).buildSnapshot(
             entries: entries,
             tags: displayedSnapshot.bindingContext.tags,
+            status: displayedSnapshot.bindingContext.status,
             credentialFingerprint: displayedSnapshot.credentialFingerprint,
             control: control
         )
@@ -315,7 +318,8 @@ struct WriteExecutor {
                 let body = try ConfirmationBinding.requestData(
                     item,
                     group: plan.group,
-                    tags: plan.tags
+                    tags: plan.tags,
+                    status: plan.status
                 )
                 let dispatch = await api.post(route: route, body: body, control: control)
                 guard dispatch != .notDispatched else {
@@ -406,7 +410,11 @@ struct WriteExecutor {
                     readbackCategory = .targetAmbiguous
                 } else if records[0].matchesIntendedState(
                     item.interpretation,
-                    tags: plan.tags
+                    tags: plan.tags,
+                    // The readback must reproduce the approved publication
+                    // status as well (#161). A status mismatch is the existing
+                    // intendedStateMismatch → notVerified, never a quiet success.
+                    status: plan.status
                 ), plan.group != .update || records[0].id == item.baseline?.id {
                     readbackCategory = .success
                 } else {
