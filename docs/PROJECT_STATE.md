@@ -1,146 +1,114 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-05
-sourceMainSha=1f44d29a488507c28108843880905da4127f32d3
+updatedAt=2026-09-12
+sourceMainSha=f9bbc8d1166ee02158391289bccdd4f094a8785f
 sourceMainShaIsSnapshotOnly=true
 
-## Current truth
+> Current truth only. Live default branch + current Issue/PR/WIP + latest explicit Owner instruction outrank this snapshot. Historical accepted detail remains in the owning Issues/PRs/git history and should be read only when the current task needs it.
+
+## 1. Current truth
 
 ```text
 REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
-CURRENT_PRODUCT_VERSION=1.0 (4) uploaded to App Store Connect; Apple processing pending
-
-LAST_COMPLETED_PRODUCT_ISSUE=#105
-LAST_MERGED_PR=#176
-LAST_MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
-LAST_MERGE_SCOPE=mechanical TestFlight build-number bump 3 -> 4 for app + ShareExtension only
 
 CURRENT_PRIMARY_ISSUE=#161
-CURRENT_PRIMARY_GATE=FINAL_DESIGN_HANDOFF_ACCEPTED_READY_FOR_CLAUDE_CODE
-CURRENT_RELEASE_GATE_STATUS=UPLOAD_ACCEPTED_PROCESSING_PENDING_IN_PARALLEL
-CURRENT_BLOCKER=none; #161 final Design handoff accepted with Coordinator implementation corrections; TestFlight build 4 remains an independent passive processing/readback lane and must not be re-uploaded
-CURRENT_UNIQUE_NEXT=use Claude Design -> Claude Code native handoff to implement #161 from live main on an Issue branch, preserving the accepted Home/Settings/neutral Query/Contextual History/Capture design and stable write-safety floor
+CURRENT_PRIMARY_PR=#177
+CURRENT_PRIMARY_PR_HEAD=f3c8f33215d965ff381ee674b1c5668808df7dd2
+CURRENT_PRIMARY_PR_STATUS=OPEN_DRAFT_UNMERGED
 
-IMPLEMENTATION_HOLD_FOR_UNRELATED_FEATURES=cleared_for_#161_by_owner_explicit_workflow_after_design_gate
-TESTFLIGHT_BUILD4_REUPLOAD_FORBIDDEN=true
-MACHINE_MIGRATION_HOLD=CLEARED
-NEW_MAC_WORKSPACE_READY=yes
-OLD_MAC_REPO_RETIREMENT_GATE=PASS
-NO_FOURTH_RESOLVER_SURFACE=true
-SELF_ADDED_UNRESOLVABLE_POLICY=FAIL_CLOSED_WITH_未读取到可用词条目标
+SELF_ADDED_VOCABULARY_PROVIDER_RESEARCH=CLOSED_FOR_NOW
+MORE_PROVIDER_CLARIFICATION=no
+MORE_PROVIDER_CANARY=no
+MORE_RESOLVER_ROUTE_HUNTING=no
+PRIVATE_OR_UNDOCUMENTED_API=no
+GUESSED_IDS=no
+
+PROVIDER_LIMITATION_MARKER=COMPLETE_ON_CURRENT_PR_HEAD
+PROVIDER_LIMITATION_MARKER_BASE=39f424e7bd0fa9c5d31fb0e6158b4bcbbce7d438
+PROVIDER_LIMITATION_MARKER_IMPL_COMMIT=19f4924ca130502a6df107981ed9969fad2fd2ed
+ACCESSIBILITY_REPAIR_COMMIT=f3c8f33215d965ff381ee674b1c5668808df7dd2
+COORDINATOR_FINAL_ADJUDICATION_COMMENT=5641278587
+
+QUERY_TRUTH_INVARIANT=UNAVAILABLE_NE_0
+RESOLVER_TAXONOMY_CHANGED=no
+SECOND_RESOLVER_ADDED=no
+
+ACTIVE_EXTERNAL_AGENT=0
+CURRENT_EXTERNAL_AGENT_TASK=none
+CURRENT_UNIQUE_NEXT=wait for Owner's next concrete real-use bug/usability defect; do not invent a roadmap item or automatically reopen provider research
 ```
 
-## Accepted shipping baseline
+## 2. Provider limitation marker now closed
 
-### #167 — batch vocabulary / parser
+The Owner obtained direct official-provider confirmation that the currently supported public Maimemo Open API does not provide the stable `voc_id` path required by this app for user self-added/custom vocabulary.
 
-Merged at `25e5cd85ea8f436cc66b41e49d6313547b0a6148`.
-
-- public batch vocabulary query is the normal resolver;
-- query POST is read-semantic;
-- no artificial fixed 30-item total cap;
-- interpretation and phrase inputs accept unambiguous batches with or without blank lines;
-- bounded input/content safety remains.
-
-### #168 — aggregate-window scheduler
-
-Merged through PR #172 at `bc03ee03e06bfa23a160e2599bebc9db34635812`.
-
-- no blanket 1.6s read floor;
-- `20/10s`, `40/60s`, `2000/5h` enforced with `ContinuousClock` semantics;
-- sequential reads/writes, no mutating retry, mandatory post-POST readback preserved.
-
-Accepted automated evidence: `315 executed / 4 skipped / 0 failures`.
-
-### #164 — completed with provider visibility limit
-
-Issue #164 is closed completed.
-
-Real physical evidence exhausted the bounded first-party public target-resolution surfaces for the Owner's self-added item:
+The product response is intentionally narrow:
 
 ```text
-POST /open/api/v1/vocabulary/query          -> no safe target
-GET  /open/api/v1/vocabulary?spelling=...   -> no safe target
-POST /open/api/v1/study/query_study_records -> no safe target after bounded sync settling
+ordinary public-resolver MISS
+!= proof that the spelling is self-added
 ```
 
-PR #173 and PR #174 were both closed unmerged. No fourth resolver, private endpoint, or guessed id is allowed. Items without a safe public target remain fail-closed with `未读取到可用词条目标`.
+Therefore the app does **not** invent a causal `selfAddedUnsupported` resolver state. Instead it keeps the existing safe MISS / UNAVAILABLE semantics and makes the current public-API capability boundary explicit to the user.
 
-### #105 — capture workflow completed
+At PR #177 head `f3c8f332...`:
 
-Issue #105 is closed completed after the final physical release gate.
+- interpretation Preview maps `VOCABULARY_NOT_FOUND` to an explicit Open API limitation message;
+- phrase Preview uses the same truthful message;
+- Query `targetNotFound` says the current Open API cannot resolve the entry;
+- Query result rows surface the row-level reason inline instead of forcing the user to infer it from repeated generic unavailable cells;
+- Query detail explains that unresolved does not prove absence in Maimemo, and conditionally states the self-added-word limitation;
+- resolver lookup route, target identity contract and failure taxonomy are unchanged;
+- resolver MISS remains `UNAVAILABLE`, never numeric `0`.
 
-The accepted capture RC ultimately established:
+## 3. Accessibility correction
+
+The first implementation commit `19f4924...` accidentally carried the normal two-line spelling truncation into the accessibility Dynamic Type layout through a shared helper.
+
+The bounded repair `f3c8f332...` restores the intended split:
 
 ```text
-PRODUCT_BUILD_SIGN=PASS
-PHYSICAL_INSTALL_LAUNCH=PASS
-NORMAL_MODE=PASS
-SHARE_EXTENSION_REAL_SAVE=PASS
-APP_GROUP_RUNTIME_IDENTITY=PASS
-MAIN_PENDING_CAPTURE_PICKUP=PASS
-REAL_SYSTEM_SHARE_SHEET_ROUTE=PASS
-NO_REAL_MAIMEMO_MUTATION_DURING_RC=PASS
+normal layout
+→ at most 2 spelling lines + middle truncation
+
+accessibility two-tier layout
+→ unlimited vertical spelling wrapping
 ```
 
-PR #175 corrected only the physical UI-test substrate (`XCUIDevice.shared.press(.home)` was inert on the physical iPhone); no product code/config/lifecycle behavior changed.
+The row-level inability reason remains visible in both layouts.
 
-Accepted PR #175 evidence:
+Builder-reported verification for the final repair:
 
 ```text
-PR=175
-HEAD=0763f9184bd28871010b379306cdb213ef8350e0
-MERGE_SHA=5abfe6fbea342f209c5920a162f8c5710cc66748
-TARGETED_CAPTURE_UNIT_TESTS=24/0
-SIMULATOR_UI=3/0
-PHYSICAL_UI=3/0
-CAPTURE_SHARE_SHEET_PHYSICAL=PASS
-CAPTURE_PENDING_REVIEW_PHYSICAL=PASS
-PRODUCT_CODE_CHANGED=no
-PRODUCT_CONFIG_CHANGED=no
+MomoMoreEfficientTests=426/426 PASS
+MERGE=no
+TESTFLIGHT=no
+REAL_MAIMEMO_MUTATION=0
 ```
 
-### TestFlight 1.0 (4) release upload
+Coordinator exact source readback accepted the repair. No separate SwiftUI inspection harness was added because the modifier difference is now explicit in the code and a new private-view harness would be disproportionate for this bounded UI correction.
 
-Owner authorized build 4 and TestFlight upload.
+## 4. Current product route
 
-PR #176 changed exactly one repository file and only the app/ShareExtension build number:
+The provider limitation is no longer the main line.
+
+Owner's current route is:
 
 ```text
-PR=176
-HEAD=5158473776421e1e61d110d65ee78c7d8b8a9c60
-MERGE_SHA=df3f64479493e110df09e1f6e4f4e067e3ba84ee
-MARKETING_VERSION=1.0
-CURRENT_PROJECT_VERSION=4
-MAIN_BUNDLE_ID=com.jiripple.xiaoheiniao
-EXTENSION_BUNDLE_ID=com.jiripple.xiaoheiniao.ShareExtension
-DISTRIBUTION_TEAM=W26LH686PD
+one real-use defect
+→ smallest truthful/safe repair
+→ proportionate verification
+→ next real-use defect
 ```
 
-The exact merged-main archive passed identity validation and was uploaded exactly once after Xcode account re-authentication:
+Do not auto-select parked roadmap features merely because they are open. In particular, do not automatically start #155 / #157 / #153 / #152 or resume old provider research without a newer Owner instruction.
 
-```text
-ARCHIVE=PASS
-ARCHIVE_IDENTITY=PASS
-CLOUD_MANAGED_SIGNING_USED=yes
-UPLOAD_DISPATCHED=yes
-UPLOAD_ACCEPTED=yes
-APPLE_DELIVERY_RECEIPT=d7e3f368-ed80-49e4-b1fc-d093d50d7031
-APPLE_DELIVERY_BYTES=1871341
-APPLE_PROCESSING_STATUS=Uploaded package is processing
-TESTER_GROUP_CHANGED=no
-BETA_APP_REVIEW_SUBMITTED=no
-APP_STORE_REVIEW_SUBMITTED=no
-```
+The older Capture Gate investigation on PR #177 remains historical unresolved PR context, but it is **not** the automatic current next after the Owner explicitly redirected the project to mark the provider limitation and then fix the next real-world defect. If a future Owner instruction returns to release/capture gating, re-read the live Issue/PR evidence at that time rather than relying on the older state text.
 
-Apple's delivery payload recorded `cfBundleShortVersionString=1.0` and `cfBundleVersion=4`; Xcode did not renumber the build. App Store Connect/TestFlight UI visibility was not independently read back because no already-authenticated first-party UI/API surface was available in the Agent session. This is not a retry signal. Do not re-upload build 4.
-
-### #161 — final Design handoff accepted
-
-Owner-approved Design baseline:
+## 5. Stable #161 product baseline
 
 ```text
 HOME=首页乙
@@ -148,30 +116,15 @@ VISUAL_FAMILY=方案一「墨与米」
 SETTINGS_OWNS_ACCOUNT_MANAGEMENT=yes
 WORK_SURFACE_ACCOUNT_COPY=连接状态
 CONTEXTUAL_HISTORY=释义历史 / 例句历史
+
 QUERY_MODEL=neutral numeric 释义/例句/助记 status inspector
 QUERY_FILTER=user-composed AND predicates
 QUERY_HISTORY_V1=no
+
 CAPTURE_DIRECT_DESTINATIONS=转到释义编辑 / 转到例句编辑
 ```
 
-Final Design handoff package was mechanically verified by the Coordinator:
-
-```text
-ZIP_INTEGRITY=PASS
-MANIFEST_HASH_AND_BYTE_MATCH=PASS
-UNIQUE_TRANSITION_IDS=136
-DUPLICATE_TRANSITION_IDS=0
-INTERACTION_COVERAGE=PASS
-```
-
-Coordinator implementation corrections before Code:
-
-```text
-1. write mode is state inside one write destination; do not encode the current 释义/例句 mode as persistent NavigationStack route identity. Home/Capture set the initial/current ContentMode, then navigate to one write destination. Contextual History may still carry ContentMode.
-2. Query detail v1 does not require created/updated timestamps unless a current first-party schema is explicitly verified for the corresponding list resource. Stable required fields remain the current proven text/tags/status/origin/type-style fields. Do not expand transport decoding merely to satisfy an optional timestamp line.
-```
-
-Publication preference is approved only for interpretations:
+Publication remains:
 
 ```text
 公开=PUBLISHED
@@ -180,44 +133,22 @@ DO_NOT_LABEL_UNPUBLISHED_AS_PRIVATE=true
 PHRASE_OR_NOTE_PUBLICATION_SELECTOR_V1=no
 ```
 
-## Non-blocking tooling note
+Do not reopen these frozen product decisions while repairing unrelated real-use defects.
 
-`MomoMoreEfficientTests` currently has no repository `DEVELOPMENT_TEAM`, so physical test commands may require a command-line team override. Treat this as non-blocking tooling debt unless it causes recurring real friction.
-
-## Machine migration — closed
+## 6. Safety / authorization boundaries
 
 ```text
-WORKSPACE_ROOT=/Users/david/Documents/GitHub/momo-moreEfficient
-REPOSITORY_IDENTITY=davidqyc/momo-moreEfficient
-MIGRATED_PRIVATE_DIRECTORY_PRESENT=yes
-MIGRATED_PRIVATE_FILE_COUNT=11
-MIGRATED_PRIVATE_LOGICAL_BYTES=44083
-MIGRATED_PRIVATE_DU_SIZE=68K
-PRIVATE_CONTENT_OPENED=no
-PRIVATE_CONTENT_PUBLISHED=no
-PRIVATE_DIRECTORY_GITIGNORED=yes
-OLD_MAC_REPO_RETIREMENT_GATE=PASS
-NEW_MAC_WORKSPACE_READY=yes
+MERGE_AUTHORIZED_BY_THIS_STATE=false
+TESTFLIGHT_NEW_UPLOAD_AUTHORIZED=false
+TESTFLIGHT_BUILD4_REUPLOAD_FORBIDDEN=true
+REAL_MAIMEMO_WRITE_AUTHORIZED=false
+TOKEN_READ_AUTHORIZED=false
+IPHONE_MIRRORING_AUTHORIZED=false
+AUTOMATION_AUTHORIZED=false
+MONITORING_AUTHORIZED=false
 ```
 
-`artifacts/private/` remains local/private and must never be pushed for review or migration.
-
-## Active sequence
-
-```text
-TestFlight 1.0 (4) upload ACCEPTED
--> Apple processing / first-small-cohort readback remains passive parallel lane; never re-upload build 4
-
-#161 product lane:
-final Design handoff PASS
--> Claude Design -> Claude Code native handoff   <-- CURRENT
--> implementation branch / Draft PR
--> proportional tests + required fresh review for publication/readback semantic change
--> Coordinator adjudication
--> merge / physical smoke only where risk warrants
-```
-
-## Stable safety boundaries
+Stable product write floor remains:
 
 - Preview is not write authorization;
 - explicit approval before mutation;
@@ -228,13 +159,16 @@ final Design handoff PASS
 - uncertain mutation recovery is GET-only;
 - UPDATE requires an explicit authenticated-user target;
 - no automatic delete/rollback/replay;
-- vocabulary-query POST is read-semantic;
-- personal Maimemo Token and private batch material stay device-local and must not enter Git/logs/review artifacts;
+- personal Maimemo Token and private batch material stay device-local and out of Git/logs/review artifacts;
 - 429 is a stop/rate-limit signal, not permission to replay a mutation.
 
-## Agent-family routing
+## 7. External-Agent routing
 
-Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard current task/tool constraint requires another family. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
+No Builder/Reviewer/Agent task is currently running.
+
+For the next substantive coding round, JIT-read `docs/AGENT_SKILLS_CONNECTOR.md` and live `davidqyc/agent-skills@main`; do not inherit GLM / Claude / Codex model or reasoning depth mechanically from the last round.
+
+The most recent GLM/ZCode experiment is portfolio routing evidence, not a sticky momo-specific family preference.
 
 ## Reusable high-level live debug evidence
 
@@ -246,18 +180,20 @@ docs/HIGH_LEVEL_LIVE_DEBUG_EVIDENCE.md
 
 That ledger is the canonical project record of already-proven live mechanisms, provider quirks, harness traps, invalidation triggers and the minimum retest set for later versions. A version/build bump or unrelated UI change does **not** invalidate the whole matrix. Re-run only scenarios whose product mechanism/provider contract was materially touched; any new live mutation still requires that round's own cleanup + residual-zero closeout.
 
-## Handoff rule
+## 8. Handoff rule
 
-Fresh Chat takeover should read:
+Fresh Chat takeover should read only:
 
 ```text
-CHAT_HANDOFF.md
--> this file
--> Issue #161 latest Design/code-handoff comments
--> Issue #71 latest release status only when release work resumes
--> live Owner collaboration preferences
--> live agent-skills JIT routing only when dispatching
--> latest explicit Owner instruction
+live main
+→ CHAT_HANDOFF.md
+→ this file
+→ Issue #161 metadata/body
+→ exact PR #177 metadata/head
+→ Issue #161 comment 5641278587
+→ latest explicit Owner instruction
 ```
 
-Do not fetch full historical Issue threads merely to reconstruct current truth.
+Do not fetch the full Issue #161 history during takeover.
+
+If the Owner supplies the next screenshot / bug / usability defect, that becomes the immediate next task. If no new defect has been supplied, stop at this natural checkpoint rather than inventing work.
