@@ -44,6 +44,10 @@ final class QuerySessionStore: ObservableObject {
     @Published private(set) var accountChangedBanner = false
     /// True while `修改` can still return to the untouched previous result.
     @Published private(set) var returnableResult = false
+    /// Memory-only source note for an explicit Study Export handoff
+    /// (#155/#161): the word count the handoff installed, while the input
+    /// remains untouched. Any manual edit clears it.
+    @Published private(set) var studyExportHandoffCount: Int?
 
     /// The account identity this result belongs to. Truth produced under one
     /// identity is never shown under another.
@@ -134,11 +138,49 @@ final class QuerySessionStore: ObservableObject {
         rows.first { $0.id == ordinal }
     }
 
+    // MARK: - Study Export handoff (#155/#161)
+
+    /// Installs exact exported spellings into this store as an explicit new
+    /// handoff, without any network, credential lease or provider lane use —
+    /// the actual read still starts only when the Owner taps 查阅 N 项.
+    ///
+    /// Semantics: only nonempty words; a running Query refuses replacement
+    /// rather than being secretly stopped; the input becomes the exact
+    /// newline-separated spellings; previous rows/detail/filter/scroll/result
+    /// state is discarded because this is an explicit new handoff; the
+    /// current account identity is preserved; the phase returns to `.input`
+    /// and the budget recalculates through the existing parser. A memory-only
+    /// source note records the handoff until the first manual edit. The
+    /// clipboard is never involved.
+    @discardableResult
+    func replaceInputFromStudyExport(_ words: [String]) -> Bool {
+        let nonempty = words.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !nonempty.isEmpty, !phase.isRunning else { return false }
+        stopDispatching()
+        inputText = nonempty.joined(separator: "\n")
+        rows = []
+        details = [:]
+        filter = .none
+        scrollAnchor = nil
+        phase = .input
+        returnableResult = false
+        resolverCompleted = false
+        lastStopReason = nil
+        pendingInterrupt = nil
+        runGeneration &+= 1
+        reparse()
+        studyExportHandoffCount = nonempty.count
+        return true
+    }
+
     // MARK: - Input editing
 
     func updateInput(_ text: String) {
         guard text != inputText else { return }
         inputText = text
+        // Any manual edit ends the Study Export handoff provenance.
+        studyExportHandoffCount = nil
         reparse()
         // Q-28: the first real edit after 修改 invalidates the old result, which
         // no longer describes the source text.
@@ -223,6 +265,7 @@ final class QuerySessionStore: ObservableObject {
         resolverCompleted = false
         lastStopReason = nil
         pendingInterrupt = nil
+        studyExportHandoffCount = nil
         runGeneration &+= 1
     }
 

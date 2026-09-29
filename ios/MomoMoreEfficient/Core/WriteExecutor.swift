@@ -322,6 +322,19 @@ struct WriteExecutor {
                     status: plan.status
                 )
                 let dispatch = await api.post(route: route, body: body, control: control)
+#if DEBUG
+                // #183 E1: one-shot, marker-gated crash right after a clean
+                // interpretation mutation, before the mandatory readback. A
+                // non-marker write never carries the dogfood marker family, so
+                // it can never be killed here.
+                if dispatch.isClean2xx,
+                   DogfoodExperimentStore.shared.consumeFault(
+                       .afterInterpretationMutation2xxBeforeReadback,
+                       markerIn: item.interpretation
+                   ) {
+                    exit(0)
+                }
+#endif
                 guard dispatch != .notDispatched else {
                     results.append(
                         ItemExecutionResult(

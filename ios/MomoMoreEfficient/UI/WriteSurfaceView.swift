@@ -71,6 +71,25 @@ struct WriteSurfaceView: View {
             if viewModel.cameFromCapture {
                 CaptionLine(text: "来自抓词 · 尚未预览")
             }
+            // #180 cross-mode guard: high-confidence wrong-mode input is
+            // blocked before any provider Preview, with a one-tap switch that
+            // preserves the exact text and a copyable sanitized diagnostic.
+            if let issue = viewModel.modeSafetyIssue {
+                VStack(alignment: .leading, spacing: Theme.gapS) {
+                    Banner(
+                        title: issue.bannerTitle,
+                        message: "可一键切换模式，当前内容原样保留。",
+                        tone: .stop,
+                        actionTitle: issue.switchActionTitle,
+                        action: { viewModel.switchModePreservingCurrentText(to: issue.suggestedMode) }
+                    )
+                    NavPill(title: "复制诊断") {
+                        if let report = viewModel.modeGuardReport() {
+                            UIPasteboard.general.string = report
+                        }
+                    }
+                }
+            }
 
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $viewModel.sourceText)
@@ -369,6 +388,7 @@ struct WriteSurfaceView: View {
                     isLoading: viewModel.isPreviewing,
                     isEnabled: viewModel.isConnected
                         && viewModel.localParseState.isValid
+                        && viewModel.modeSafetyIssue == nil
                         && !viewModel.isBusy
                 ) {
                     Task { await viewModel.previewCurrentInput() }

@@ -24,6 +24,13 @@ struct SettingsRootView: View {
 
                 accountGroup
 
+#if DEBUG
+                if viewModel.isConnected {
+                    liveDogfoodGroup
+                    liveExperimentGroup
+                }
+#endif
+
                 GroupedCard(title: "录入") {
                     GroupedRow(
                         label: "录入偏好",
@@ -77,6 +84,168 @@ struct SettingsRootView: View {
     }
 
     private var isBusy: Bool { viewModel.isBusy }
+
+#if DEBUG
+    private var liveDogfoodGroup: some View {
+        GroupedCard(
+            title: "真实机制 Dogfood · DEBUG",
+            footnote: "会在一个无自建内容的候选词下创建一条未发布释义、更新它、创建一条例句，然后自动删除。"
+                + "只删除带 __XHN_DOGFOOD_V1__ 或 XHN-DOGFOOD- 标记的测试记录；若运行被中断，可随时点“撤回所有 Dogfood”。"
+        ) {
+            VStack(alignment: .leading, spacing: Theme.gapS) {
+                if viewModel.isLiveDogfoodRunning {
+                    HStack(spacing: Theme.gapS) {
+                        ProgressView().controlSize(.small)
+                        Text("Dogfood 正在运行…")
+                            .font(Theme.rowValue)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+
+                if let report = viewModel.liveDogfoodReport {
+                    Text(report.message)
+                        .font(Theme.body)
+                        .foregroundStyle(report.succeeded ? Theme.ink : Theme.alert)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("liveDogfoodStatus")
+                } else {
+                    Text("尚未运行 · 当前没有由本入口创建的测试记录")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .accessibilityIdentifier("liveDogfoodStatus")
+                }
+
+                Button("扫描验收残留") {
+                    Task { await viewModel.scanLiveDogfood() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLiveDogfoodRunning || viewModel.isBusy)
+
+                Button("运行真实 Dogfood") {
+                    Task { await viewModel.runLiveDogfood() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isLiveDogfoodRunning || viewModel.isBusy)
+
+                Button("撤回所有 Dogfood", role: .destructive) {
+                    Task { await viewModel.cleanupLiveDogfood() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLiveDogfoodRunning || viewModel.isBusy)
+
+                if let report = viewModel.liveDogfoodReport {
+                    Text(report.diagnostic)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Dogfood 诊断")
+                }
+            }
+            .padding(Theme.rowPaddingH)
+        }
+    }
+#endif
+
+#if DEBUG
+    /// #183 round-2 state-matrix experiment surface. It only prepares
+    /// marker-owned preconditions, arms one-shot crashes, shows the mutation
+    /// audit and verifies baselines — the mutations under test always run
+    /// through the normal product UI.
+    private var liveExperimentGroup: some View {
+        GroupedCard(
+            title: "状态矩阵实验 · DEBUG",
+            footnote: "预置/审计/崩溃注入只作用于带标记的测试数据；被测写入全部走正常录入界面。"
+        ) {
+            VStack(alignment: .leading, spacing: Theme.gapS) {
+                HStack(spacing: Theme.gapS) {
+                    TextField("场景码 B1/B2/…/E3", text: $experimentScenarioCode)
+                        .font(Theme.body)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("liveExperimentCode")
+                        .onSubmit { submitExperimentScenario() }
+                    Button("预置场景", action: submitExperimentScenario)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(experimentScenarioCode.trimmingCharacters(in: .whitespaces).isEmpty
+                                 || viewModel.isBusy)
+                }
+
+                ForEach(DogfoodFaultBoundary.allCases, id: \.rawValue) { boundary in
+                    Button(boundary.armLabel) {
+                        Task { await viewModel.armExperimentFault(boundary) }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.isBusy)
+                }
+
+                Button("核对基线") {
+                    Task { await viewModel.verifyExperimentBaselines() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isBusy)
+
+                Button("study 成员只读分类") {
+                    Task { await viewModel.classifyExperimentStudyMembership() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isBusy)
+
+                if let report = viewModel.liveExperimentReport {
+                    Text(report.message)
+                        .font(Theme.body)
+                        .foregroundStyle(report.succeeded ? Theme.ink : Theme.alert)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("liveExperimentStatus")
+                } else {
+                    Text("尚未运行实验预置")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .accessibilityIdentifier("liveExperimentStatus")
+                }
+
+                if let report = viewModel.liveExperimentReport {
+                    Text(report.diagnostic)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("liveExperimentDetail")
+                }
+
+                Button("清零变更审计") {
+                    viewModel.resetMutationAudit()
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isBusy)
+
+                MutationAuditTextView(viewModel: viewModel)
+            }
+            .padding(Theme.rowPaddingH)
+        }
+    }
+
+    @State private var experimentScenarioCode = ""
+
+    private func submitExperimentScenario() {
+        let code = experimentScenarioCode.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !code.isEmpty else { return }
+        Task { await viewModel.prepareExperiment(scenarioCode: code) }
+    }
+
+    /// In-memory audit counts, refreshed on a short DEBUG-only timer so the
+    /// counters moved by writes in *other* surfaces stay visible here.
+    private struct MutationAuditTextView: View {
+        @ObservedObject var viewModel: CompanionViewModel
+        private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+        var body: some View {
+            Text(viewModel.mutationAuditSnapshot)
+                .font(.caption2.monospaced())
+                .foregroundStyle(Theme.textTertiary)
+                .textSelection(.enabled)
+                .onReceive(timer) { _ in viewModel.objectWillChange.send() }
+                .accessibilityIdentifier("liveMutationAudit")
+        }
+    }
+#endif
 
     @ViewBuilder
     private var accountGroup: some View {

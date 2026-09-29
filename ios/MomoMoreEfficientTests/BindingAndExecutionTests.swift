@@ -409,26 +409,76 @@ final class BindingAndExecutionTests: XCTestCase {
             )
         })
         let source = sources.values.joined(separator: "\n")
+        // "DELETE" is now a reviewed exception (Issue #183 / Owner-authorized
+        // physical dogfood gate): the verb literal may exist only in the
+        // transport that defines the DEBUG-only dogfood cleanup routes and is
+        // compiled out of Release with them. PATCH/PUT stay banned everywhere.
         for forbidden in [
             "os_log", "NSUbiquitousKeyValueStore",
-            "localStorage", "\"DELETE\"", "\"PATCH\"", "\"PUT\"",
+            "localStorage", "\"PATCH\"", "\"PUT\"",
         ] {
             XCTAssertFalse(source.contains(forbidden), forbidden)
         }
-        // Owner-authorized spelling copy is confined to Query results and
-        // individual History receipt rows; no other clipboard export surface.
+        for (path, contents) in sources where contents.contains("\"DELETE\"") {
+            XCTAssertEqual(path, "Core/HTTPTransport.swift", path)
+        }
+        // Owner-authorized spelling copy is confined to Query results,
+        // individual History receipt rows, the study word export (#155,
+        // authorized by Issue #155 comment 5670875308: native clipboard +
+        // ShareLink, newline spellings only), the #180 write-mode guard's
+        // sanitized selected/suggested/reason diagnostic, and the #183 DEBUG
+        // experiment clipboard preload (CompanionViewModel: WRITES a launch-
+        // argument-provided scenario document to the app's own pasteboard for
+        // the C5 smart-quote input; DEBUG-only, compile-out in Release, never
+        // reads user clipboard content). No other clipboard surface.
         XCTAssertEqual(
             Set(sources.compactMap { path, contents in
                 contents.contains("UIPasteboard") ? path : nil
             }),
-            Set(["UI/QueryViews.swift", "UI/HistoryViews.swift"])
+            Set([
+                "UI/QueryViews.swift",
+                "UI/HistoryViews.swift",
+                "UI/StudyExportViews.swift",
+                "UI/WriteSurfaceView.swift",
+                "UI/CompanionViewModel.swift",
+            ])
         )
         // D-020 / Owner B explicitly authorizes this one separate support file;
         // every other production source still has no file persistence authority.
-        let approvedSupportFiles: Set<String> = ["Core/ExecutionHistory.swift", "Core/PhraseSafetyJournal.swift"]
+        // The #155 study-export diagnostic journal is the second authorized
+        // support file (Owner standing rule + Issue #155 comment 5686449945:
+        // bounded, local-only, backup-excluded diagnostic evidence). The #183
+        // DEBUG-only dogfood ledger is the third persistence authority: it must
+        // stay confined to the `#if DEBUG` dogfood section of RehearsalMode.swift
+        // (below its MARK), so Release builds contain none of it.
+        let approvedSupportFiles: Set<String> = [
+            "Core/ExecutionHistory.swift",
+            "Core/PhraseSafetyJournal.swift",
+            "Core/StudyExportDiagnosticJournal.swift",
+        ]
+        let dogfoodSectionMarker = "// MARK: - Physical live dogfood (#155/#180 acceptance)"
         for (path, contents) in sources where !approvedSupportFiles.contains(path) {
-            XCTAssertFalse(contents.contains("FileManager.default"), path)
-            XCTAssertFalse(contents.contains("write(to:"), path)
+            if path == "Core/RehearsalMode.swift" {
+                let markerRange = try XCTUnwrap(
+                    contents.range(of: dogfoodSectionMarker),
+                    "the DEBUG dogfood section marker must stay present"
+                )
+                let debugDogfoodSection = String(contents[markerRange.lowerBound...])
+                let preDogfoodSource = String(contents[..<markerRange.lowerBound])
+                XCTAssertFalse(preDogfoodSource.contains("FileManager.default"), path)
+                XCTAssertFalse(preDogfoodSource.contains("write(to:"), path)
+                // The ledger itself stays free of credential/keychain/persistence
+                // surfaces it was never authorized to touch.
+                for forbidden in ["SecItem", "kSecAttr", "UserDefaults"] {
+                    XCTAssertFalse(
+                        debugDogfoodSection.contains(forbidden),
+                        "\(path) dogfood section: \(forbidden)"
+                    )
+                }
+            } else {
+                XCTAssertFalse(contents.contains("FileManager.default"), path)
+                XCTAssertFalse(contents.contains("write(to:"), path)
+            }
         }
         for (path, contents) in sources where path != "Core/TokenStore.swift" {
             XCTAssertFalse(contents.contains("SecItem"), path)
@@ -546,11 +596,11 @@ final class BindingAndExecutionTests: XCTestCase {
             project.components(separatedBy: "INFOPLIST_KEY_CFBundleDisplayName = \"小黑鸟伴侣\";").count - 1,
             2
         )
-        // Tracks the shipped build number, which #176 bumped to 4 without
-        // updating this assertion. #161 changes no build/version/upload state;
-        // this only re-syncs the guard to the value already on main.
+        // Tracks the shipped build number. The branch intentionally bumped the
+        // main app + Share Extension to build 5; this guard re-syncs to that
+        // truth without changing any build/version state.
         XCTAssertEqual(
-            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 4;").count - 1,
+            project.components(separatedBy: "CURRENT_PROJECT_VERSION = 5;").count - 1,
             4 // app Debug/Release + Share Extension Debug/Release
         )
         XCTAssertEqual(

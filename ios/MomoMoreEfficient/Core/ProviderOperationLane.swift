@@ -44,19 +44,21 @@ struct AccountIdentity: Equatable, Sendable {
     static let disconnected = AccountIdentity(fingerprint: nil, authorityGeneration: 0)
 }
 
-/// The narrow read seam the root owner hands to the Query subsystem.
+/// The narrow read seam the root owner hands to read-only subsystems.
 ///
-/// Query is given a transport built from the root owner's credential lease and
-/// the *shared* request-window scheduler, plus the account identity the truth it
-/// produces belongs to. It deliberately gets nothing else: no Keychain access,
-/// no `CredentialSession`, no second scheduler, no write authority, and no
-/// second transport factory stack.
+/// Batch Query (#161) and the study word export (#155) are each given a
+/// transport built from the root owner's credential lease and the *shared*
+/// request-window scheduler, plus the account identity the truth they produce
+/// belongs to. They deliberately get nothing else: no Keychain access, no
+/// `CredentialSession`, no second scheduler, no write authority, and no second
+/// transport factory stack. Both take the same `.query` lane, so their reads
+/// can never overlap each other or a write.
 ///
 /// `finish()` returns the operation lane and clears the lease. It is idempotent,
 /// so the runner can release it on every exit path.
 ///
 /// `reportAuthenticationRejection()` is the other direction of the same seam: a
-/// 401 is not a Query-local fact, it is the root session's credential being
+/// 401 is not a subsystem-local fact, it is the root session's credential being
 /// rejected, so the run reports it back to the one root owner instead of holding
 /// a failure the root cannot see.
 @MainActor

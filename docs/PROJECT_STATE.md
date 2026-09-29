@@ -170,6 +170,16 @@ For the next substantive coding round, JIT-read `docs/AGENT_SKILLS_CONNECTOR.md`
 
 The most recent GLM/ZCode experiment is portfolio routing evidence, not a sticky momo-specific family preference.
 
+## Reusable high-level live debug evidence
+
+Before repeating any expensive physical dogfood / live mutation matrix, read:
+
+```text
+docs/HIGH_LEVEL_LIVE_DEBUG_EVIDENCE.md
+```
+
+That ledger is the canonical project record of already-proven live mechanisms, provider quirks, harness traps, invalidation triggers and the minimum retest set for later versions. A version/build bump or unrelated UI change does **not** invalidate the whole matrix. Re-run only scenarios whose product mechanism/provider contract was materially touched; any new live mutation still requires that round's own cleanup + residual-zero closeout.
+
 ## 8. Handoff rule
 
 Fresh Chat takeover should read only:

@@ -3,6 +3,11 @@ import Foundation
 enum HTTPMethod: String, Equatable, Sendable {
     case get = "GET"
     case post = "POST"
+#if DEBUG
+    /// Only the DEBUG-only dogfood cleanup routes (#183) dispatch this verb;
+    /// no Release route or behavior can ever produce a DELETE.
+    case delete = "DELETE"
+#endif
 }
 
 enum InterpretationRoute: Equatable, Sendable {
@@ -18,12 +23,35 @@ enum InterpretationRoute: Equatable, Sendable {
     /// whose base URL is `https://open.maimemo.com/open/` and which lists notes
     /// with `GET /api/v1/notes?voc_id=…`. No note mutation route exists here.
     case notes(vocabularyID: String)
+    /// Read-only Study (Beta) reads (#155), per the first-party
+    /// `maimemo/memo-skills@main:memo-api/references/study-api.md`. All three
+    /// are documented POST endpoints; the two mutation endpoints that document
+    /// also lists (`/study/add_words`, `/study/advance_study`) deliberately
+    /// have no route here.
+    case studyProgress
+    case studyTodayItems
+    case studyRecords
+#if DEBUG
+    /// DEBUG-only dogfood cleanup (#183). These are the current first-party
+    /// `maimemo/memo-api-cli` documented coordinates
+    /// (`DELETE /api/v1/interpretations/{id}`, `DELETE /api/v1/phrases/{id}`)
+    /// and the only delete routes in this app. Callers may target them solely
+    /// at records whose live authenticated content carries the exact dogfood
+    /// marker; they are absent from Release builds entirely.
+    case dogfoodDeleteInterpretation(recordID: String)
+    case dogfoodDeletePhrase(recordID: String)
+#endif
 
     var method: HTTPMethod {
         switch self {
         case .vocabulary, .interpretations, .phrases, .notes:
             return .get
-        case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase:
+#if DEBUG
+        case .dogfoodDeleteInterpretation, .dogfoodDeletePhrase:
+            return .delete
+#endif
+        case .vocabularyQuery, .createInterpretation, .updateInterpretation, .createPhrase,
+             .studyProgress, .studyTodayItems, .studyRecords:
             return .post
         }
     }
@@ -38,8 +66,13 @@ enum InterpretationRoute: Equatable, Sendable {
     /// accounted for or retried as a mutation.
     var isMutating: Bool {
         switch self {
-        case .vocabulary, .vocabularyQuery, .interpretations, .phrases, .notes:
+        case .vocabulary, .vocabularyQuery, .interpretations, .phrases, .notes,
+             .studyProgress, .studyTodayItems, .studyRecords:
             return false
+#if DEBUG
+        case .dogfoodDeleteInterpretation, .dogfoodDeletePhrase:
+            return true
+#endif
         case .createInterpretation, .updateInterpretation, .createPhrase:
             return true
         }
@@ -61,6 +94,18 @@ enum InterpretationRoute: Equatable, Sendable {
             return "/open/api/v1/phrases"
         case .notes:
             return "/open/api/v1/notes"
+        case .studyProgress:
+            return "/open/api/v1/study/get_study_progress"
+        case .studyTodayItems:
+            return "/open/api/v1/study/get_today_items"
+        case .studyRecords:
+            return "/open/api/v1/study/query_study_records"
+#if DEBUG
+        case let .dogfoodDeleteInterpretation(recordID):
+            return "/open/api/v1/interpretations/\(recordID)"
+        case let .dogfoodDeletePhrase(recordID):
+            return "/open/api/v1/phrases/\(recordID)"
+#endif
         }
     }
 
@@ -83,10 +128,17 @@ enum InterpretationRoute: Equatable, Sendable {
         case let .notes(vocabularyID):
             guard isSafeIdentifier(vocabularyID) else { throw CompanionError.responseRejected }
             components.queryItems = [URLQueryItem(name: "voc_id", value: vocabularyID)]
-        case .vocabularyQuery, .createInterpretation, .createPhrase:
+        case .vocabularyQuery, .createInterpretation, .createPhrase,
+             .studyProgress, .studyTodayItems, .studyRecords:
             break
         case let .updateInterpretation(recordID):
             guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
+#if DEBUG
+        case let .dogfoodDeleteInterpretation(recordID):
+            guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
+        case let .dogfoodDeletePhrase(recordID):
+            guard isSafeIdentifier(recordID) else { throw CompanionError.responseRejected }
+#endif
         }
         guard let url = components.url,
               url.scheme == "https",

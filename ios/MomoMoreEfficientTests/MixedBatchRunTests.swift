@@ -791,8 +791,8 @@ final class MixedBatchRunTests: XCTestCase {
             statusLabel: "公开"
         )
 
-        XCTAssertEqual(pending.title, "确认执行 4 条？")
-        XCTAssertEqual(pending.actionTitle, "确认执行 4 条（新建 2 · 更新 2）")
+        XCTAssertEqual(pending.title, "确认写入释义 4 条？")
+        XCTAssertEqual(pending.actionTitle, "确认写入释义 4 条（新建 2 · 更新 2）")
         XCTAssertTrue(pending.message.contains("共 4 条 · 新建 2 · 更新 2"))
         XCTAssertTrue(pending.message.contains("拟写入状态：公开"))
         XCTAssertTrue(pending.message.contains("新建：collapse、ledger"))

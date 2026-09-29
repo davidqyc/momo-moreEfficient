@@ -19,15 +19,53 @@ final class ShellNavigationUITests: XCTestCase {
         let app = launch()
 
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
-        for entry in ["释义录入", "例句录入", "批量查阅"] {
+        for entry in ["释义录入", "例句录入", "批量查阅", "单词导出"] {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
         XCTAssertTrue(app.buttons["设置"].exists)
+        // The Home card no longer advertises the withdrawn 新添加 export
+        // (#155 Owner directive 2026-09-28).
+        XCTAssertEqual(
+            app.buttons["单词导出"].value as? String,
+            "今天已学、待复习、忘词等，一键复制或批量查阅"
+        )
+        // The #155 directive places 单词导出 *under* the existing read-only
+        // 查阅 section; no separate export section exists.
+        XCTAssertTrue(app.staticTexts["查阅 · 只读取，不写入"].exists)
+        XCTAssertFalse(app.staticTexts["导出 · 只读取，不写入"].exists)
 
         // Frozen out of Home: no account row, no History summary, no tabs.
         XCTAssertFalse(app.staticTexts["连接状态"].exists)
         XCTAssertFalse(app.buttons["历史"].exists)
         XCTAssertEqual(app.tabBars.count, 0)
+    }
+
+    // MARK: - Study export (#155)
+
+    func testStudyExportEntryReachesPresetListAndDisconnectedGate() {
+        let app = launch()
+        app.buttons["单词导出"].tap()
+
+        XCTAssertTrue(app.staticTexts["单词导出"].waitForExistence(timeout: 5))
+        // The public preset list is exactly the five supported TodayItems-based
+        // exports (#155 Owner directive 2026-09-28). The StudyRecord-dependent
+        // presets and the enumerability probe are withdrawn from normal UI.
+        for preset in ["今天已学", "今日待复习", "今天新学", "今天忘记", "今天模糊"] {
+            XCTAssertTrue(app.buttons[preset].exists, preset)
+        }
+        for withdrawn in ["今天新添加", "顽固词", "熟知词", "N 天内复习", "全部学习词", "运行完整性探针"] {
+            XCTAssertFalse(app.buttons[withdrawn].exists, withdrawn)
+        }
+        // Disconnected: presets are visibly gated with a truthful why-line.
+        XCTAssertTrue(app.staticTexts["连接墨墨账号后可导出"].exists)
+        // Owner standing rule (#155 unstable): compact on-device diagnostics
+        // stay visible and copyable on the normal export screen.
+        XCTAssertTrue(app.staticTexts["诊断 · 最近一次运行"].exists)
+        XCTAssertTrue(app.buttons["复制诊断"].exists)
+        XCTAssertTrue(app.buttons["清除诊断"].exists)
+
+        back(app)
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
     }
 
     // MARK: - Settings
@@ -93,13 +131,13 @@ final class ShellNavigationUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["释义录入"].exists)
 
         // One back returns to Home, proving the mode switch pushed nothing.
-        back(app)
+        back(app, until: app.staticTexts["小黑鸟伴侣"])
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
 
         // Entering the other tile also lands on the same single destination.
         app.buttons["例句录入"].tap()
         XCTAssertTrue(app.staticTexts["例句录入"].waitForExistence(timeout: 5))
-        back(app)
+        back(app, until: app.staticTexts["小黑鸟伴侣"])
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
     }
 
@@ -155,7 +193,7 @@ final class ShellNavigationUITests: XCTestCase {
         editor.typeText("alpha")
         XCTAssertTrue(app.buttons["查阅 1 项"].waitForExistence(timeout: 5))
 
-        back(app)
+        back(app, until: app.staticTexts["小黑鸟伴侣"])
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 5))
         app.buttons["批量查阅"].tap()
 
@@ -172,7 +210,7 @@ final class ShellNavigationUITests: XCTestCase {
         let app = launch(contentSize: "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge")
 
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 10))
-        for entry in ["释义录入", "例句录入", "批量查阅"] {
+        for entry in ["释义录入", "例句录入", "批量查阅", "单词导出"] {
             XCTAssertTrue(app.buttons[entry].exists, entry)
         }
 
@@ -226,7 +264,7 @@ final class ShellNavigationUITests: XCTestCase {
         let create = app.buttons["新建 1 条例句"]
         XCTAssertTrue(create.waitForExistence(timeout: 20))
         create.tap()
-        app.buttons["确认新建 1 条例句"].tap()
+        app.buttons["确认写入例句 1 条"].tap()
         XCTAssertTrue(app.staticTexts["已完成 1 条例句 · 新建 1"].waitForExistence(timeout: 30))
         app.buttons["例句历史"].tap()
         let receipt = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", spelling)).firstMatch
@@ -257,6 +295,14 @@ final class ShellNavigationUITests: XCTestCase {
 
     private func launch(contentSize: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
+        // Deterministic Settings/tag baseline (#165): the DEBUG-only reset seam
+        // removes exactly the persisted preference keys at app startup, so a
+        // shared simulator install can never leak one run's selection into
+        // another run's counters.
+        app.launchArguments += [
+            "-MomoUITestResetPreferences",
+            "-MomoUITestForceDisconnected",
+        ]
         if let contentSize {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize]
         }
@@ -265,7 +311,18 @@ final class ShellNavigationUITests: XCTestCase {
     }
 
     /// The shell uses a circular back control instead of a system back button.
-    private func back(_ app: XCUIApplication) {
-        app.buttons["返回"].firstMatch.tap()
+    /// On a physical device the tap occasionally lands during a SwiftUI
+    /// transition, so an `until` destination re-taps bounded until that screen
+    /// actually appears; without one, behavior is the original single tap.
+    private func back(_ app: XCUIApplication, until expected: XCUIElement? = nil) {
+        let control = app.buttons["返回"].firstMatch
+        for _ in 0..<3 {
+            control.tap()
+            if let expected {
+                if expected.waitForExistence(timeout: 3) { return }
+            } else {
+                return
+            }
+        }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 @MainActor
 final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
@@ -28,6 +29,10 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     @Published private(set) var pendingBatchConfirmation: PendingBatchConfirmation?
     @Published private(set) var pendingPhraseConfirmation: PendingPhraseConfirmation?
     @Published private(set) var isPreviewStale = false
+    /// #180 cross-mode guard: a high-confidence wrong-mode shape in the
+    /// current editor, blocking Preview before any provider request. `nil`
+    /// means the selected mode may proceed normally.
+    @Published private(set) var modeSafetyIssue: WriteInputModeSafetyIssue?
     @Published private(set) var history: [ExecutionReceipt] = []
     @Published private(set) var completionAcknowledgement: String?
     @Published private(set) var historyErrorMessage: String?
@@ -64,6 +69,15 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     /// Shown only when a removal actually failed, so the truthful 已连接 state is
     /// never contradicted by a silent success.
     @Published private(set) var tokenRemovalErrorMessage: String?
+#if DEBUG
+    /// Real-provider dogfood is DEBUG-only. The report is deliberately
+    /// content-free: counts/stages only, never Token or provider record IDs.
+    @Published private(set) var liveDogfoodReport: LiveDogfoodReport?
+    @Published private(set) var isLiveDogfoodRunning = false
+    /// The #183 round-2 state-matrix experiment surface. Setup/verify/fault
+    /// reports only; the mutations under test run through the normal UI.
+    @Published private(set) var liveExperimentReport: LiveDogfoodReport?
+#endif
 
     private let credentialSession = CredentialSession()
     private let tokenStore: TokenStore
@@ -330,6 +344,339 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     #if DEBUG
+    /// Runs the DEBUG-only real-provider dogfood through the same credential,
+    /// scheduler and single write lane as production. The runner only creates
+    /// marker-owned test records and always attempts automatic cleanup; the
+    /// independent cleanup action can be run after any interruption.
+    func runLiveDogfood() async {
+        await performLiveDogfood(.run)
+    }
+
+    /// GET-only residual scan for the Settings acceptance surface: it proves
+    /// the visible 残留 count without dispatching any mutation.
+    func scanLiveDogfood() async {
+        await performLiveDogfood(.scan)
+    }
+
+    func cleanupLiveDogfood() async {
+        await performLiveDogfood(.cleanup)
+    }
+
+    // MARK: #183 round-2 state-matrix experiment ops (DEBUG-only)
+
+    func prepareExperiment(scenarioCode: String) async {
+        await performLiveExperiment { api in
+            await LiveExperimentRunner(api: api).prepare(scenarioCode)
+        }
+    }
+
+    func verifyExperimentBaselines() async {
+        await performLiveExperiment { api in
+            await LiveExperimentRunner(api: api).verifyBaselines()
+        }
+    }
+
+    func classifyExperimentStudyMembership() async {
+        await performLiveExperiment { api in
+            await LiveExperimentRunner(api: api).classifyStudyMembership()
+        }
+    }
+
+    /// DEBUG-only semantic readiness: experiment support (prep/scan/cleanup)
+    /// is idle only when no busy flag or provider lane is held. Reports are
+    /// published through `publishExperimentReportAfterSupportIdle` so a
+    /// physical test can never observe EXP READY before the lane is free.
+    var isExperimentSupportIdle: Bool {
+        !isLiveDogfoodRunning && !isBusy && activeProviderOperation == nil
+    }
+
+    func experimentSupportStateText() -> String {
+        "support=\(isExperimentSupportIdle ? "idle" : "busy")"
+            + " busy=\(isBusy)"
+            + " lane=\(activeProviderOperation.map { String(describing: $0) } ?? "none")"
+            + " connected=\(isConnected)"
+    }
+
+    /// Publishes an experiment/dogfood report only after experiment support is
+    /// idle (#183 closeout A1). The wait is bounded; on timeout the report is
+    /// still published, but its diagnostic honestly records the busy state —
+    /// a test polling for `support=idle` fails loudly instead of racing.
+    func publishExperimentReportAfterSupportIdle(
+        _ report: LiveDogfoodReport,
+        toDogfoodSurface: Bool = false,
+        timeout: TimeInterval = 10
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !isExperimentSupportIdle {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let gated = LiveDogfoodReport(
+            succeeded: report.succeeded,
+            message: report.message,
+            diagnostic: report.diagnostic + "\nready_state " + experimentSupportStateText(),
+            remainingActiveRecords: report.remainingActiveRecords
+        )
+        if toDogfoodSurface {
+            liveDogfoodReport = gated
+        } else {
+            liveExperimentReport = gated
+        }
+    }
+
+    func armExperimentFault(_ boundary: DogfoodFaultBoundary) async {
+        DogfoodExperimentStore.shared.arm(boundary)
+        liveExperimentReport = LiveDogfoodReport(
+            succeeded: true,
+            message: "EXP ARMED \(boundary.rawValue)",
+            diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\narmed=\(boundary.rawValue) one_shot=yes marker_gated=yes",
+            remainingActiveRecords: -1
+        )
+    }
+
+    /// DEBUG-only launch-argument automation for the #183 matrix tests, so a
+    /// physical UI test never needs the on-screen keyboard: when launched with
+    /// `-MomoExperimentScenario <code>` the scenario prep runs automatically
+    /// once the connection is restored; `-MomoExperimentArm <I1|P1|D1>` arms
+    /// the one-shot fault at launch instead.
+    private var launchExperimentArgumentsConsumed = false
+
+    func processLaunchExperimentArguments() {
+        guard !launchExperimentArgumentsConsumed else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        func value(after flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag),
+                  index + 1 < arguments.count
+            else { return nil }
+            return arguments[index + 1]
+        }
+        // A2 (#183 closeout): support operations run at launch so a physical
+        // test never depends on scrolling DEBUG Settings buttons into view.
+        // The product mutations under test are NOT here — they stay in the
+        // normal UI. Multiple flags run in order: scenario → dogfood action →
+        // experiment action → arm.
+        let scenarioCode = value(after: "-MomoExperimentScenario")
+        let dogfoodAction = value(after: "-MomoDogfoodAction")
+        let experimentAction = value(after: "-MomoExperimentAction")
+        let armRaw = value(after: "-MomoExperimentArm")
+        let pasteBase64 = value(after: "-MomoExperimentPasteBase64")
+        guard scenarioCode != nil || dogfoodAction != nil
+            || experimentAction != nil || armRaw != nil || pasteBase64 != nil
+        else { return }
+        launchExperimentArgumentsConsumed = true
+        // DEBUG-only clipboard preload (#183 closeout C5): the UI-test runner
+        // process cannot write the device pasteboard, so the app writes its
+        // own; a same-app read-back needs no permission banner. Test-support
+        // input delivery only — never touches credentials or mutations.
+        if let pasteBase64,
+           let data = Data(base64Encoded: pasteBase64),
+           let text = String(data: data, encoding: .utf8) {
+            UIPasteboard.general.string = text
+        }
+        Task { @MainActor in
+            // The trigger fires as soon as isConnected flips, which can race
+            // the credential-restore lane release. Retry the blocked case,
+            // but never while an operation is already running — rerunning
+            // would stomp the in-flight report with a blocked message.
+            var scenarioDone = scenarioCode == nil
+            var dogfoodDone = dogfoodAction == nil
+            var experimentDone = experimentAction == nil
+            var armDone = armRaw == nil
+            for _ in 0..<90 {
+                if self.isLiveDogfoodRunning {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                if !scenarioDone, let code = scenarioCode {
+                    await self.prepareExperiment(scenarioCode: code)
+                    if self.liveExperimentReport?.message == "实验当前不可运行" {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    scenarioDone = true
+                }
+                if !dogfoodDone, let action = dogfoodAction {
+                    switch action {
+                    case "cleanup": await self.cleanupLiveDogfood()
+                    case "scan": await self.scanLiveDogfood()
+                    default: break
+                    }
+                    if self.liveDogfoodReport?.message == "Dogfood 当前不可运行"
+                        || self.liveDogfoodReport?.message == "Dogfood 扫描当前不可运行" {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    dogfoodDone = true
+                }
+                if !experimentDone, let action = experimentAction {
+                    switch action {
+                    case "verify": await self.verifyExperimentBaselines()
+                    case "classify": await self.classifyExperimentStudyMembership()
+                    default: break
+                    }
+                    if self.liveExperimentReport?.message == "实验当前不可运行" {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    experimentDone = true
+                }
+                if !armDone, let raw = armRaw {
+                    if raw == "cancel" {
+                        DogfoodExperimentStore.shared.cancelArm()
+                    } else if let boundary = DogfoodFaultBoundary(rawValue: raw) {
+                        await self.armExperimentFault(boundary)
+                    }
+                    armDone = true
+                }
+                if scenarioDone, dogfoodDone, experimentDone, armDone { return }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    func resetMutationAudit() {
+        LiveMutationAudit.reset()
+    }
+
+    var mutationAuditSnapshot: String {
+        LiveMutationAudit.snapshotText()
+    }
+
+    @discardableResult
+    private func performLiveExperiment(
+        _ operation: @escaping @Sendable (MaimemoTransport) async -> LiveDogfoodReport
+    ) async -> Bool {
+        let report = await runLiveExperimentOperation(operation)
+        // A1: publish only after busy/lane ownership is fully released.
+        await publishExperimentReportAfterSupportIdle(report)
+        return report.succeeded
+    }
+
+    private func runLiveExperimentOperation(
+        _ operation: @escaping @Sendable (MaimemoTransport) async -> LiveDogfoodReport
+    ) async -> LiveDogfoodReport {
+        guard !isLiveDogfoodRunning, !isBusy, isConnected,
+              beginProviderOperation(.write)
+        else {
+            return LiveDogfoodReport(
+                succeeded: false,
+                message: "实验当前不可运行",
+                diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nblocked=busy_or_disconnected",
+                remainingActiveRecords: -1
+            )
+        }
+
+        isLiveDogfoodRunning = true
+        isBusy = true
+        isExecuting = true
+        defer {
+            isExecuting = false
+            isBusy = false
+            isLiveDogfoodRunning = false
+            endProviderOperation(.write)
+            settleDeferredBackgroundTeardown()
+        }
+
+        do {
+            let lease = try credentialSession.makeOperationLease()
+            defer { lease.clear() }
+            let api = MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
+            )
+            return await operation(api)
+        } catch let error as CompanionError {
+            return LiveDogfoodReport(
+                succeeded: false,
+                message: "实验无法开始 · \(error.description)",
+                diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nstart_error=\(error.rawValue)",
+                remainingActiveRecords: -1
+            )
+        } catch {
+            return LiveDogfoodReport(
+                succeeded: false,
+                message: "实验无法开始",
+                diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nstart_error=other",
+                remainingActiveRecords: -1
+            )
+        }
+    }
+
+    private enum LiveDogfoodAction {
+        case scan
+        case run
+        case cleanup
+    }
+
+    private func performLiveDogfood(_ action: LiveDogfoodAction) async {
+        let report = await runLiveDogfoodAction(action)
+        // A1: dogfood statuses also publish only after the lane is released.
+        await publishExperimentReportAfterSupportIdle(report, toDogfoodSurface: true)
+    }
+
+    private func runLiveDogfoodAction(_ action: LiveDogfoodAction) async -> LiveDogfoodReport {
+        guard !isLiveDogfoodRunning, !isBusy, isConnected,
+              beginProviderOperation(.write)
+        else {
+            return LiveDogfoodReport(
+                succeeded: false,
+                message: action == .scan
+                    ? "Dogfood 扫描当前不可运行"
+                    : "Dogfood 当前不可运行",
+                diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nblocked=busy_or_disconnected",
+                remainingActiveRecords: -1
+            )
+        }
+
+        isLiveDogfoodRunning = true
+        isBusy = true
+        isExecuting = true
+        defer {
+            isExecuting = false
+            isBusy = false
+            isLiveDogfoodRunning = false
+            endProviderOperation(.write)
+            settleDeferredBackgroundTeardown()
+        }
+
+        do {
+            let lease = try credentialSession.makeOperationLease()
+            defer { lease.clear() }
+            let api = MaimemoTransport(
+                transport: transportFactory(),
+                credential: lease,
+                phraseSafetyJournal: phraseSafetyJournal,
+                sleeper: sleeperFactory(),
+                scheduler: windowScheduler
+            )
+            let runner = LiveDogfoodRunner(api: api)
+            switch action {
+            case .scan:
+                return await runner.scanResidual()
+            case .run:
+                return await runner.run()
+            case .cleanup:
+                return await runner.cleanup()
+            }
+        } catch let error as CompanionError {
+            return LiveDogfoodReport(
+                succeeded: false,
+                message: "Dogfood 无法开始 · \(error.description)",
+                diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nstart_error=\(error.rawValue)",
+                remainingActiveRecords: -1
+            )
+        } catch {
+            return LiveDogfoodReport(
+                succeeded: false,
+                message: "Dogfood 无法开始",
+                diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nstart_error=other",
+                remainingActiveRecords: -1
+            )
+        }
+    }
+
     /// Existing XCTest setup for write/preview invariants that are unrelated to
     /// onboarding. New credential tests must use `connect(token:)` and the fake
     /// authenticated GET; this helper is not reachable from the product UI.
@@ -461,6 +808,17 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     func previewCurrentInput() async {
+        // #180 double enforcement: the same pure guard runs again here, before
+        // the provider operation lane, before the credential lease, before any
+        // transport exists — a blocked mode mismatch provably sends nothing.
+        if let issue = WriteInputModeGuard.safetyIssue(
+            document: sourceText,
+            selectedMode: contentMode
+        ) {
+            modeSafetyIssue = issue
+            WriteModeGuardDiagnostics.logBlocked(selected: contentMode, issue: issue)
+            return
+        }
         guard !isBusy, beginProviderOperation(.preview) else { return }
         cameFromCapture = false
         let mode = contentMode
@@ -1372,6 +1730,29 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         updateLocalParseState()
     }
 
+    /// The #180 one-tap recovery: switch to the suggested mode while the
+    /// current exact document bytes remain the editor content. The old mode's
+    /// draft stays what the Owner left it as; the same document also becomes
+    /// the target mode's draft. Preview/approval/feedback are invalidated by
+    /// the normal paths, the local parse and the mode guard recompute — and
+    /// neither the clipboard nor the network is involved.
+    func switchModePreservingCurrentText(to mode: ContentMode) {
+        guard canSwitchMode, mode != contentMode else { return }
+        // The current document is already the old mode's draft (sourceText
+        // didSet keeps them in sync); also make it the target mode's draft.
+        storeDraft(sourceText, for: mode)
+        invalidatePreview()
+        detachInlineExecutionFeedback()
+        contentMode = mode
+        updateLocalParseState()
+    }
+
+    /// The Owner-copyable sanitized guard diagnostic (#180).
+    func modeGuardReport() -> String? {
+        guard let modeSafetyIssue else { return nil }
+        return WriteModeGuardDiagnostics.report(selected: contentMode, issue: modeSafetyIssue)
+    }
+
     /// Changing the publication preference invalidates the current
     /// interpretation Preview exactly as a tag change does: the executable
     /// authority no longer describes what would be written.
@@ -1620,6 +2001,13 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func updateLocalParseState() {
+        // #180 cross-mode guard: recomputed on every edit/mode change so the
+        // editor can show a high-confidence wrong-mode shape before any
+        // provider Preview is even possible.
+        modeSafetyIssue = WriteInputModeGuard.safetyIssue(
+            document: sourceText,
+            selectedMode: contentMode
+        )
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             localParseState = .empty
             return
@@ -1654,7 +2042,11 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func storeActiveDraft(_ document: String) {
-        switch contentMode {
+        storeDraft(document, for: contentMode)
+    }
+
+    private func storeDraft(_ document: String, for mode: ContentMode) {
+        switch mode {
         case .interpretation: interpretationDraft = document
         case .phrase: phraseDraft = document
         }
@@ -1826,3 +2218,25 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         contentMode == .interpretation ? snapshot != nil : phraseSnapshot != nil
     }
 }
+
+#if DEBUG
+/// The one DEBUG-only, UI-test-only deterministic preference reset (#165).
+///
+/// The Settings/tag UI tests need a clean preference baseline to be
+/// self-isolating: the tag selection and publication preference persist in
+/// `UserDefaults.standard` across launches, so one contaminated simulator
+/// install could leak a prior run's selection into another run's counters.
+/// When the app is launched with `-MomoUITestResetPreferences`, exactly the
+/// two non-secret preference keys below are removed at startup — nothing
+/// else: no credential, no History, no capture state. The whole declaration
+/// is compiled out of Release builds.
+enum MomoUITestPreferenceReset {
+    static let launchArgument = "-MomoUITestResetPreferences"
+
+    static func performIfRequested(defaults: UserDefaults = .standard) {
+        guard ProcessInfo.processInfo.arguments.contains(launchArgument) else { return }
+        defaults.removeObject(forKey: WriteTagPreference.userDefaultsKey)
+        defaults.removeObject(forKey: InterpretationPublicationPreference.userDefaultsKey)
+    }
+}
+#endif

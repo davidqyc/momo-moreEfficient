@@ -6,6 +6,7 @@ struct MomoMoreEfficientApp: App {
 
     init() {
         #if DEBUG
+        MomoUITestPreferenceReset.performIfRequested()
         CaptureUITestSeed.installIfRequested()
         #endif
     }
