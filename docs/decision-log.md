@@ -224,3 +224,28 @@ Owner 在 Issue #4 / #84 中重新确认例句产品门槛。例句 CREATE 必�
 账本损坏、无法加载或写入能力无法建立时，阻断例句 CREATE，不影响 Query 或释义。响应已证明创建后若保存意外失败，保留“已创建”事实、明确警告，并在当前进程停止进一步例句 CREATE；仍完成鉴权回读，不重试 POST。D-017 的历史清空及辅助保存失败契约保持原样。
 
 这是 CREATE 可见性间隙的窄安全授权，不开放 UPDATE/DELETE、自动回滚/重放、后台服务或已有重复数据清理。它不宣称覆盖 provider 已写入但客户端未取得可校验响应、或进程在持久化前终止的窗口；未知结果继续显式警告并仅做 GET-only recovery。
+
+## D-021：高级别真实调试证据按机制复用，不因版本号变化机械重跑
+
+**日期：** 2026-09-30  
+**状态：** 有效
+
+Issue #183 的高级别真机状态矩阵已经证明，完整真实 dogfood 的时间和 provider 配额成本很高；单个场景可耗时数分钟到十余分钟，长批次还会真实触发聚合窗口 / 429。以后不再把“版本迭代了”本身当成重跑整套矩阵的理由。
+
+项目以 `docs/HIGH_LEVEL_LIVE_DEBUG_EVIDENCE.md` 作为 canonical 调试 / dogfood 证据台账。该文件必须保存：
+
+- 已经真实闭合的产品机制；
+- provider 真实约束与最终一致性现象；
+- harness/系统层踩坑和已修复根因；
+- 每个证据的 invalidation trigger；
+- 未来代码改动到哪一层时，最小需要重跑哪些场景。
+
+复用规则：
+
+1. **无关版本号、文案、视觉、普通 UI 变化不使 live 证据失效。**
+2. 只有改到对应 Preview / Confirmation / Executor / Readback / phrase identity / capacity / journal / crash recovery / credential / provider lane / provider contract 时，才重跑最小受影响场景。
+3. 已经 PROVEN 且未命中 invalidation trigger 的场景，后续 Agent 不得为了“新版本更放心”机械重跑。
+4. 任何本轮新增的真实数据库 mutation，仍必须在本轮结束时独立 cleanup、authenticated scan，并证明 active dogfood residue = 0；旧证据不能替代这一步。
+5. 对本项目继续执行“机制严、洁癖不必严”：优先验证用户可见/可达正确性、数据可恢复性和真实 provider 行为，不为无关内部纯洁性重复购买昂贵实验。
+
+这条决定的目的不是降低测试标准，而是把已经花过的真机 / provider 成本转化为可复用工程资产。

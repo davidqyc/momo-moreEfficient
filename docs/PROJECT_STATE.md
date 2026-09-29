@@ -236,6 +236,16 @@ final Design handoff PASS
 
 Agent family is not sticky. Follow the latest Owner-selected family for the active lane unless the Owner announces a switch or a hard current task/tool constraint requires another family. Re-resolve model / effort / speed / topology from live `agent-skills` for every formal dispatch.
 
+## Reusable high-level live debug evidence
+
+Before repeating any expensive physical dogfood / live mutation matrix, read:
+
+```text
+docs/HIGH_LEVEL_LIVE_DEBUG_EVIDENCE.md
+```
+
+That ledger is the canonical project record of already-proven live mechanisms, provider quirks, harness traps, invalidation triggers and the minimum retest set for later versions. A version/build bump or unrelated UI change does **not** invalidate the whole matrix. Re-run only scenarios whose product mechanism/provider contract was materially touched; any new live mutation still requires that round's own cleanup + residual-zero closeout.
+
 ## Handoff rule
 
 Fresh Chat takeover should read:
