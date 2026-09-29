@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 @MainActor
 final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
@@ -381,6 +382,47 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
         }
     }
 
+    /// DEBUG-only semantic readiness: experiment support (prep/scan/cleanup)
+    /// is idle only when no busy flag or provider lane is held. Reports are
+    /// published through `publishExperimentReportAfterSupportIdle` so a
+    /// physical test can never observe EXP READY before the lane is free.
+    var isExperimentSupportIdle: Bool {
+        !isLiveDogfoodRunning && !isBusy && activeProviderOperation == nil
+    }
+
+    func experimentSupportStateText() -> String {
+        "support=\(isExperimentSupportIdle ? "idle" : "busy")"
+            + " busy=\(isBusy)"
+            + " lane=\(activeProviderOperation.map { String(describing: $0) } ?? "none")"
+            + " connected=\(isConnected)"
+    }
+
+    /// Publishes an experiment/dogfood report only after experiment support is
+    /// idle (#183 closeout A1). The wait is bounded; on timeout the report is
+    /// still published, but its diagnostic honestly records the busy state —
+    /// a test polling for `support=idle` fails loudly instead of racing.
+    func publishExperimentReportAfterSupportIdle(
+        _ report: LiveDogfoodReport,
+        toDogfoodSurface: Bool = false,
+        timeout: TimeInterval = 10
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !isExperimentSupportIdle {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let gated = LiveDogfoodReport(
+            succeeded: report.succeeded,
+            message: report.message,
+            diagnostic: report.diagnostic + "\nready_state " + experimentSupportStateText(),
+            remainingActiveRecords: report.remainingActiveRecords
+        )
+        if toDogfoodSurface {
+            liveDogfoodReport = gated
+        } else {
+            liveExperimentReport = gated
+        }
+    }
+
     func armExperimentFault(_ boundary: DogfoodFaultBoundary) async {
         DogfoodExperimentStore.shared.arm(boundary)
         liveExperimentReport = LiveDogfoodReport(
@@ -407,27 +449,87 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             else { return nil }
             return arguments[index + 1]
         }
-        if let code = value(after: "-MomoExperimentScenario") {
-            launchExperimentArgumentsConsumed = true
-            Task { @MainActor in
-                // The trigger fires as soon as isConnected flips, which can
-                // race the credential-restore lane release. Retry the blocked
-                // case, but NEVER while a prep is already running — rerunning
-                // would stomp the in-flight report with a blocked message.
-                for _ in 0..<90 {
-                    if self.isLiveDogfoodRunning {
+        // A2 (#183 closeout): support operations run at launch so a physical
+        // test never depends on scrolling DEBUG Settings buttons into view.
+        // The product mutations under test are NOT here — they stay in the
+        // normal UI. Multiple flags run in order: scenario → dogfood action →
+        // experiment action → arm.
+        let scenarioCode = value(after: "-MomoExperimentScenario")
+        let dogfoodAction = value(after: "-MomoDogfoodAction")
+        let experimentAction = value(after: "-MomoExperimentAction")
+        let armRaw = value(after: "-MomoExperimentArm")
+        let pasteBase64 = value(after: "-MomoExperimentPasteBase64")
+        guard scenarioCode != nil || dogfoodAction != nil
+            || experimentAction != nil || armRaw != nil || pasteBase64 != nil
+        else { return }
+        launchExperimentArgumentsConsumed = true
+        // DEBUG-only clipboard preload (#183 closeout C5): the UI-test runner
+        // process cannot write the device pasteboard, so the app writes its
+        // own; a same-app read-back needs no permission banner. Test-support
+        // input delivery only — never touches credentials or mutations.
+        if let pasteBase64,
+           let data = Data(base64Encoded: pasteBase64),
+           let text = String(data: data, encoding: .utf8) {
+            UIPasteboard.general.string = text
+        }
+        Task { @MainActor in
+            // The trigger fires as soon as isConnected flips, which can race
+            // the credential-restore lane release. Retry the blocked case,
+            // but never while an operation is already running — rerunning
+            // would stomp the in-flight report with a blocked message.
+            var scenarioDone = scenarioCode == nil
+            var dogfoodDone = dogfoodAction == nil
+            var experimentDone = experimentAction == nil
+            var armDone = armRaw == nil
+            for _ in 0..<90 {
+                if self.isLiveDogfoodRunning {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                if !scenarioDone, let code = scenarioCode {
+                    await self.prepareExperiment(scenarioCode: code)
+                    if self.liveExperimentReport?.message == "实验当前不可运行" {
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
                         continue
                     }
-                    await self.prepareExperiment(scenarioCode: code)
-                    if self.liveExperimentReport?.message != "实验当前不可运行" { return }
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    scenarioDone = true
                 }
+                if !dogfoodDone, let action = dogfoodAction {
+                    switch action {
+                    case "cleanup": await self.cleanupLiveDogfood()
+                    case "scan": await self.scanLiveDogfood()
+                    default: break
+                    }
+                    if self.liveDogfoodReport?.message == "Dogfood 当前不可运行"
+                        || self.liveDogfoodReport?.message == "Dogfood 扫描当前不可运行" {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    dogfoodDone = true
+                }
+                if !experimentDone, let action = experimentAction {
+                    switch action {
+                    case "verify": await self.verifyExperimentBaselines()
+                    case "classify": await self.classifyExperimentStudyMembership()
+                    default: break
+                    }
+                    if self.liveExperimentReport?.message == "实验当前不可运行" {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    experimentDone = true
+                }
+                if !armDone, let raw = armRaw {
+                    if raw == "cancel" {
+                        DogfoodExperimentStore.shared.cancelArm()
+                    } else if let boundary = DogfoodFaultBoundary(rawValue: raw) {
+                        await self.armExperimentFault(boundary)
+                    }
+                    armDone = true
+                }
+                if scenarioDone, dogfoodDone, experimentDone, armDone { return }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
-        } else if let raw = value(after: "-MomoExperimentArm"),
-                  let boundary = DogfoodFaultBoundary(rawValue: raw) {
-            launchExperimentArgumentsConsumed = true
-            Task { await armExperimentFault(boundary) }
         }
     }
 
@@ -443,16 +545,24 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     private func performLiveExperiment(
         _ operation: @escaping @Sendable (MaimemoTransport) async -> LiveDogfoodReport
     ) async -> Bool {
+        let report = await runLiveExperimentOperation(operation)
+        // A1: publish only after busy/lane ownership is fully released.
+        await publishExperimentReportAfterSupportIdle(report)
+        return report.succeeded
+    }
+
+    private func runLiveExperimentOperation(
+        _ operation: @escaping @Sendable (MaimemoTransport) async -> LiveDogfoodReport
+    ) async -> LiveDogfoodReport {
         guard !isLiveDogfoodRunning, !isBusy, isConnected,
               beginProviderOperation(.write)
         else {
-            liveExperimentReport = LiveDogfoodReport(
+            return LiveDogfoodReport(
                 succeeded: false,
                 message: "实验当前不可运行",
                 diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nblocked=busy_or_disconnected",
                 remainingActiveRecords: -1
             )
-            return false
         }
 
         isLiveDogfoodRunning = true
@@ -476,24 +586,22 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 sleeper: sleeperFactory(),
                 scheduler: windowScheduler
             )
-            liveExperimentReport = await operation(api)
-            return liveExperimentReport?.succeeded ?? false
+            return await operation(api)
         } catch let error as CompanionError {
-            liveExperimentReport = LiveDogfoodReport(
+            return LiveDogfoodReport(
                 succeeded: false,
                 message: "实验无法开始 · \(error.description)",
                 diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nstart_error=\(error.rawValue)",
                 remainingActiveRecords: -1
             )
         } catch {
-            liveExperimentReport = LiveDogfoodReport(
+            return LiveDogfoodReport(
                 succeeded: false,
                 message: "实验无法开始",
                 diagnostic: "小黑鸟伴侣 Live Experiment Diagnostic v1\nstart_error=other",
                 remainingActiveRecords: -1
             )
         }
-        return false
     }
 
     private enum LiveDogfoodAction {
@@ -503,10 +611,16 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
     }
 
     private func performLiveDogfood(_ action: LiveDogfoodAction) async {
+        let report = await runLiveDogfoodAction(action)
+        // A1: dogfood statuses also publish only after the lane is released.
+        await publishExperimentReportAfterSupportIdle(report, toDogfoodSurface: true)
+    }
+
+    private func runLiveDogfoodAction(_ action: LiveDogfoodAction) async -> LiveDogfoodReport {
         guard !isLiveDogfoodRunning, !isBusy, isConnected,
               beginProviderOperation(.write)
         else {
-            liveDogfoodReport = LiveDogfoodReport(
+            return LiveDogfoodReport(
                 succeeded: false,
                 message: action == .scan
                     ? "Dogfood 扫描当前不可运行"
@@ -514,7 +628,6 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
                 diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nblocked=busy_or_disconnected",
                 remainingActiveRecords: -1
             )
-            return
         }
 
         isLiveDogfoodRunning = true
@@ -541,21 +654,21 @@ final class CompanionViewModel: ObservableObject, CustomDebugStringConvertible {
             let runner = LiveDogfoodRunner(api: api)
             switch action {
             case .scan:
-                liveDogfoodReport = await runner.scanResidual()
+                return await runner.scanResidual()
             case .run:
-                liveDogfoodReport = await runner.run()
+                return await runner.run()
             case .cleanup:
-                liveDogfoodReport = await runner.cleanup()
+                return await runner.cleanup()
             }
         } catch let error as CompanionError {
-            liveDogfoodReport = LiveDogfoodReport(
+            return LiveDogfoodReport(
                 succeeded: false,
                 message: "Dogfood 无法开始 · \(error.description)",
                 diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nstart_error=\(error.rawValue)",
                 remainingActiveRecords: -1
             )
         } catch {
-            liveDogfoodReport = LiveDogfoodReport(
+            return LiveDogfoodReport(
                 succeeded: false,
                 message: "Dogfood 无法开始",
                 diagnostic: "小黑鸟伴侣 Live Dogfood Diagnostic v1\nstart_error=other",

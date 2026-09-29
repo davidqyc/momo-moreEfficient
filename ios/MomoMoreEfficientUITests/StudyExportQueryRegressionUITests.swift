@@ -731,38 +731,46 @@ final class LiveStateMatrixUITests: XCTestCase {
         let before = try auditCounts(&app)
         try performPhraseWrite(&app, doc: prep.docs[0], feedbackContains: "已完成 1 条例句 · 新建 1")
         try gotoSettings(&app)
+        // The original CREATE is the only mutation of the whole scenario.
         XCTAssertEqual(try auditCounts(&app).phrase - before.phrase, 1)
 
         // 1. Exact same English → already matching row, no CREATE action.
+        //    The zero-write proof is taken per process: the smart-quote input
+        //    requires a fresh process per document, and the in-memory audit
+        //    resets with it, so each case proves its own zero delta inside
+        //    the process that would have done the write.
         try goHome(&app)
         try previewPhrase(&app, doc: prep.docs[0])
         XCTAssertTrue(app.staticTexts["一致"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.buttons["新建 1 条例句"].exists)
+        try gotoSettings(&app)
+        XCTAssertEqual(try auditCounts(&app).phrase, 1, "duplicate preview must not dispatch")
 
-        // 2. Smart apostrophe/quote equivalent → still no CREATE.
-        app.buttons["编辑"].firstMatch.tap()
-        try typeDocument(app.textViews["批次例句输入"], prep.docs[1])
+        // 2. Smart apostrophe/quote equivalent → still no CREATE. The curly
+        // scalars are typed verbatim (asserted in the helper), so the
+        // equivalence proof cannot pass on mangled input.
+        try typeSmartQuoteDocument(&app, prep.docs[1])
         let preview2 = previewButton(app)
         XCTAssertTrue(waitEnabled(preview2, timeout: 20))
         preview2.tap()
-        XCTAssertTrue(app.staticTexts["一致"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["一致"].waitForExistence(timeout: 30))
         XCTAssertFalse(app.buttons["新建 1 条例句"].exists)
+        try gotoSettings(&app)
+        XCTAssertEqual(try auditCounts(&app).phrase, 0, "smart-quote preview must not dispatch")
 
         // 3. Same English identity, materially different Chinese → conflict
         //    block, still no CREATE.
-        app.buttons["编辑"].firstMatch.tap()
-        try typeDocument(app.textViews["批次例句输入"], prep.docs[2])
+        try typeSmartQuoteDocument(&app, prep.docs[2])
         let preview3 = previewButton(app)
         XCTAssertTrue(waitEnabled(preview3, timeout: 20))
         preview3.tap()
         XCTAssertTrue(
-            app.staticTexts["相同英文已存在，但中文或来源不一致"].waitForExistence(timeout: 15)
+            app.staticTexts["相同英文已存在，但中文或来源不一致"].waitForExistence(timeout: 30)
         )
         XCTAssertFalse(app.buttons["新建 1 条例句"].exists)
-
         try gotoSettings(&app)
-        let after = try auditCounts(&app)
-        XCTAssertEqual(after.phrase - before.phrase, 1, "only the original CREATE dispatched")
+        XCTAssertEqual(try auditCounts(&app).phrase, 0, "conflict preview must not dispatch")
+
         try cleanupAndVerify(&app)
     }
 
@@ -797,15 +805,12 @@ final class LiveStateMatrixUITests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
 
+        // The whole-plan path reports the batch receipt format, and the
+        // blocked row is handed back to the editor for a fresh preview.
         let done = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "新建成功 1")
+            NSPredicate(format: "label CONTAINS %@", "已完成 2 条 · 新建 1 · 更新 1")
         ).firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: 120))
-        XCTAssertTrue(
-            app.staticTexts.matching(
-                NSPredicate(format: "label CONTAINS %@", "更新成功 1")
-            ).firstMatch.exists
-        )
 
         try gotoSettings(&app)
         let after = try auditCounts(&app)
@@ -849,7 +854,8 @@ final class LiveStateMatrixUITests: XCTestCase {
 
         // The provider GET must rediscover the stranded marker even though no
         // ledger row was ever written.
-        try runDogfoodAction(&app, buttonLabel: "扫描验收残留", expected: "扫描完成 · 活跃残留 1")
+        try launchArgScan(&app)
+        XCTAssertEqual(app.staticTexts["liveDogfoodStatus"].label, "扫描完成 · 活跃残留 1")
 
         // Re-Preview of the same input MUST NOT classify CREATE again.
         try previewInterpretation(&app, doc: doc)
@@ -890,7 +896,8 @@ final class LiveStateMatrixUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
         try gotoSettings(&app)
-        try runDogfoodAction(&app, buttonLabel: "扫描验收残留", expected: "扫描完成 · 活跃残留 1")
+        try launchArgScan(&app)
+        XCTAssertEqual(app.staticTexts["liveDogfoodStatus"].label, "扫描完成 · 活跃残留 1")
 
         // Re-Preview the same phrase: the provider-visible record must prevent
         // a duplicate CREATE even though the journal never closed.
@@ -915,20 +922,33 @@ final class LiveStateMatrixUITests: XCTestCase {
 
         try armFault(&app, "武装：清理删除后崩溃", "D1")
 
-        let cleanup = app.buttons["撤回所有 Dogfood"]
-        makeHittable(cleanup, in: app)
-        cleanup.tap()
-        XCTAssertTrue(waitTerminated(app), "fault must terminate the process after the DELETE")
+        // The cleanup itself runs via launch-argument automation; the armed
+        // fault kills the process after the clean DELETE, before ledger retire.
+        app.terminate()
+        app.launchArguments = ["-MomoUITestResetPreferences", "-MomoDogfoodAction", "cleanup"]
+        app.launch()
+        // The launch-arg cleanup sweeps every registered spelling under the
+        // documented rate windows before it reaches the DELETE; give the
+        // boundary a realistic budget.
+        XCTAssertTrue(
+            waitTerminated(app, timeout: 300),
+            "fault must terminate the process after the DELETE"
+        )
 
+        // Relaunch: GET-only scan reconciles the stale ledger and proves
+        // residual zero; no blind repeat mutation ever fires.
+        try launchArgScan(&app)
+        XCTAssertEqual(app.staticTexts["liveDogfoodStatus"].label, "扫描完成 · 活跃残留 0")
+
+        app.terminate()
+        app.launchArguments = ["-MomoUITestResetPreferences", "-MomoExperimentAction", "verify"]
         app.launch()
         XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
         try gotoSettings(&app)
-        // GET-only scan proves the record is gone and reconciles the stale
-        // active ledger entry; no blind repeat DELETE ever fires.
-        try runDogfoodAction(&app, buttonLabel: "扫描验收残留", expected: "扫描完成 · 活跃残留 0")
-        try runExperimentAction(
-            &app, buttonLabel: "核对基线", expectedPrefix: "基线核对一致", timeout: 300
-        )
+        guard pollLabel(app, id: "liveExperimentStatus", prefix: "基线核对一致", timeout: 420) != nil else {
+            let element = app.staticTexts["liveExperimentStatus"]
+            throw fail("baseline verify after E3: '\(element.exists ? element.label : "<missing>")'")
+        }
     }
 
     // MARK: F — independent readback / membership / account / lifecycle
@@ -938,10 +958,15 @@ final class LiveStateMatrixUITests: XCTestCase {
     func testF2StudyMembershipReadOnlyAndWriteIndependence() throws {
         try requirePhysicalDevice()
         var app = launchLive()
+        app.terminate()
+        app.launchArguments = ["-MomoUITestResetPreferences", "-MomoExperimentAction", "classify"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
         try gotoSettings(&app)
-        try runExperimentAction(
-            &app, buttonLabel: "study 成员只读分类", expectedPrefix: "分类完成 · in=", timeout: 240
-        )
+        guard pollLabel(app, id: "liveExperimentStatus", prefix: "分类完成 · in=", timeout: 420) != nil else {
+            let element = app.staticTexts["liveExperimentStatus"]
+            throw fail("classify never completed: '\(element.exists ? element.label : "<missing>")'")
+        }
         let detail = app.staticTexts["liveExperimentDetail"].label
         var inPlanClean: String?
         var outPlanClean: String?
@@ -1074,11 +1099,18 @@ final class LiveStateMatrixUITests: XCTestCase {
     func testZZFinalResidualZeroAndBaselineExact() throws {
         try requirePhysicalDevice()
         var app = launchLive()
+        try launchArgScan(&app)
+        XCTAssertEqual(app.staticTexts["liveDogfoodStatus"].label, "扫描完成 · 活跃残留 0")
+
+        app.terminate()
+        app.launchArguments = ["-MomoUITestResetPreferences", "-MomoExperimentAction", "verify"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
         try gotoSettings(&app)
-        try runDogfoodAction(&app, buttonLabel: "扫描验收残留", expected: "扫描完成 · 活跃残留 0")
-        try runExperimentAction(
-            &app, buttonLabel: "核对基线", expectedPrefix: "基线核对一致", timeout: 300
-        )
+        guard pollLabel(app, id: "liveExperimentStatus", prefix: "基线核对一致", timeout: 420) != nil else {
+            let element = app.staticTexts["liveExperimentStatus"]
+            throw fail("ZZ baseline verify: '\(element.exists ? element.label : "<missing>")'")
+        }
     }
 
     // MARK: - Helpers
@@ -1226,6 +1258,19 @@ final class LiveStateMatrixUITests: XCTestCase {
         if label.hasPrefix("EXP N/A") {
             throw XCTSkip("\(label) — provider contract makes this state unreachable")
         }
+        // A1: the READY line is only published after busy/lane release, but
+        // prove it from the outside too before touching the product UI.
+        let idleDeadline = Date().addingTimeInterval(15)
+        var idleSeen = false
+        while Date() < idleDeadline {
+            let detail = app.staticTexts["liveExperimentDetail"]
+            if detail.exists, detail.label.contains("support=idle") {
+                idleSeen = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertTrue(idleSeen, "EXP READY must be published with support=idle")
         guard label.hasPrefix("EXP READY \(code)") else {
             // Give the detail text a moment to catch up with the status.
             Thread.sleep(forTimeInterval: 2)
@@ -1256,7 +1301,7 @@ final class LiveStateMatrixUITests: XCTestCase {
                 let name = String(lines[index].dropLast(2))
                 var collected: [String] = []
                 index += 1
-                while index < lines.count, lines[index] != "<<\(name)" {
+                while index < lines.count, lines[index] != "<<doc" {
                     collected.append(lines[index])
                     index += 1
                 }
@@ -1323,6 +1368,25 @@ final class LiveStateMatrixUITests: XCTestCase {
         ).firstMatch
         if counted.exists { return counted }
         return app.buttons["预览"]
+    }
+
+    /// Smart-quote input via typeText in a fresh process. The verbatim
+    /// assertion is the point: if the OS keyboard layer mangles the curly
+    /// scalars, this fails loudly with the actual editor content and the
+    /// equivalence subcase becomes an evidenced OS limitation instead of a
+    /// silently passing proof.
+    private func typeSmartQuoteDocument(_ app: inout XCUIApplication, _ text: String) throws {
+        app.terminate()
+        app.launchArguments = ["-MomoUITestResetPreferences"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+        let editor = app.textViews["批次例句输入"]
+        XCTAssertTrue(
+            tapUntil(app.buttons["例句录入"], in: app, appearing: editor),
+            "例句录入 must open"
+        )
+        try typeDocument(editor, text)
+        XCTAssertEqual(editor.value as? String, text, "editor must hold the typed text verbatim")
     }
 
     private func typeDocument(_ editor: XCUIElement, _ text: String) throws {
@@ -1475,7 +1539,9 @@ final class LiveStateMatrixUITests: XCTestCase {
         let completed = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "读取完成")
         ).firstMatch
-        XCTAssertTrue(completed.waitForExistence(timeout: 90), word)
+        // Right after a prep/write burst the query's few reads can queue
+        // behind the documented rate windows; 180s is the realistic budget.
+        XCTAssertTrue(completed.waitForExistence(timeout: 180), word)
 
         let row = app.buttons[word]
         XCTAssertTrue(row.waitForExistence(timeout: 10), word)
@@ -1518,15 +1584,41 @@ final class LiveStateMatrixUITests: XCTestCase {
         app.buttons["返回"].firstMatch.tap()
     }
 
-    /// Runs the dogfood cleanup and the independent baseline verification.
+    /// Runs the dogfood cleanup and the independent baseline verification via
+    /// launch-argument automation (#183 closeout A2): DEBUG support actions are
+    /// not product mechanisms, so the test never depends on scrolling Settings
+    /// buttons into view. The relaunch runs cleanup, then baseline verify.
     private func cleanupAndVerify(_ app: inout XCUIApplication) throws {
+        app.terminate()
+        app.launchArguments = [
+            "-MomoUITestResetPreferences",
+            "-MomoDogfoodAction", "cleanup",
+            "-MomoExperimentAction", "verify",
+        ]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
         try gotoSettings(&app)
-        try runDogfoodAction(
-            &app, buttonLabel: "撤回所有 Dogfood", expected: "Dogfood 已清理 · 剩余 0", timeout: 300
-        )
-        try runExperimentAction(
-            &app, buttonLabel: "核对基线", expectedPrefix: "基线核对一致", timeout: 300
-        )
+        guard pollLabel(app, id: "liveDogfoodStatus", equals: "Dogfood 已清理 · 剩余 0", timeout: 420) != nil else {
+            let element = app.staticTexts["liveDogfoodStatus"]
+            throw fail("cleanup → 'Dogfood 已清理 · 剩余 0', got '\(element.exists ? element.label : "<missing>")'")
+        }
+        guard pollLabel(app, id: "liveExperimentStatus", prefix: "基线核对一致", timeout: 420) != nil else {
+            let element = app.staticTexts["liveExperimentStatus"]
+            throw fail("baseline verify → prefix '基线核对一致', got '\(element.exists ? element.label : "<missing>")'")
+        }
+    }
+
+    /// Launch-argument GET-only residual scan.
+    private func launchArgScan(_ app: inout XCUIApplication) throws {
+        app.terminate()
+        app.launchArguments = ["-MomoUITestResetPreferences", "-MomoDogfoodAction", "scan"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["小黑鸟伴侣"].waitForExistence(timeout: 15))
+        try gotoSettings(&app)
+        guard pollLabel(app, id: "liveDogfoodStatus", prefix: "扫描完成 · 活跃残留", timeout: 420) != nil else {
+            let element = app.staticTexts["liveDogfoodStatus"]
+            throw fail("scan never completed: '\(element.exists ? element.label : "<missing>")'")
+        }
     }
 
     @discardableResult
@@ -1574,8 +1666,11 @@ final class LiveStateMatrixUITests: XCTestCase {
     ) throws {
         try goHome(&app)
         let prep = try prepareScenario(&app, code)
-        XCTAssertTrue(prep.words.contains(expectedWord), "\(code) expected \(expectedWord), got \(prep.words)")
+        // The prep's own read-only classification (requireToday=false for
+        // F2B) is the authority; the earlier classify snapshot may be minutes
+        // old, so the exact word may legitimately differ.
         let word = prep.words[0]
+        XCTAssertFalse(word.isEmpty, "\(code) must pick a word")
         let doc = prep.docs[0]
         try performInterpretationWrite(
             &app, doc: doc, actionLabel: "新建 1",
@@ -1606,14 +1701,14 @@ final class LiveStateMatrixUITests: XCTestCase {
         app.buttons["返回"].firstMatch.tap()
     }
 
-    private func waitTerminated(_ app: XCUIApplication) -> Bool {
+    private func waitTerminated(_ app: XCUIApplication, timeout: TimeInterval = 60) -> Bool {
         let terminated = XCTNSPredicateExpectation(
             predicate: NSPredicate { application, _ in
                 (application as? XCUIApplication)?.state == .notRunning
             },
             object: app
         )
-        return XCTWaiter().wait(for: [terminated], timeout: 60) == .completed
+        return XCTWaiter().wait(for: [terminated], timeout: timeout) == .completed
     }
 
     private func makeHittable(_ element: XCUIElement, in app: XCUIApplication) {

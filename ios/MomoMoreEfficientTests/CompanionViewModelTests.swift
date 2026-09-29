@@ -1513,6 +1513,67 @@ final class CompanionViewModelTests: XCTestCase {
         defaults.removePersistentDomain(forName: suite)
         return (defaults, suite)
     }
+
+    /// #183 closeout A1: experiment/dogfood reports must publish only after
+    /// busy/lane ownership is released; while a provider operation holds the
+    /// lane the gate records `support=busy` honestly instead of racing, and
+    /// once idle it records `support=idle`. This is the deterministic coverage
+    /// that catches READY-before-lane-release.
+    func testExperimentReportPublishGateWaitsForSupportIdle() async {
+        #if DEBUG
+        let store = FakeTokenStore()
+        let transport = GatedHTTPTransport(
+            vocabularyResponse("INVALID_VALIDATION_VOC", "apple")
+        )
+        let model = CompanionViewModel(phraseSafetyJournal: makeTestPhraseJournal(),
+            tokenStore: store,
+            historyStore: InMemoryHistoryStore(),
+            credentialValidationTransportFactory: { transport },
+            sleeperFactory: { RecordingSleeper() },
+            preferenceDefaults: isolatedPreferenceDefaults()
+        )
+
+        // Hold the credential-restore lane with a gated validation read.
+        let connection = Task { await model.connect(token: fakeToken) }
+        await transport.waitUntilRequested()
+        XCTAssertFalse(model.isExperimentSupportIdle)
+
+        let busyReport = LiveDogfoodReport(
+            succeeded: true,
+            message: "EXP READY B3 word=apple",
+            diagnostic: "diagnostic",
+            remainingActiveRecords: 0
+        )
+        await model.publishExperimentReportAfterSupportIdle(busyReport, timeout: 0.3)
+        let publishedWhileBusy = model.liveExperimentReport
+        XCTAssertNotNil(publishedWhileBusy)
+        XCTAssertTrue(
+            publishedWhileBusy?.diagnostic.contains("support=busy") == true,
+            publishedWhileBusy?.diagnostic ?? ""
+        )
+
+        // Release the lane; the same gate now records semantic idle.
+        await transport.resume()
+        _ = await connection.value
+        XCTAssertTrue(model.isConnected)
+        XCTAssertTrue(model.isExperimentSupportIdle)
+
+        let idleReport = LiveDogfoodReport(
+            succeeded: true,
+            message: "EXP READY B3 word=apple",
+            diagnostic: "diagnostic",
+            remainingActiveRecords: 0
+        )
+        await model.publishExperimentReportAfterSupportIdle(idleReport, timeout: 5)
+        let publishedIdle = model.liveExperimentReport
+        XCTAssertTrue(
+            publishedIdle?.diagnostic.contains("support=idle") == true,
+            publishedIdle?.diagnostic ?? ""
+        )
+        #else
+        throw XCTSkip("DEBUG-only experiment support gate")
+        #endif
+    }
 }
 
 final class SequencedTransportFactory: @unchecked Sendable {

@@ -1701,8 +1701,12 @@ struct LiveExperimentRunner {
 
     private func prepareD(nonce: String, events: inout [String]) async throws -> LiveDogfoodReport {
         let createWord = try await pickWord(requireCleanInterpretations: true, events: &events)
-        let updateWord = try await pickWord(requireCleanInterpretations: true, events: &events)
-        let matchWord = try await pickWord(requireCleanInterpretations: true, events: &events)
+        let updateWord = try await pickWord(
+            requireCleanInterpretations: true, distinctFrom: [createWord], events: &events
+        )
+        let matchWord = try await pickWord(
+            requireCleanInterpretations: true, distinctFrom: [createWord, updateWord], events: &events
+        )
         try await registerBaseline(word: createWord, events: &events)
         try await registerBaseline(word: updateWord, events: &events)
         try await registerBaseline(word: matchWord, events: &events)
@@ -1799,6 +1803,7 @@ struct LiveExperimentRunner {
         requireCleanInterpretations: Bool,
         maxOwnerPhrases: Int = .max,
         requireToday: Bool? = nil,
+        distinctFrom: Set<String> = [],
         events: inout [String]
     ) async throws -> String {
         // A transient 429 right after a burst would otherwise make every
@@ -1813,6 +1818,7 @@ struct LiveExperimentRunner {
                 requireCleanInterpretations: requireCleanInterpretations,
                 maxOwnerPhrases: maxOwnerPhrases,
                 requireToday: requireToday,
+                distinctFrom: distinctFrom,
                 events: &events
             ) {
                 return word
@@ -1826,9 +1832,10 @@ struct LiveExperimentRunner {
         requireCleanInterpretations: Bool,
         maxOwnerPhrases: Int,
         requireToday: Bool?,
+        distinctFrom: Set<String>,
         events: inout [String]
     ) async throws -> String? {
-        for word in Self.allowlist {
+        for word in Self.allowlist where !distinctFrom.contains(word) {
             guard let vocabulary = try? await api.vocabulary(spelling: word) else { continue }
             guard let interpretations = try? await api.interpretations(vocabularyID: vocabulary.id),
                   let phrases = try? await api.phrases(vocabularyID: vocabulary.id)
@@ -1892,6 +1899,20 @@ struct LiveExperimentRunner {
         content: String,
         status: String = "PUBLISHED"
     ) async throws -> String {
+        // The settle window absorbs the provider's eventually consistent list
+        // reads; 8 attempts x 3s covers the lag observed under load.
+        return try await createMarkerInterpretation(
+            vocabularyID: vocabularyID, content: content, status: status, attempts: 8
+        )
+    }
+
+    @discardableResult
+    private func createMarkerInterpretation(
+        vocabularyID: String,
+        content: String,
+        status: String,
+        attempts: Int
+    ) async throws -> String {
         let body = try JSONSerialization.data(
             withJSONObject: [
                 "interpretation": [
@@ -1910,7 +1931,7 @@ struct LiveExperimentRunner {
             throw CompanionError.uncertainWriteOutcome
         }
         defer { control.finishPostResolution() }
-        return try await settleReadback {
+        return try await settleReadback(attempts: attempts) {
             let records = try await api.interpretations(
                 vocabularyID: vocabularyID,
                 control: control,
