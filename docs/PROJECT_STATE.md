@@ -38,7 +38,7 @@ SECOND_RESOLVER_ADDED=no
 
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
-CURRENT_UNIQUE_NEXT=#184 pre-design/product contract review, then approved visual handoff and Builder implementation; do not start unrelated Phase-2 work in parallel
+CURRENT_UNIQUE_NEXT=#184 Owner decision on export-generated note base fingerprint for UPDATE identity; after decision, ratify R1 contract and proceed to Design exact-package flow
 CURRENT_PUBLIC_TESTFLIGHT=1.0 (5)
 CURRENT_PUBLIC_TESTFLIGHT_STATUS=AVAILABLE_INTERNAL_AND_EXTERNAL
 CURRENT_PUBLIC_TESTFLIGHT_URL=https://testflight.apple.com/join/DtVKeTSE
