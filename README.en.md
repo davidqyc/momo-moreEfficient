@@ -2,7 +2,7 @@
 
 **Xiaoheiniao (momo-moreEfficient)** is an independent, unofficial, open-source **practical helper for Maimemo / 墨墨背单词**. It focuses on a few high-friction jobs: safely importing interpretations and examples, making reading-time capture quicker, and turning Maimemo study data into reproducible **Maimemo × Codex** workflows.
 
-> **Current public version:** [iPhone TestFlight build `1.0 (3)`](https://testflight.apple.com/join/DtVKeTSE). It is not yet a production App Store release.
+> **Current public version:** [iPhone TestFlight build `1.0 (5)`](https://testflight.apple.com/join/DtVKeTSE). It is not yet a production App Store release.
 >
 > **Not an official Maimemo project.** It is an independent community-built side project and is not affiliated with, sponsored by, or endorsed by Maimemo or its operator.
 
@@ -23,7 +23,7 @@ This is the first feature set in the current public TestFlight.
 
 If you already prepared content in ChatGPT, Codex, your own notes, or somewhere else, you do not have to add everything to Maimemo one item at a time. Xiaoheiniao puts that prepared content into a reviewable, explicit import flow.
 
-Public build `1.0 (3)` supports:
+Public build `1.0 (5)` supports:
 
 - **custom interpretations:** batch create and update;
 - **examples / phrases:** create;
@@ -47,9 +47,9 @@ Your personal Maimemo API Token stays in the local Keychain on your iPhone. This
 
 The project does not intentionally write real Tokens, Authorization/Cookie values, account identifiers, or private learning data into public Issues, PRs, logs, examples, or review material. Please do not paste those values into public pages yourself either.
 
-## Feature 2 | Capture while reading — coming soon
+## Feature 2 | Capture while reading
 
-The source implementation is complete and physical-device validation has passed. **This feature is not in the current public TestFlight build `1.0 (3)`.**
+This feature is available in the current public TestFlight build `1.0 (5)`; the source implementation and physical-device validation are complete.
 
 The goal is simply to shorten this flow:
 
@@ -68,7 +68,16 @@ Faster preconfigured alternative:
 
 Both stay before Preview. Capturing text alone does not read the Maimemo Token, contact Maimemo, run Preview, or write anything.
 
-## Feature 3 | Turn today's forgotten Maimemo words into a Codex study article
+## Feature 3 | Batch Query and word export
+
+Public TestFlight build `1.0 (5)` also adds two read-only routes:
+
+- **Batch Query:** enter words separated by newlines or commas, inspect interpretation / example / note status in one place, and combine local filters over returned results;
+- **Word Export:** five public presets — Learned today, Due for review today, New learned today, Forgotten today, and Vague today — with copy, system sharing, or direct handoff into Batch Query.
+
+Both routes are read-only and do not trigger Maimemo writes by querying or exporting alone.
+
+## Feature 4 | Turn today's forgotten Maimemo words into a Codex study article
 
 This route is already available and does not depend on the iPhone app. Recipes are intentionally small, reproducible learning workflows rather than a general automation platform.
 
@@ -91,8 +100,10 @@ The table below is about what users can actually use, not merely what exists som
 
 | Feature | Stage | Current status |
 | --- | --- | --- |
-| iPhone interpretation / example batch import | **Shipped** | Available in TestFlight build `1.0 (3)` |
-| Reading-time capture | **Coming soon** | Source is complete and physical-device validation has passed; Share is the recommended normal route, Shortcut is a faster preconfigured alternative; the public product page still needs syncing and one architecture/complexity review remains before the next release decision |
+| iPhone interpretation / example batch import | **Shipped** | Available in TestFlight build `1.0 (5)` |
+| Reading-time capture | **Shipped** | Available in TestFlight build `1.0 (5)`; Share is the recommended normal route and Shortcut is a faster preconfigured alternative |
+| Batch Query | **Shipped** | Available in TestFlight build `1.0 (5)`; read-only interpretation / example / note status inspection and local filtering |
+| Word Export | **Shipped** | Available in TestFlight build `1.0 (5)`; five public read-only presets for today's study state |
 | Desktop browser capture | **Research** | No public implementation yet; waiting for Maimemo Open Platform clarification on browser OAuth callback, CORS / direct API access, and related contracts |
 | Built-in Maimemo dictionary / pronunciation | **Not offered** | The current public API contract is not sufficient for this project to claim a reliable implementation |
 | Automatic background import | **Not offered** | Not shipped and not a near-term primary route |
