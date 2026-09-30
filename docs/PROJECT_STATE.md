@@ -1,8 +1,8 @@
 # momo-moreEfficient Current Project State
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
-updatedAt=2026-09-12
-sourceMainSha=f9bbc8d1166ee02158391289bccdd4f094a8785f
+updatedAt=2026-10-01
+sourceMainSha=7f483bf47b49d43d9ad65d816330758bacd05b14
 sourceMainShaIsSnapshotOnly=true
 
 > Current truth only. Live default branch + current Issue/PR/WIP + latest explicit Owner instruction outrank this snapshot. Historical accepted detail remains in the owning Issues/PRs/git history and should be read only when the current task needs it.
@@ -14,10 +14,10 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 
-CURRENT_PRIMARY_ISSUE=#161
-CURRENT_PRIMARY_PR=#177
-CURRENT_PRIMARY_PR_HEAD=f3c8f33215d965ff381ee674b1c5668808df7dd2
-CURRENT_PRIMARY_PR_STATUS=OPEN_DRAFT_UNMERGED
+CURRENT_PRIMARY_ISSUE=#183
+CURRENT_PRIMARY_PR=none
+CURRENT_PRIMARY_PR_HEAD=none
+CURRENT_PRIMARY_PR_STATUS=none
 
 SELF_ADDED_VOCABULARY_PROVIDER_RESEARCH=CLOSED_FOR_NOW
 MORE_PROVIDER_CLARIFICATION=no
@@ -39,7 +39,24 @@ SECOND_RESOLVER_ADDED=no
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
 CURRENT_UNIQUE_NEXT=wait for Owner's next concrete real-use bug/usability defect; do not invent a roadmap item or automatically reopen provider research
+CURRENT_PUBLIC_TESTFLIGHT=1.0 (5)
+CURRENT_PUBLIC_TESTFLIGHT_STATUS=AVAILABLE_INTERNAL_AND_EXTERNAL
+CURRENT_PUBLIC_TESTFLIGHT_URL=https://testflight.apple.com/join/DtVKeTSE
+CURRENT_INTERNAL_TEST_GROUP=内部验证
+CURRENT_EXTERNAL_TEST_GROUP=首批外部测试
+CURRENT_RELEASE_ISSUE=#183
+BUILD5_REUPLOAD=FORBIDDEN
 ```
+
+### TestFlight release checkpoint
+
+Build `1.0 (5)` was released on 2026-10-01 to the existing `内部验证` and `首批外部测试` groups. App Store Connect shows the build as `正在测试` in both groups. The existing public TestFlight link remains active and unchanged:
+
+```text
+https://testflight.apple.com/join/DtVKeTSE
+```
+
+Release source identity remains the pre-doc-sync product commit `0ec3d35caa476564afbfe5434d24fd086111b629`. Build 5 must not be uploaded again. README / README.en public build labels have been synchronized to `1.0 (5)`.
 
 ## 2. Provider limitation marker now closed
 
@@ -141,6 +158,7 @@ Do not reopen these frozen product decisions while repairing unrelated real-use 
 MERGE_AUTHORIZED_BY_THIS_STATE=false
 TESTFLIGHT_NEW_UPLOAD_AUTHORIZED=false
 TESTFLIGHT_BUILD4_REUPLOAD_FORBIDDEN=true
+TESTFLIGHT_BUILD5_REUPLOAD_FORBIDDEN=true
 REAL_MAIMEMO_WRITE_AUTHORIZED=false
 TOKEN_READ_AUTHORIZED=false
 IPHONE_MIRRORING_AUTHORIZED=false
