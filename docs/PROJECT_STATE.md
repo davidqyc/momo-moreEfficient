@@ -2,7 +2,7 @@
 
 status=ACTIVE_LIGHTWEIGHT_PROJECT_STATE
 updatedAt=2026-10-01
-sourceMainSha=60f078e750bdb5dda3ce7833ae52f6e3588bafc6
+sourceMainSha=c965e42a82c4a83aa40b547c710f6452d67c768a
 sourceMainShaIsSnapshotOnly=true
 
 > Current truth only. Live default branch + current Issue/PR/WIP + latest explicit Owner instruction outrank this snapshot. Historical accepted detail remains in the owning Issues/PRs/git history and should be read only when the current task needs it.
@@ -14,7 +14,7 @@ REPOSITORY=davidqyc/momo-moreEfficient
 DEFAULT_BRANCH=main
 PUBLIC_REPOSITORY=true
 
-CURRENT_PRIMARY_ISSUE=none
+CURRENT_PRIMARY_ISSUE=#184
 CURRENT_PRIMARY_PR=none
 CURRENT_PRIMARY_PR_HEAD=none
 CURRENT_PRIMARY_PR_STATUS=none
@@ -38,7 +38,7 @@ SECOND_RESOLVER_ADDED=no
 
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
-CURRENT_UNIQUE_NEXT=wait for Owner's next concrete real-use bug/usability defect; do not invent a roadmap item or automatically reopen provider research
+CURRENT_UNIQUE_NEXT=#184 pre-design/product contract review, then approved visual handoff and Builder implementation; do not start unrelated Phase-2 work in parallel
 CURRENT_PUBLIC_TESTFLIGHT=1.0 (5)
 CURRENT_PUBLIC_TESTFLIGHT_STATUS=AVAILABLE_INTERNAL_AND_EXTERNAL
 CURRENT_PUBLIC_TESTFLIGHT_URL=https://testflight.apple.com/join/DtVKeTSE
