@@ -4,6 +4,13 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## TestFlight build `1.0 (5)` - 2026-10-01
+
+- Released the exact build-5 product source `0ec3d35caa476564afbfe5434d24fd086111b629` to the existing internal group `内部验证` and external group `首批外部测试`.
+- The existing public TestFlight route remains active at `https://testflight.apple.com/join/DtVKeTSE`; no second public link was created.
+- This public build includes the merged #177 shell / read-only Batch Query / publication-status work and the #179 Study Export / cross-mode write guard work, while preserving the existing write-safety floor.
+- Build 5 is already uploaded and distributed; re-uploading the same build identity is forbidden.
+
 ## [Unreleased]
 
 ### Added
@@ -35,7 +42,7 @@
 ### Known limitations
 
 - 从部分聊天/网页渲染直接复制时，源端可能在文本到达本地 UI textarea 前折叠行边界；下载的 text/Markdown 或其他保留换行的来源可正常解析。该现象不作为启用 heuristic parser 的理由。
-- iOS companion 已在 Owner 的实体 iPhone 上通过当前日常流程与 DEBUG rehearsal 验收，但尚未提供 TestFlight/App Store 或其它面向陌生用户的低摩擦公开安装路径；v0.2 分发与首次外部用户由 #71 跟踪，尚未自动授权启动。
+- iOS companion 已在 Owner 的实体 iPhone 上通过当前日常流程与 DEBUG rehearsal 验收，并已提供公开 TestFlight 分发；当前仍未正式上架 App Store。
 
 ## [0.1.0] - 2026-08-09
 
