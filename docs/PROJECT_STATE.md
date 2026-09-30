@@ -38,7 +38,7 @@ SECOND_RESOLVER_ADDED=no
 
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
-CURRENT_UNIQUE_NEXT=#184 Owner decision on export-generated note base fingerprint for UPDATE identity; after decision, ratify R1 contract and proceed to Design exact-package flow
+CURRENT_UNIQUE_NEXT=#184 build exact Claude Design/Fable package from ratified base-bound note contract; run mandatory fresh Claude Chat exact-package preflight before Design send
 CURRENT_PUBLIC_TESTFLIGHT=1.0 (5)
 CURRENT_PUBLIC_TESTFLIGHT_STATUS=AVAILABLE_INTERNAL_AND_EXTERNAL
 CURRENT_PUBLIC_TESTFLIGHT_URL=https://testflight.apple.com/join/DtVKeTSE
