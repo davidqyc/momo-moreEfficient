@@ -38,7 +38,7 @@ SECOND_RESOLVER_ADDED=no
 
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
-CURRENT_UNIQUE_NEXT=#184 build exact Claude Design/Fable package from ratified base-bound note contract; run mandatory fresh Claude Chat exact-package preflight before Design send
+CURRENT_UNIQUE_NEXT=#184 Owner-manual dispatch of exact R3 Design package to Fable 5.1 / MAX / Claude Design; then ingest returned Result ZIP and prepare Builder handoff
 CURRENT_PUBLIC_TESTFLIGHT=1.0 (5)
 CURRENT_PUBLIC_TESTFLIGHT_STATUS=AVAILABLE_INTERNAL_AND_EXTERNAL
 CURRENT_PUBLIC_TESTFLIGHT_URL=https://testflight.apple.com/join/DtVKeTSE
