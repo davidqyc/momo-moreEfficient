@@ -38,7 +38,7 @@ SECOND_RESOLVER_ADDED=no
 
 ACTIVE_EXTERNAL_AGENT=0
 CURRENT_EXTERNAL_AGENT_TASK=none
-CURRENT_UNIQUE_NEXT=#184 run fresh Claude Chat exact-package preflight for bounded Design Repair R4; on PASS continue the existing Fable Design chat with R4 package; Builder handoff must carry Owner back-control visual-polish requirement
+CURRENT_UNIQUE_NEXT=#184 fresh Claude Chat exact-package preflight for epoch-23 Design Repair R5; on PASS continue the existing Fable Design chat with R5 package; Builder handoff must carry Owner back-control visual-polish requirement
 CURRENT_PUBLIC_TESTFLIGHT=1.0 (5)
 CURRENT_PUBLIC_TESTFLIGHT_STATUS=AVAILABLE_INTERNAL_AND_EXTERNAL
 CURRENT_PUBLIC_TESTFLIGHT_URL=https://testflight.apple.com/join/DtVKeTSE
